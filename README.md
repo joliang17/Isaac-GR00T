@@ -57,7 +57,17 @@ The focus is on enabling customization of robot behaviors through finetuning.
 - We have tested the code on Ubuntu 20.04 and 22.04, GPU: H100, L40, A4090 and A6000 for finetuning and Python==3.10, CUDA version 12.4.
 - For inference, we have tested on Ubuntu 20.04 and 22.04, GPU: 4090, A6000
 - Please make sure you have the following dependencies installed in your system: `ffmpeg`, `libsm6`, `libxext6`
+- For example, on Ubuntu 22.04, these can be installed as follows:
 
+  ```bash
+  export OS=ubuntu2204
+  wget https://developer.download.nvidia.com/compute/cuda/repos/${OS}/x86_64/cuda-keyring_1.1-1_all.deb
+  sudo dpkg -i cuda-keyring_1.1-1_all.deb
+  rm cuda-keyring_1.1-1_all.deb
+  sudo apt-get update
+  sudo apt-get -y install nvidia-open cuda cudnn libnccl2 libnccl-dev
+  sudo apt-get -y install ffmpeg libsm6 libxext6
+  ```
 
 ## Installation Guide
 
