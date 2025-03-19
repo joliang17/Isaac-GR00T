@@ -54,20 +54,10 @@ GR00T N1 is intended for researchers and professionals in humanoid robotics. Thi
 The focus is on enabling customization of robot behaviors through finetuning.
 
 ## Prerequisites
-- We have tested the code on Ubuntu 20.04 and 22.04, GPU: H100, L40, A4090 and A6000 for finetuning and Python==3.10, CUDA version 12.4.
-- For inference, we have tested on Ubuntu 20.04 and 22.04, GPU: 4090, A6000
+- We have tested the code on Ubuntu 20.04 and 22.04, GPU: H100, L40, RTX 4090 and A6000 for finetuning and Python==3.10, CUDA version 12.4.
+- For inference, we have tested on Ubuntu 20.04 and 22.04, GPU: RTX 4090 and A6000
+- If you haven't installed CUDA 12.4, please follow the instructions [here](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/) to install it.
 - Please make sure you have the following dependencies installed in your system: `ffmpeg`, `libsm6`, `libxext6`
-- For example, on Ubuntu 22.04, these can be installed as follows:
-
-  ```bash
-  export OS=ubuntu2204
-  wget https://developer.download.nvidia.com/compute/cuda/repos/${OS}/x86_64/cuda-keyring_1.1-1_all.deb
-  sudo dpkg -i cuda-keyring_1.1-1_all.deb
-  rm cuda-keyring_1.1-1_all.deb
-  sudo apt-get update
-  sudo apt-get -y install nvidia-open cuda cudnn libnccl2 libnccl-dev
-  sudo apt-get -y install ffmpeg libsm6 libxext6
-  ```
 
 ## Installation Guide
 
@@ -216,7 +206,7 @@ huggingface-cli download  nvidia/PhysicalAI-Robotics-GR00T-X-Embodiment-Sim \
 The recommended finetuning configurations is to boost your batch size to the max, and train for 20k steps.
 
 *Hardware Performance Considerations*
-- **Finetuning Performance**: We used 1 H100 node or L40 node for optimal finetuning. Other hardware configurations (e.g. A6000, RTX4090) will also work but may take longer to converge. The exact batch size is dependent on the hardware, and on which component of the model is being tuned.
+- **Finetuning Performance**: We used 1 H100 node or L40 node for optimal finetuning. Other hardware configurations (e.g. A6000, RTX 4090) will also work but may take longer to converge. The exact batch size is dependent on the hardware, and on which component of the model is being tuned.
 - **Inference Performance**: For real-time inference, most modern GPUs perform similarly when processing a single sample. Our benchmarks show minimal difference between L40 and RTX 4090 for inference speed.
 
 For new embodiment finetuning, checkout our notebook in [`getting_started/3_new_embodiment_finetuning.ipynb`](getting_started/3_new_embodiment_finetuning.ipynb).
