@@ -116,7 +116,7 @@ transforms = data_config.transform()
 dataset = LeRobotSingleDataset(
     dataset_path="demo_data/robot_sim.PickNPlace",
     modality_configs=modality_config,
-    transforms=[], # we can choose to not apply any transforms
+    transforms=None,  # we can choose to not apply any transforms
     embodiment_tag=EmbodimentTag.GR1, # the embodiment to use
 )
 
