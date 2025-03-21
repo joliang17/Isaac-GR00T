@@ -107,9 +107,7 @@ if __name__ == "__main__":
         # - action: action.right_hand: (16, 6)
         # - action: action.waist: (16, 3)
         obs = {
-            "video.ego_view": np.random.randint(
-                0, 256, (1, 256, 256, 3), dtype=np.uint8
-            ),
+            "video.ego_view": np.random.randint(0, 256, (1, 256, 256, 3), dtype=np.uint8),
             "state.left_arm": np.random.rand(1, 7),
             "state.right_arm": np.random.rand(1, 7),
             "state.left_hand": np.random.rand(1, 6),
