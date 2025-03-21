@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 from dataclasses import dataclass, field
 from typing import Tuple
 
@@ -24,14 +23,12 @@ from huggingface_hub import snapshot_download
 from huggingface_hub.errors import HFValidationError, RepositoryNotFoundError
 from transformers import AutoConfig, AutoModel, PretrainedConfig, PreTrainedModel
 from transformers.feature_extraction_utils import BatchFeature
-from .backbone import EagleBackbone
+
 from .action_head.flow_matching_action_head import (
     FlowmatchingActionHead,
     FlowmatchingActionHeadConfig,
 )
-import gr00t
-
-_BACKBONE_PATH = os.path.join(os.path.dirname(gr00t.__file__), "model", "backbone")
+from .backbone import EagleBackbone
 
 BACKBONE_FEATURE_KEY = "backbone_features"
 ACTION_KEY = "action_pred"

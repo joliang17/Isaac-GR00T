@@ -62,6 +62,15 @@ dependencies = [
     "pytest",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "mypy>=1.0",
+    "black>=23.0",
+    "isort>=5.12",
+    "pytest",
+]
+
 [tool.setuptools.packages.find]
 exclude = [
     "*.tests",

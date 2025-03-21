@@ -7,10 +7,17 @@
   
   <p style="font-size: 1.2em;">
     <a href="https://developer.nvidia.com/isaac/gr00t"><strong>Website</strong></a> | 
-    <a href="https://huggingface.co/nvidia/GR00T-N1-2B"><strong>HuggingFace</strong></a> |
+    <a href="https://huggingface.co/nvidia/GR00T-N1-2B"><strong>Model</strong></a> |
+    <a href="https://huggingface.co/datasets/nvidia/PhysicalAI-Robotics-GR00T-X-Embodiment-Sim"><strong>Dataset</strong></a> |
     <a href="https://research.nvidia.com/publication/2025-03_nvidia-isaac-gr00t-n1-open-foundation-model-humanoid-robots"><strong>Paper</strong></a>
   </p>
 </div>
+
+[![CI](https://github.com/NVIDIA/Isaac-GR00T/actions/workflows/main.yml/badge.svg)](https://github.com/NVIDIA/Isaac-GR00T/actions/workflows/main.yml)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Imports: isort](https://img.shields.io/badge/%20imports-isort-%231674b1?style=flat&labelColor=ef8336)](https://pycqa.github.io/isort/)
+[![GitHub star chart](https://img.shields.io/github/stars/NVIDIA/Isaac-GR00T?style=flat-square)](https://star-history.com/#NVIDIA/Isaac-GR00T)
+[![Open Issues](https://img.shields.io/github/issues-raw/NVIDIA/Isaac-GR00T?style=flat-square)](https://github.com/NVIDIA/Isaac-GR00T/issues)
 
 ## NVIDIA Isaac GR00T N1
 

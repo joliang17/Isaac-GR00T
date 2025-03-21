@@ -23,7 +23,7 @@ import torch
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import HFValidationError, RepositoryNotFoundError
 
-from gr00t.data.dataset import LeRobotSingleDataset, ModalityConfig
+from gr00t.data.dataset import ModalityConfig
 from gr00t.data.embodiment_tags import EmbodimentTag
 from gr00t.data.schema import DatasetMetadata
 from gr00t.data.transform.base import ComposedModalityTransform
