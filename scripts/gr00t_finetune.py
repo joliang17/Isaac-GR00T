@@ -14,6 +14,13 @@
 # limitations under the License.
 
 import os
+CACHE_DIR = "/fs/nexus-projects/wilddiffusion/cache"
+
+os.environ["HF_HOME"] = CACHE_DIR
+os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
+os.environ["HF_MODULES_CACHE"] = CACHE_DIR
+os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
+
 import subprocess
 import sys
 from dataclasses import dataclass
