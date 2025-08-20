@@ -164,9 +164,36 @@ class GR00T_N1_5(PreTrainedModel):
     ) -> BatchFeature:
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         backbone_outputs = self.backbone(backbone_inputs)
-        action_head_outputs = self.action_head(backbone_outputs, action_inputs)
-        self.validate_data(action_head_outputs, backbone_outputs, is_training=True)
-        return action_head_outputs
+        dit_indices = backbone_outputs["dit_indices"]  # LongTensor [Bd] (may be empty)
+
+        # Always compute + carry routing/tool losses
+        route_loss     = backbone_outputs["route_loss"]
+        tools_lm_loss  = backbone_outputs["tools_lm_loss"]
+
+        # If no ACTION rows: skip action head; return losses only
+        if dit_indices.numel() == 0:
+            return BatchFeature(
+                data={
+                    "loss": route_loss + tools_lm_loss,
+                    "route_loss": route_loss,
+                    "tools_lm_loss": tools_lm_loss,
+                    "action_head_loss": torch.tensor(0, device=self.device),
+                    "action_head_skipped": True,
+                }
+            )
+        else:
+            action_head_outputs = self.action_head(backbone_outputs, action_inputs)
+            self.validate_data(action_head_outputs, backbone_outputs, is_training=True)
+
+            # Merge route/tool losses into the output and total loss.
+            # Keep the pure action-head loss for logging as `action_head_loss`.
+            ah_loss = action_head_outputs["loss"]
+            action_head_outputs["action_head_loss"] = ah_loss
+            action_head_outputs["route_loss"] = route_loss
+            action_head_outputs["tools_lm_loss"] = tools_lm_loss
+            action_head_outputs["loss"] = ah_loss + route_loss
+            action_head_outputs["action_head_skipped"] = False
+            return action_head_outputs
 
     def get_action(
         self,

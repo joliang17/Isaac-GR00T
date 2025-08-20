@@ -235,6 +235,26 @@ def main(config: ArgsConfig):
             tune_projector=config.tune_projector, tune_diffusion_model=config.tune_diffusion_model
         )
 
+    # If special tokens is added, resize model embedding
+    old_vocab = model.backbone.eagle_model.get_input_embeddings().num_embeddings
+    new_vocab = len(model.backbone.eagle_tokenizer)
+    if new_vocab > old_vocab:
+        model.backbone.eagle_model.resize_token_embeddings(new_vocab)
+        print(f"Resized Eagle2 VLM's embeddings: {old_vocab} -> {new_vocab} (added {new_vocab - old_vocab} tokens)")
+
+        # Unfreeze ONLY embedding weight and mask gradients to new rows ---
+        emb = model.backbone.eagle_model.get_input_embeddings()        # nn.Embedding
+        emb.weight.requires_grad = True
+
+        start = old_vocab  # first new row index
+        # mask: 0 for old rows, 1 for new rows (broadcast on hidden dim)
+        def grad_mask(grad, start=start):
+            mask = torch.zeros(grad.size(0), device=grad.device, dtype=grad.dtype)
+            mask[start:] = 1
+            return grad * mask.unsqueeze(1)
+        emb.weight.register_hook(grad_mask)
+        print(f"Training only new token embeddings: rows [{start}:{new_vocab})")
+
     # Set the model's compute_dtype to bfloat16
     model.compute_dtype = "bfloat16"
     model.config.compute_dtype = "bfloat16"

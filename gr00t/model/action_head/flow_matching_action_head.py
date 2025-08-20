@@ -276,6 +276,28 @@ class FlowmatchingActionHead(nn.Module):
 
         backbone_output = self.process_backbone_output(backbone_output)
 
+        # ADDED: === Align action_input with ACTION rows selected upstream ===
+        # backbone_output["backbone_features"] has already been filtered using "dit_indices".
+        take = backbone_output.get("dit_indices", None)
+        if take is not None:
+            # If no ACTION rows, short-circuit with a 0 loss scalar on correct device/dtype.
+            if take.numel() == 0 or backbone_output["backbone_features"].size(0) == 0:
+                dummy = backbone_output["backbone_features"]
+                zero = dummy.sum() * 0.0  # scalar, correct device/dtype, keeps graph
+                return BatchFeature(data={"loss": zero, })
+
+            # Infer original B from action_input; index every batch-shaped tensor to Bd
+            # (Only when its first dim matches the original batch size.)
+            B_full = None
+            for v in action_input.values():
+                if isinstance(v, torch.Tensor) and v.dim() > 0:
+                    B_full = v.size(0)
+                    break
+            if B_full is not None:
+                for k, v in list(action_input.items()):
+                    if isinstance(v, torch.Tensor) and v.dim() > 0 and v.size(0) == B_full:
+                        action_input[k] = v.index_select(0, take)
+
         if self.config.expand_batch is not None:
             for k, v in backbone_output.items():
                 ndim = len(v.shape)
@@ -297,6 +319,7 @@ class FlowmatchingActionHead(nn.Module):
 
         # Get vision and language embeddings.
         vl_embs = backbone_output.backbone_features
+        vl_attn_mask = backbone_output.backbone_attention_mask
         device = vl_embs.device
 
         # Get embodiment ID.
