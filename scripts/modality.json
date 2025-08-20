@@ -1,0 +1,25 @@
+{
+    "state": {
+        "state": { 
+            "start": 0,
+            "end": 8 
+        }
+    }, 
+    "action": { 
+        "actions": { 
+            "start": 0, 
+            "end": 7 
+        }
+    },
+    "video": { 
+        "image": { 
+            "original_key": "observation.images.image" 
+        }, 
+        "wrist_image": { 
+            "original_key": "observation.images.wrist_image"
+        }
+    }, 
+    "annotation": {
+        "human.task_description": { "original_key": "task_index" } 
+    }
+}
