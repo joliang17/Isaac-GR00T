@@ -37,7 +37,7 @@ from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from gr00t.experiment.runner import TrainRunner
 from gr00t.model.gr00t_n1 import GR00T_N1_5
 from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING
-from gr00t.utils.peft import get_lora_model
+from gr00t.utils.peft import get_lora_model, get_lora_model_llmonly
 
 
 @dataclass
@@ -107,6 +107,9 @@ class ArgsConfig:
 
     lora_full_model: bool = False
     """Whether to use the full model for LORA. If False, only the action head will be trained."""
+
+    lora_llm_model: bool = False
+    """Whether to use the LLM model for LORA. If False, only the action head will be trained."""
 
     dataloader_num_workers: int = 8
     """Number of workers for data loading."""
@@ -237,13 +240,25 @@ def main(config: ArgsConfig):
     model.config.compute_dtype = "bfloat16"
 
     if config.lora_rank > 0:
-        model = get_lora_model(
-            model,
-            rank=config.lora_rank,
-            lora_alpha=config.lora_alpha,
-            lora_dropout=config.lora_dropout,
-            action_head_only=not config.lora_full_model,
-        )
+        if not config.lora_llm_model:
+            # normal lora training (only for action_head / full model)
+            model = get_lora_model(
+                model,
+                rank=config.lora_rank,
+                lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout,
+                action_head_only=not config.lora_full_model,
+            )
+        else:
+            # lora only for llm, action_head is fully finetune
+            model = get_lora_model_llmonly(
+                model,
+                rank=config.lora_rank,
+                lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout,
+                apply_to_llm=True,
+                train_action_head=True, 
+            )
 
     # 2.1 modify training args
     training_args = TrainingArguments(
