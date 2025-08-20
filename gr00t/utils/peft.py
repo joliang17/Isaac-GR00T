@@ -169,7 +169,7 @@ def get_lora_model_llmonly(
     except Exception:
         pass
     
-    model = _wrap_forward(model)
+    # model = _wrap_forward(model)
     return model
 
     
