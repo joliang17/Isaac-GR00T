@@ -72,10 +72,10 @@ def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
     # Compute dataset statistics
     dataset_statistics = {}
     for le_modality in all_low_dim_data.columns:
+        if le_modality == 'front_camera':
+            continue
         print(f"Computing statistics for {le_modality}...")
-        np_data = np.vstack(
-            [np.asarray(x, dtype=np.float32) for x in all_low_dim_data[le_modality]]
-        )
+        np_data = np.vstack([np.asarray(x, dtype=np.float32) for x in all_low_dim_data[le_modality]])
         dataset_statistics[le_modality] = {
             "mean": np.mean(np_data, axis=0).tolist(),
             "std": np.std(np_data, axis=0).tolist(),
@@ -303,6 +303,7 @@ class LeRobotSingleDataset(Dataset):
             original_key = le_modality_meta.video[new_key].original_key
             if original_key is None:
                 original_key = new_key
+            # import pdb;pdb.set_trace()
             le_video_meta = le_info["features"][original_key]
             height = le_video_meta["shape"][le_video_meta["names"].index("height")]
             width = le_video_meta["shape"][le_video_meta["names"].index("width")]

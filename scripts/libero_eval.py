@@ -3,6 +3,7 @@ import sys
 import os
 
 # TODO: find a better way for this?
+sys.path.insert(0, "/fs/nexus-scratch/yliang17/Research/VLA/LIBERO")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 CACHE_DIR = "/fs/nexus-projects/wilddiffusion/cache"
 
@@ -10,21 +11,13 @@ os.environ["HF_HOME"] = CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
 os.environ["HF_MODULES_CACHE"] = CACHE_DIR
 os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
-import hydra
 import json
 import numpy as np
-import pprint
-import time
 import torch
-import wandb
-import yaml
-from easydict import EasyDict
-from hydra.utils import get_original_cwd, to_absolute_path
-from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader
-from transformers import AutoModel, pipeline, AutoTokenizer, logging
-from pathlib import Path
+import time
 import collections
+import yaml
+from types import SimpleNamespace
 
 from libero.libero import get_libero_path
 from libero.libero.benchmark import get_benchmark
@@ -33,28 +26,26 @@ from libero.libero.utils.time_utils import Timer
 from libero.libero.utils.video_utils import VideoWriter
 from libero.lifelong.algos import *
 from libero.lifelong.datasets import get_dataset, SequenceVLDataset, GroupedTaskDataset
-from libero.lifelong.metric import (
-    evaluate_loss,
-    evaluate_success,
-    raw_obs_to_tensor_obs,
-)
-from libero.lifelong.utils import (
-    control_seed,
-    safe_device,
-    torch_load_model,
-    NpEncoder,
-    compute_flops,
-)
 from libero.lifelong.main import get_task_embs
-import robomimic.utils.obs_utils as ObsUtils
-import robomimic.utils.tensor_utils as TensorUtils
 
 import gr00t
-from gr00t.data.dataset import LeRobotSingleDataset
 from gr00t.model.policy import Gr00tPolicy
-from gr00t.experiment.data_config import DATA_CONFIG_MAP
-
-import time
+from gr00t.experiment.data_config import DATA_CONFIG_MAP, BaseDataConfig, ModalityConfig
+from gr00t.data.transform.base import ComposedModalityTransform, ModalityTransform
+from gr00t.data.transform.concat import ConcatTransform
+from gr00t.data.transform.state_action import (
+    StateActionSinCosTransform,
+    StateActionToTensor,
+    StateActionTransform,
+)
+from gr00t.data.transform.video import (
+    VideoColorJitter,
+    VideoCrop,
+    VideoResize,
+    VideoToNumpy,
+    VideoToTensor,
+)
+from gr00t.model.transforms import GR00TTransform
 
 
 benchmark_map = {
@@ -77,6 +68,12 @@ policy_map = {
     "bc_transformer_policy": "BCTransformerPolicy",
     "bc_vilt_policy": "BCViLTPolicy",
 }
+
+
+def load_yaml_config(path):
+    with open(path, 'r') as f:
+        return yaml.safe_load(f)
+
 
 class LiberoDataConfig(BaseDataConfig):
     video_keys = [
@@ -186,7 +183,7 @@ def load_policy_model(cfg):
     # device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # data_config = DATA_CONFIG_MAP["fourier_gr1_arms_only"]
-    data_config = LiberoDataConfig
+    data_config = LiberoDataConfig()
     modality_config = data_config.modality_config()
     modality_transform = data_config.transform()
 
@@ -221,12 +218,13 @@ def parse_args():
         default="libero_10",
         choices=["libero_10", "libero_spatial", "libero_object", "libero_goal"],
     )
-    parser.add_argument("--task_id", type=int, required=True)
+    parser.add_argument("--task_id", type=int, default=0, required=False)
     # method detail
     parser.add_argument(
         "--algo",
         type=str,
-        required=True,
+        required=False,
+        default="base",
         choices=["base", "er", "ewc", "packnet", "multitask"],
     )
     parser.add_argument(
@@ -236,14 +234,14 @@ def parse_args():
         choices=["bc_rnn_policy", "bc_transformer_policy", "bc_vilt_policy"],
     )
     parser.add_argument("--seed", type=int, default=0, required=False)
-    parser.add_argument("--ep", type=int)
-    parser.add_argument("--load_task", type=int)
-    parser.add_argument("--device_id", type=int)
+    parser.add_argument("--ep", type=int, default=0)
+    parser.add_argument("--load_task", type=int, default=0)
+    parser.add_argument("--device_id", type=int, default=0)
     parser.add_argument("--save-videos", action="store_true")
-    # parser.add_argument('--save_dir',  type=str, required=True)
+    parser.add_argument("--replan_steps", type=int, default=16)
     args = parser.parse_args()
     args.device_id = "cuda:" + str(args.device_id)
-    args.save_dir = f"{args.experiment_dir}_saved"
+    args.save_dir = f"/fs/nexus-projects/wilddiffusion/vla/groot_libero"
 
     if args.algo == "multitask":
         assert args.ep in list(
@@ -278,6 +276,10 @@ def unchunk(action_chunk, action_plan, replan_steps):
 def main():
     args = parse_args()
 
+    # Load config from YAML file
+    cfg = load_yaml_config("/fs/nexus-scratch/yliang17/Research/VLA/LIBERO/libero/configs/config.yaml")
+    cfg = SimpleNamespace(**cfg)
+
     cfg.folder = get_libero_path("datasets")
     cfg.bddl_folder = get_libero_path("bddl_files")
     cfg.init_states_folder = get_libero_path("init_states")
@@ -285,6 +287,7 @@ def main():
 
     # load policy model
     policy = load_policy_model(cfg)
+    import pdb;pdb.set_trace()
 
     if not hasattr(cfg.data, "task_order_index"):
         cfg.data.task_order_index = 0
@@ -335,7 +338,7 @@ def main():
         args.save_dir,
         f"{args.benchmark}_{args.algo}_{args.policy}_{args.seed}_load{args.load_task}_on{args.task_id}_videos",
     )
-
+    import pdb;pdb.set_trace()
     with Timer() as t, VideoWriter(video_folder, args.save_videos) as video_writer:
         env_args = {
             "bddl_file_name": os.path.join(
@@ -402,7 +405,6 @@ def main():
                     action_chunk = policy.get_action(element)
                     # TODO: transfer gr00t1.5 output data to LIBERO actions
                     unchunk(action_chunk, action_plan, args.replan_steps)
-                    # action_chunk[:,-1] = -2*action_chunk[:,-1] + 1
 
                 action = action_plan.popleft()
                 obs, reward, done, info = env.step(action.tolist())
