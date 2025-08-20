@@ -75,7 +75,15 @@ def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
         if le_modality == 'front_camera':
             continue
         print(f"Computing statistics for {le_modality}...")
-        np_data = np.vstack([np.asarray(x, dtype=np.float32) for x in all_low_dim_data[le_modality]])
+        # check if the data is the modality is actually a list of numbers
+        # skip if it is a string
+        if isinstance(all_low_dim_data[le_modality].iloc[0], str):
+            print(f"Skipping {le_modality} because it is a string")
+            continue
+
+        np_data = np.vstack(
+            [np.asarray(x, dtype=np.float32) for x in all_low_dim_data[le_modality]]
+        )
         dataset_statistics[le_modality] = {
             "mean": np.mean(np_data, axis=0).tolist(),
             "std": np.std(np_data, axis=0).tolist(),
