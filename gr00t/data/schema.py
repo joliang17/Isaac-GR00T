@@ -84,7 +84,7 @@ class LeRobotStateMetadata(LeRobotStateActionMetadata):
     """Metadata for a LeRobot state modality."""
 
     original_key: Optional[str] = Field(
-        default="observation.state",  # LeRobot convention for states
+        default="state",  # LeRobot convention for states
         description="The original key of the state modality in the LeRobot dataset",
     )
 

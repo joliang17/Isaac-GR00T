@@ -48,6 +48,10 @@ def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
     eagle_processor = AutoProcessor.from_pretrained(
         eagle_path, trust_remote_code=True, use_fast=True
     )
+    # TODO: add special tokens to tokenizer
+    specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]"]}
+    eagle_processor.tokenizer.add_special_tokens(specials)
+
     eagle_processor.tokenizer.padding_side = "left"
     return eagle_processor
 
@@ -62,11 +66,21 @@ def collate(features: List[dict], eagle_processor) -> dict:
         if key == "eagle_content":
             text_list = []
             image_inputs = []
+            step_anno_list = []
             for v in values:
                 curr_text_list = v["text_list"]
                 curr_image_inputs = v["image_inputs"]
+                curr_step_anno_list = v["step_annotation"]
                 text_list += curr_text_list
                 image_inputs += curr_image_inputs
+                step_anno_list += curr_step_anno_list
+
+            # TODO: change to encode step annotations 
+            anno_key = "step"
+            step_ids = eagle_processor.tokenizer(step_anno_list, padding=True, truncation=True, return_tensors="pt")    
+            for k, v in step_ids.items():
+                batch[f"{anno_key}_{k}"] = v
+
             eagle_inputs = eagle_processor(
                 text=text_list, images=image_inputs, return_tensors="pt", padding=True
             )
@@ -187,7 +201,17 @@ class GR00TTransform(InvertibleModalityTransform):
         lang = batch["language"]
         if isinstance(lang, list):
             lang = lang[0]
-        text_content.append({"type": "text", "text": lang})
+
+        # TODO: split text by task description & step annotation
+        if '\t' in lang:
+            list_lang = lang.split('\t')
+            task_lang = list_lang[0]
+            step_lang = list_lang[1]
+        else:
+            task_lang = lang
+            step_lang = None
+
+        text_content.append({"type": "text", "text": task_lang})
 
         eagle_images = [Image.fromarray(np.transpose(v, (1, 2, 0))) for v in np_images]
         eagle_image = [{"type": "image", "image": img} for img in eagle_images]
@@ -197,7 +221,7 @@ class GR00TTransform(InvertibleModalityTransform):
                 "content": eagle_image + text_content,
             }
         ]
-
+        
         text_list = [
             self.eagle_processor.apply_chat_template(
                 eagle_conversation, tokenize=False, add_generation_prompt=True
@@ -208,6 +232,7 @@ class GR00TTransform(InvertibleModalityTransform):
             "image_inputs": image_inputs,
             "video_inputs": video_inputs,
             "text_list": text_list,
+            "step_annotation": [step_lang]
         }
         inputs = {}
         inputs["eagle_content"] = eagle_content

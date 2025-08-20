@@ -883,7 +883,7 @@ class FrankaDataConfig(BaseDataConfig):
     video_keys = ["video.front_camera"]
     state_keys = ["state.single_arm", "state.gripper"]
     action_keys = ["action.single_arm", "action.gripper"]
-    language_keys = ["annotation.human.task_description"]
+    language_keys = ["annotation.step_description", ]
     observation_indices = [0]
     action_indices = list(range(16))
 
