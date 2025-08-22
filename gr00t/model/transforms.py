@@ -77,7 +77,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
 
             # TODO: change to encode step annotations 
             anno_key = "step"
-            step_ids = eagle_processor.tokenizer(step_anno_list, padding=True, truncation=True, return_tensors="pt")    
+            step_ids = eagle_processor.tokenizer(step_anno_list, padding=True, truncation=True, return_tensors="pt")
             for k, v in step_ids.items():
                 batch[f"{anno_key}_{k}"] = v
 
