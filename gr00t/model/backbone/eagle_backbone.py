@@ -83,7 +83,8 @@ class EagleBackbone(nn.Module):
 
         # Cache special token ids (single-token by construction)
         self.actions_id = self.eagle_tokenizer.convert_tokens_to_ids("[ACTIONS]")
-        self.tools_id   = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS]")
+        self.tools_id = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS]")
+        self.pad_id = self.eagle_tokenizer.convert_tokens_to_ids("<|endoftext|>")
 
         if project_to_dim is not None:
             self.eagle_linear = torch.nn.Linear(2048, project_to_dim)
@@ -145,6 +146,22 @@ class EagleBackbone(nn.Module):
             if k.startswith(eagle_prefix) 
         }
         del eagle_input["image_sizes"]
+
+        # ADDED: add a special token here
+        if "input_ids" in eagle_input and "attention_mask" in eagle_input:
+            pad_token = torch.full(
+                (eagle_input["input_ids"].size(0), 1),
+                fill_value=self.pad_id,
+                dtype=eagle_input["input_ids"].dtype,
+                device=eagle_input["input_ids"].device,
+            )
+            pad_mask = torch.ones(
+                (eagle_input["attention_mask"].size(0), 1),
+                dtype=eagle_input["attention_mask"].dtype,
+                device=eagle_input["attention_mask"].device,
+            )
+            eagle_input["input_ids"] = torch.cat([eagle_input["input_ids"], pad_token], dim=1)
+            eagle_input["attention_mask"] = torch.cat([eagle_input["attention_mask"], pad_mask], dim=1)
 
         eagle_output = self.eagle_model(**eagle_input, output_hidden_states=True, return_dict=True)
         eagle_features = eagle_output.hidden_states[self.select_layer]
@@ -239,9 +256,8 @@ class EagleBackbone(nn.Module):
 
         # Build a minimal forward dict for the model
         forward_dict = dict(eagle_input)
-        forward_dict["input_ids"]       = concat_ids
-        forward_dict["attention_mask"]  = concat_mask
-
+        forward_dict["input_ids"]       = concat_ids  # [B, S1 + S2]
+        forward_dict["attention_mask"]  = concat_mask  # [B, S1 + S2]
         # IMPORTANT: keep the same vision inputs for conditioning
         # (pixel_values / video inputs are already batched in eagle_input)
         if "pixel_values" in forward_dict:
