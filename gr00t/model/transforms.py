@@ -67,6 +67,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
             text_list = []
             image_inputs = []
             step_anno_list = []
+            num_images_list = []
             for v in values:
                 curr_text_list = v["text_list"]
                 curr_image_inputs = v["image_inputs"]
@@ -74,6 +75,9 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 text_list += curr_text_list
                 image_inputs += curr_image_inputs
                 step_anno_list += curr_step_anno_list
+
+                num_images = [t.count("<image-") for t in v["text_list"]]
+                num_images_list.append(num_images)
 
             # ADDED: change to encode step annotations 
             anno_key = "step"
@@ -86,6 +90,15 @@ def collate(features: List[dict], eagle_processor) -> dict:
             for k, v in eagle_inputs.items():
                 k = "eagle_" + k
                 batch[k] = v
+
+            batch["eagle_num_images"] = torch.tensor(num_images_list, dtype=torch.long)
+
+            # --- build LM labels and mask <PAD_A> ---
+            pad_a_id = eagle_processor.tokenizer.convert_tokens_to_ids("[PAD_A]")
+            labels = eagle_inputs["input_ids"].clone()
+            labels[labels == pad_a_id] = -100
+            batch["labels"] = labels
+
         elif key in ("pixel_values", "image_grid_thw", "attention_mask", "input_ids"):
             # Concat in existing batch dimension.
             batch[key] = torch.cat(values)
@@ -189,7 +202,6 @@ class GR00TTransform(InvertibleModalityTransform):
                 video: [V, T, C, H, W]
         Returns: required input with the format `BatchFeature`
         """
-        # TODO(YL, FH): check if this is correct
         images = batch["images"]  # [V, T, C, H, W]
         images.shape[0]
 
@@ -201,7 +213,7 @@ class GR00TTransform(InvertibleModalityTransform):
         if isinstance(lang, list):
             lang = lang[0]
 
-        # TODO: split text by task description & step annotation
+        # ADDED: split text by task description & step annotation
         if '\t' in lang:
             list_lang = lang.split('\t')
             task_lang = list_lang[0]
