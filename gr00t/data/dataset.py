@@ -568,7 +568,6 @@ class LeRobotSingleDataset(Dataset):
         list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
         list_transformed_steps_added = [item + ("[EOT]" if "[TOOLS]" in item else "[PAD_A]") + (f"<image-{i+2}>" if i < len(list_transformed_steps) - 1 else "") for i, item in enumerate(list_transformed_steps)]
 
-        import pdb;pdb.set_trace()
         concated_text = task_instruction + "".join(list_transformed_steps_added) + task_instruction_postfix
         dict_output = list_step_transform[-1]
         
