@@ -169,6 +169,7 @@ class GR00T_N1_5(PreTrainedModel):
         # Always compute + carry routing/tool losses
         route_loss     = backbone_outputs["route_loss"]
         tools_lm_loss  = backbone_outputs["tools_lm_loss"]
+        transcript_lm_loss = backbone_outputs.get("transcript_lm_loss", torch.tensor(0.0, device=self.device))
 
         # If no ACTION rows: skip action head; return losses only
         if dit_indices.numel() == 0:
@@ -177,6 +178,7 @@ class GR00T_N1_5(PreTrainedModel):
                     "loss": route_loss + tools_lm_loss,
                     "route_loss": route_loss,
                     "tools_lm_loss": tools_lm_loss,
+                    "transcript_lm_loss": transcript_lm_loss,
                     "action_head_loss": torch.tensor(0, device=self.device),
                     "action_head_skipped": True,
                 }
@@ -191,7 +193,8 @@ class GR00T_N1_5(PreTrainedModel):
             action_head_outputs["action_head_loss"] = ah_loss
             action_head_outputs["route_loss"] = route_loss
             action_head_outputs["tools_lm_loss"] = tools_lm_loss
-            action_head_outputs["loss"] = ah_loss + route_loss + tools_lm_loss
+            action_head_outputs["transcript_lm_loss"] = transcript_lm_loss
+            action_head_outputs["loss"] = ah_loss + route_loss + tools_lm_loss + transcript_lm_loss
             action_head_outputs["action_head_skipped"] = False
             return action_head_outputs
 

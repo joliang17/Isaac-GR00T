@@ -19,6 +19,7 @@ from torch import nn
 import torch.nn.functional as F
 from transformers import AutoConfig, AutoModel, AutoTokenizer, AutoProcessor
 from transformers.feature_extraction_utils import BatchFeature
+import re
 
 import gr00t
 
@@ -87,6 +88,14 @@ class EagleBackbone(nn.Module):
         self.endtools_id = self.eagle_tokenizer.convert_tokens_to_ids("[EOT]")
         self.pad_action = self.eagle_tokenizer.convert_tokens_to_ids("[PAD_A]")
         self.pad_id = self.eagle_tokenizer.convert_tokens_to_ids("<|endoftext|>")
+
+        maybe_image_tokens = ["<IMG_CONTEXT>", "<img>", "</img>", ]  # include what your tokenizer actually uses
+        img_ids = []
+        for t in maybe_image_tokens:
+            tid = self.eagle_tokenizer.convert_tokens_to_ids(t)
+            if tid is not None and tid != self.eagle_tokenizer.unk_token_id:
+                img_ids.append(tid)
+        self.img_ids = torch.tensor(img_ids, device=self.eagle_model.device)
 
         if project_to_dim is not None:
             self.eagle_linear = torch.nn.Linear(2048, project_to_dim)
@@ -177,7 +186,29 @@ class EagleBackbone(nn.Module):
 
         return eagle_logits, route_pos, eagle_features, eagle_input["attention_mask"]
 
+    def _transcript_lm_loss(self, vl_input: BatchFeature) -> torch.Tensor:
+        """
+        General LM loss over the rolling transcript (teacher forcing).
+        Uses:
+        - eagle_input_ids / eagle_attention_mask / (pixel_values | video_pixel_values)
+        - eagle_labels  (same shape; -100 where we don't supervise, e.g., [PAD_A])
+        """
+        if "eagle_llm_labels" not in vl_input:
+            return torch.tensor(0.0, device=next(self.parameters()).device)
 
+        eagle_input = {
+            k.removeprefix("eagle_"): v
+            for k, v in vl_input.items()
+            if k.startswith("eagle_") and k != "eagle_num_images"
+        }
+        eagle_input.pop("image_sizes", None)  # if present
+        labels = eagle_input.pop("llm_labels")
+        mask_img = torch.isin(labels, self.img_ids)
+        labels[mask_img] = -100
+
+        out = self.eagle_model(**eagle_input, labels=labels, return_dict=True,)
+        return out.loss
+        
     def calculate_route_loss(self, vl_input, eagle_logits, route_pos):
         """
         Two-class CE at the route position: { [ACTIONS], [TOOLS] }.
@@ -254,7 +285,6 @@ class EagleBackbone(nn.Module):
         # Slice eagle prompt (images + task text)
         eagle_input = {k.removeprefix("eagle_"): v for k, v in vl_input.items() if k.startswith("eagle_")}
         eagle_input.pop("image_sizes", None)
-        # TODO:
         eagle_llm_labels = eagle_input.pop("llm_labels", None)
 
         eagle_ids  = eagle_input["input_ids"].index_select(0, take)            # [Bt, Te]
@@ -312,6 +342,7 @@ class EagleBackbone(nn.Module):
 
         # 2) Compute route loss & labels (0=[ACTIONS], 1=[TOOLS])
         route_loss, raw_label, route_label = self.calculate_route_loss(vl_input, eagle_logits, route_pos)
+        transcript_lm_loss  = self._transcript_lm_loss(vl_input)
 
         # 3) Split batch
         # if input with [TOOLS], need let model to generate text
@@ -325,6 +356,7 @@ class EagleBackbone(nn.Module):
         out = {
             "route_loss": route_loss,
             "tools_lm_loss": tools_lm_loss,
+            "transcript_lm_loss": transcript_lm_loss,   # <<< NEW
             # Keep full-batch embeds for the action head (FlowMatching will mask itself)
             "eagle_embeds": eagle_embeds,
             "eagle_mask":   eagle_mask,
