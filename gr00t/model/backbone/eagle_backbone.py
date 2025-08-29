@@ -72,7 +72,7 @@ class EagleBackbone(nn.Module):
         config = AutoConfig.from_pretrained(DEFAULT_EAGLE_PATH, trust_remote_code=True)
         self.eagle_model = AutoModel.from_config(config, trust_remote_code=True)
 
-        # TODO: add special tokens to tokenizer
+        # ADDED: add special tokens to tokenizer
         self.eagle_processor = AutoProcessor.from_pretrained(
             DEFAULT_EAGLE_PATH, trust_remote_code=True, use_fast=True
         )
@@ -145,7 +145,7 @@ class EagleBackbone(nn.Module):
         eagle_input = {
             k.removeprefix(eagle_prefix): v
             for k, v in vl_input.items()
-            if k.startswith(eagle_prefix) 
+            if k.startswith(eagle_prefix) and k != 'eagle_num_images'
         }
         del eagle_input["image_sizes"]
 
@@ -225,15 +225,23 @@ class EagleBackbone(nn.Module):
         Teacher-forcing LM loss on the target tool text in vl_input['step_input_ids'].
         Only computed for rows where the route label == [TOOLS].
         """
+
+        # 3) Use these indices for all per-image vision tensors
+        def select_per_image(key):
+            if key in forward_dict and forward_dict[key] is not None:
+                t = forward_dict[key]
+                # Only select if first dim equals total #images across the full (pre-take) batch
+                total_imgs = row_ptr[-1].item()
+                if t.dim() >= 1 and t.size(0) == total_imgs:
+                    forward_dict[key] = t.index_select(0, img_idx)
+
         if not is_tools.any():
             return torch.tensor(0.0, device=next(self.parameters()).device)
 
         take = is_tools.nonzero(as_tuple=False).squeeze(-1)
-
+        bs = is_tools.shape[0]
         # Slice eagle prompt (images + task text)
-        eagle_input = {
-            k.removeprefix("eagle_"): v for k, v in vl_input.items() if k.startswith("eagle_")
-        }
+        eagle_input = {k.removeprefix("eagle_"): v for k, v in vl_input.items() if k.startswith("eagle_")}
         eagle_input.pop("image_sizes", None)
 
         eagle_ids  = eagle_input["input_ids"].index_select(0, take)            # [Bt, Te]
@@ -263,7 +271,20 @@ class EagleBackbone(nn.Module):
         # IMPORTANT: keep the same vision inputs for conditioning
         # (pixel_values / video inputs are already batched in eagle_input)
         if "pixel_values" in forward_dict:
-            forward_dict["pixel_values"] = forward_dict["pixel_values"].index_select(0, take)
+
+            # 1) Build image index spans for each original batch row
+            num_images = forward_dict.pop("num_images")
+            num_images = num_images.squeeze(1)
+            row_ptr = torch.cat([num_images.new_zeros(1), num_images.cumsum(0)])
+            # 2) Gather image indices that belong to the kept rows
+            device = concat_ids.device
+            starts = row_ptr.index_select(0, take)               # (Bt,)
+            ends   = row_ptr.index_select(0, take + 1)           # (Bt,)
+
+            img_idx_list = [torch.arange(s.item(), e.item(), device=device, dtype=torch.long) for s, e in zip(starts, ends)]
+            img_idx = torch.cat(img_idx_list, dim=0) if img_idx_list else torch.empty(0, dtype=torch.long, device=device)
+
+            select_per_image("pixel_values")
         if "video_pixel_values" in forward_dict:
             forward_dict["video_pixel_values"] = forward_dict["video_pixel_values"].index_select(0, take)
 
@@ -285,6 +306,7 @@ class EagleBackbone(nn.Module):
         is_tools   = route_label == 1
         is_actions = route_label == 0
 
+        import pdb;pdb.set_trace()
         # 4) LM loss for tool text (teacher forcing on step_input_ids)
         tools_lm_loss = self._tools_lm_loss(vl_input, is_tools)
 
