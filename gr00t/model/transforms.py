@@ -49,7 +49,7 @@ def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
         eagle_path, trust_remote_code=True, use_fast=True
     )
     # TODO: add special tokens to tokenizer
-    specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]"]}
+    specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOTOOLS]"]}
     eagle_processor.tokenizer.add_special_tokens(specials)
 
     eagle_processor.tokenizer.padding_side = "left"
@@ -64,6 +64,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
         values = [elem[key] for elem in features]
 
         if key == "eagle_content":
+            import pdb;pdb.set_trace()
             text_list = []
             image_inputs = []
             step_anno_list = []
