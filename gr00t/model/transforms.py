@@ -48,8 +48,8 @@ def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
     eagle_processor = AutoProcessor.from_pretrained(
         eagle_path, trust_remote_code=True, use_fast=True
     )
-    # TODO: add special tokens to tokenizer
-    specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOTOOLS]"]}
+    # ADDED: add special tokens to tokenizer
+    specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]"]}
     eagle_processor.tokenizer.add_special_tokens(specials)
 
     eagle_processor.tokenizer.padding_side = "left"
@@ -64,7 +64,6 @@ def collate(features: List[dict], eagle_processor) -> dict:
         values = [elem[key] for elem in features]
 
         if key == "eagle_content":
-            import pdb;pdb.set_trace()
             text_list = []
             image_inputs = []
             step_anno_list = []
@@ -76,15 +75,14 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 image_inputs += curr_image_inputs
                 step_anno_list += curr_step_anno_list
 
-            # TODO: change to encode step annotations 
+            # ADDED: change to encode step annotations 
             anno_key = "step"
             step_ids = eagle_processor.tokenizer(step_anno_list, padding=True, truncation=True, return_tensors="pt")
             for k, v in step_ids.items():
                 batch[f"{anno_key}_{k}"] = v
 
-            eagle_inputs = eagle_processor(
-                text=text_list, images=image_inputs, return_tensors="pt", padding=True
-            )
+            eagle_inputs = eagle_processor(text=text_list,images=image_inputs, return_tensors="pt", padding=True)
+
             for k, v in eagle_inputs.items():
                 k = "eagle_" + k
                 batch[k] = v
