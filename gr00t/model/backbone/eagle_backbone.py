@@ -77,14 +77,15 @@ class EagleBackbone(nn.Module):
             DEFAULT_EAGLE_PATH, trust_remote_code=True, use_fast=True
         )
         # specials = {"additional_special_tokens": ["<ACTIONS>", "<TOOLS>"]}
-        specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOTOOLS]"]}
+        specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]"]}
         self.eagle_processor.tokenizer.add_special_tokens(specials)
         self.eagle_tokenizer = self.eagle_processor.tokenizer
 
         # Cache special token ids (single-token by construction)
         self.actions_id = self.eagle_tokenizer.convert_tokens_to_ids("[ACTIONS]")
         self.tools_id = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS]")
-        self.endtools_id = self.eagle_tokenizer.convert_tokens_to_ids("[EOTOOLS]")
+        self.endtools_id = self.eagle_tokenizer.convert_tokens_to_ids("[EOT]")
+        self.pad_action = self.eagle_tokenizer.convert_tokens_to_ids("[PAD_A]")
         self.pad_id = self.eagle_tokenizer.convert_tokens_to_ids("<|endoftext|>")
 
         if project_to_dim is not None:
