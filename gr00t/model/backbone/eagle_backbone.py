@@ -306,7 +306,6 @@ class EagleBackbone(nn.Module):
         is_tools   = route_label == 1
         is_actions = route_label == 0
 
-        import pdb;pdb.set_trace()
         # 4) LM loss for tool text (teacher forcing on step_input_ids)
         tools_lm_loss = self._tools_lm_loss(vl_input, is_tools)
 
