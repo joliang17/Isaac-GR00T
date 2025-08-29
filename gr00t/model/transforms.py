@@ -97,7 +97,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
             pad_a_id = eagle_processor.tokenizer.convert_tokens_to_ids("[PAD_A]")
             labels = eagle_inputs["input_ids"].clone()
             labels[labels == pad_a_id] = -100
-            batch["labels"] = labels
+            batch["eagle_llm_labels"] = labels
 
         elif key in ("pixel_values", "image_grid_thw", "attention_mask", "input_ids"):
             # Concat in existing batch dimension.
