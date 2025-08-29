@@ -191,7 +191,7 @@ class GR00T_N1_5(PreTrainedModel):
             action_head_outputs["action_head_loss"] = ah_loss
             action_head_outputs["route_loss"] = route_loss
             action_head_outputs["tools_lm_loss"] = tools_lm_loss
-            action_head_outputs["loss"] = ah_loss + route_loss
+            action_head_outputs["loss"] = ah_loss + route_loss + tools_lm_loss
             action_head_outputs["action_head_skipped"] = False
             return action_head_outputs
 

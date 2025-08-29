@@ -153,7 +153,7 @@ class LeRobotSingleDataset(Dataset):
             self.window_length = 20
         else:
             self.window_length = window_length
-            
+
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
         self._trajectory_ids, self._trajectory_lengths = self._get_trajectories()
         self._all_steps = self._get_all_steps()
@@ -389,30 +389,94 @@ class LeRobotSingleDataset(Dataset):
             trajectory_lengths.append(episode["length"])
         return np.array(trajectory_ids), np.array(trajectory_lengths)
 
-    def _get_all_windows(self) -> list[tuple[int, int]]:
-        """Get the trajectory IDs and base indices for each window steps in the dataset.
+    def _get_all_windows(self) -> list[list[tuple[int, int]]]:
+        """
+        Build sliding windows over trajectories.
+
+        Each window is a list of (trajectory_id, step_index) pairs.
 
         Returns:
-            list[[tuple[str, int]]]: A list of [(trajectory_id, base_index)] tuples.
+            list[list[tuple[int, int]]]: A list of windows. Each window is a list of
+            (trajectory_id, step_index).
+
+        Config (read from `self` if present; otherwise uses defaults):
+            - self.window_length (int, required): number of steps per window (>0)
+            - self.stride (int, default=1): step between window starts (>=1)
+            - self.drop_short (bool, default=False): if True, trajectories shorter than
+            window_length are skipped; if False, emit a single short window that covers
+            the entire trajectory.
+            - self.include_tail (bool, default=False): if True and T >= window_length,
+            also include a final window that ends at the last step even if the stride
+            would skip it (useful to cover the tail).
+            - self.max_windows (int | None, default=None): if set, cap the total output windows.
 
         Example:
-            self.trajectory_ids: [0, 1, 2]
-            self.trajectory_lengths: [3, 2, 4]
-            return: [
-                ("traj_0", 0), ("traj_0", 1), ("traj_0", 2),
-                ("traj_1", 0), ("traj_1", 1),
-                ("traj_2", 0), ("traj_2", 1), ("traj_2", 2), ("traj_2", 3)
-            ]
-        """
-        all_windows = []
-        for trajectory_id, trajectory_length in zip(self.trajectory_ids, self.trajectory_lengths):
-            # only slide until there's enough room for a full window
-            for base_index in range(trajectory_length - self.window_length + 1):
-                window = [
-                    (trajectory_id, base_index + offset) 
-                    for offset in range(self.window_length)
+            self.trajectory_ids = [0, 1, 2]
+            self.trajectory_lengths = [3, 2, 4]
+            self.window_length = 2
+            self.stride = 1
+            return:
+                [
+                [(0,0),(0,1)], [(0,1),(0,2)],
+                [(1,0)],  # short traj, drop_short=False -> one short window
+                [(2,0),(2,1)], [(2,1),(2,2)], [(2,2),(2,3)]
                 ]
+        """
+        wl = int(getattr(self, "window_length"))
+        if wl <= 0:
+            raise ValueError(f"window_length must be > 0, got {wl}")
+
+        stride = int(getattr(self, "stride", 1)) or 1
+        if stride < 1:
+            stride = 1
+
+        drop_short = bool(getattr(self, "drop_short", False))
+        include_tail = bool(getattr(self, "include_tail", False))
+        max_windows = getattr(self, "max_windows", None)
+        if max_windows is not None:
+            max_windows = int(max_windows)
+            if max_windows <= 0:
+                raise ValueError(f"max_windows must be positive if set, got {max_windows}")
+
+        all_windows: list[list[tuple[int, int]]] = []
+
+        for tid, T in zip(self.trajectory_ids, self.trajectory_lengths):
+            if T <= 0:
+                # skip empty trajectories
+                continue
+
+            if T < wl:
+                if not drop_short:
+                    # Emit one short window covering the entire trajectory (no padding)
+                    all_windows.append([(tid, i) for i in range(T)])
+                # else: skip this trajectory
+                continue
+
+            # Normal case: T >= wl
+            last_start = T - wl
+            start = 0
+            while start <= last_start:
+                window = [(tid, start + off) for off in range(wl)]
                 all_windows.append(window)
+                if max_windows is not None and len(all_windows) >= max_windows:
+                    return all_windows
+                start += stride
+
+            # Optionally include a tail window ending at T-1 if stride skipped it
+            if include_tail and (last_start % stride != 0):
+                tail_start = max(0, last_start)
+                window = [(tid, tail_start + off) for off in range(wl)]
+                all_windows.append(window)
+                if max_windows is not None and len(all_windows) >= max_windows:
+                    return all_windows
+
+        if not all_windows:
+            raise ValueError(
+                "No windows created. "
+                f"window_length={wl}, stride={stride}, drop_short={drop_short}, "
+                f"include_tail={include_tail}, min_traj_len={min(self.trajectory_lengths or [0])}"
+            )
+
         return all_windows
 
     def _get_all_steps(self) -> list[tuple[int, int]]:

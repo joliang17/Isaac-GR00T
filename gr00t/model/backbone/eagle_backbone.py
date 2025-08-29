@@ -165,6 +165,7 @@ class EagleBackbone(nn.Module):
             eagle_input["input_ids"] = torch.cat([eagle_input["input_ids"], pad_token], dim=1)
             eagle_input["attention_mask"] = torch.cat([eagle_input["attention_mask"], pad_mask], dim=1)
 
+        eagle_input.pop('llm_labels')
         eagle_output = self.eagle_model(**eagle_input, output_hidden_states=True, return_dict=True)
         eagle_features = eagle_output.hidden_states[self.select_layer]
 
@@ -220,6 +221,15 @@ class EagleBackbone(nn.Module):
         return raw_label, route_label
 
 
+    def _tag_ce_loss(self, eagle_input, eagle_labels):
+        # Only compute CE where labels != -100 (you decide what to supervise in collate)
+        out = self.eagle_model(
+            **eagle_input,
+            labels=eagle_labels,      # same shape as input_ids, -100 where we don’t supervise
+            return_dict=True
+        )
+        return out.loss
+        
     def _tools_lm_loss(self, vl_input, is_tools: torch.Tensor):
         """
         Teacher-forcing LM loss on the target tool text in vl_input['step_input_ids'].
@@ -240,9 +250,12 @@ class EagleBackbone(nn.Module):
 
         take = is_tools.nonzero(as_tuple=False).squeeze(-1)
         bs = is_tools.shape[0]
+
         # Slice eagle prompt (images + task text)
         eagle_input = {k.removeprefix("eagle_"): v for k, v in vl_input.items() if k.startswith("eagle_")}
         eagle_input.pop("image_sizes", None)
+        # TODO:
+        eagle_llm_labels = eagle_input.pop("llm_labels", None)
 
         eagle_ids  = eagle_input["input_ids"].index_select(0, take)            # [Bt, Te]
         eagle_mask = eagle_input["attention_mask"].index_select(0, take)       # [Bt, Te]
