@@ -148,11 +148,13 @@ class LeRobotSingleDataset(Dataset):
         else:
             self.tag = embodiment_tag
 
+        self.window_length = 7
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
         self._trajectory_ids, self._trajectory_lengths = self._get_trajectories()
         self._all_steps = self._get_all_steps()
         self._modality_keys = self._get_modality_keys()
         self._delta_indices = self._get_delta_indices()
+        self._window_steps = self._get_all_windows()
         self.set_transforms_metadata(self.metadata)
         self.set_epoch(0)
 
@@ -382,6 +384,32 @@ class LeRobotSingleDataset(Dataset):
             trajectory_lengths.append(episode["length"])
         return np.array(trajectory_ids), np.array(trajectory_lengths)
 
+    def _get_all_windows(self) -> list[tuple[int, int]]:
+        """Get the trajectory IDs and base indices for each window steps in the dataset.
+
+        Returns:
+            list[[tuple[str, int]]]: A list of [(trajectory_id, base_index)] tuples.
+
+        Example:
+            self.trajectory_ids: [0, 1, 2]
+            self.trajectory_lengths: [3, 2, 4]
+            return: [
+                ("traj_0", 0), ("traj_0", 1), ("traj_0", 2),
+                ("traj_1", 0), ("traj_1", 1),
+                ("traj_2", 0), ("traj_2", 1), ("traj_2", 2), ("traj_2", 3)
+            ]
+        """
+        all_windows = []
+        for trajectory_id, trajectory_length in zip(self.trajectory_ids, self.trajectory_lengths):
+            # only slide until there's enough room for a full window
+            for base_index in range(trajectory_length - self.window_length + 1):
+                window = [
+                    (trajectory_id, base_index + offset) 
+                    for offset in range(self.window_length)
+                ]
+                all_windows.append(window)
+        return all_windows
+
     def _get_all_steps(self) -> list[tuple[int, int]]:
         """Get the trajectory IDs and base indices for all steps in the dataset.
 
@@ -492,13 +520,14 @@ class LeRobotSingleDataset(Dataset):
         Returns:
             int: the total number of data points in the dataset.
         """
-        return len(self.all_steps)
+        # return len(self.all_steps)
+        return len(self._window_steps)
 
     def __str__(self) -> str:
         """Get the description of the dataset."""
         return f"{self.dataset_name} ({len(self)} steps)"
 
-    def __getitem__(self, index: int) -> dict:
+    def __getitem___old(self, index: int) -> dict:
         """Get the data for a single step in a trajectory.
 
         Args:
@@ -509,6 +538,39 @@ class LeRobotSingleDataset(Dataset):
         """
         trajectory_id, base_index = self.all_steps[index]
         return self.transforms(self.get_step_data(trajectory_id, base_index))
+
+    def __getitem__(self, index: int) -> dict:
+        """Get the data for a single step in a trajectory.
+
+        Args:
+            index (int): The index of the step to get.
+
+        Returns:
+            dict: The data for the step.
+        """
+        list_steps = self._window_steps[index]
+        list_step_data = [self.get_step_data(item[0], item[1]) for item in list_steps]  # dict_keys(['video.front_camera', 'state.single_arm', 'state.gripper', 'action.single_arm', 'action.gripper', 'annotation.step_description'])
+        list_step_transform = [self.transforms(item) for item in list_step_data]
+
+        # return result: previous images, instructions, action / tools
+        # predicted: state / action / eagle_content of the last time step
+        list_transformed_img = [item['eagle_content']['image_inputs'][0] for item in list_step_transform]
+        # task_instruction: <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>Open the cabinet door<|im_end|>\n<|im_start|>assistant\n
+        task_instruction_postfix = "<|im_end|>\n<|im_start|>assistant\n"
+        task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix, '')
+
+        list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
+        list_transformed_steps_added = [f"<image-{i+2}>" + item for i, item in enumerate(list_transformed_steps)]
+
+        concated_text = task_instruction + "".join(list_transformed_steps_added) + task_instruction_postfix
+        dict_output = list_step_transform[-1]
+        
+        # final output result: dict_keys(['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'eagle_content', 'embodiment_id'])
+        dict_output['eagle_content']['image_inputs'] = list_transformed_img
+        dict_output['eagle_content']['text_list'] = [concated_text]
+
+        return dict_output
+
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
         """Get the RAW data for a single step in a trajectory. No transforms are applied.
