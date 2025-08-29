@@ -554,19 +554,25 @@ class LeRobotSingleDataset(Dataset):
 
         # return result: previous images, instructions, action / tools
         # predicted: state / action / eagle_content of the last time step
-        list_transformed_img = [item['eagle_content']['image_inputs'][0] for item in list_step_transform]
+        # list_transformed_img = [item['eagle_content']['image_inputs'][0] for item in list_step_transform]
+        agg_images = []
+        for t in list_step_transform:
+            imgs = t['eagle_content']['image_inputs']
+            # imgs is already a list produced by eagle_processor.process_vision_info
+            agg_images.extend(imgs)
+
         # task_instruction: <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>Open the cabinet door<|im_end|>\n<|im_start|>assistant\n
         task_instruction_postfix = "<|im_end|>\n<|im_start|>assistant\n"
         task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix, '')
 
         list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
-        list_transformed_steps_added = [f"<image-{i+2}>" + item for i, item in enumerate(list_transformed_steps)]
-
+        list_transformed_steps_added = [item + (f"<image-{i+2}>" if i < len(list_transformed_steps) - 1 else "") for i, item in enumerate(list_transformed_steps)]
+        
         concated_text = task_instruction + "".join(list_transformed_steps_added) + task_instruction_postfix
         dict_output = list_step_transform[-1]
         
         # final output result: dict_keys(['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'eagle_content', 'embodiment_id'])
-        dict_output['eagle_content']['image_inputs'] = list_transformed_img
+        dict_output['eagle_content']['image_inputs'] = agg_images
         dict_output['eagle_content']['text_list'] = [concated_text]
 
         return dict_output
