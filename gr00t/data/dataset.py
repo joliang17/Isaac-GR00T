@@ -117,6 +117,7 @@ class LeRobotSingleDataset(Dataset):
         video_backend: str = "decord",
         video_backend_kwargs: dict | None = None,
         transforms: ComposedModalityTransform | None = None,
+        window_length: int | None = None
     ):
         """
         Initialize the dataset.
@@ -148,7 +149,11 @@ class LeRobotSingleDataset(Dataset):
         else:
             self.tag = embodiment_tag
 
-        self.window_length = 7
+        if window_length is None:
+            self.window_length = 20
+        else:
+            self.window_length = window_length
+            
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
         self._trajectory_ids, self._trajectory_lengths = self._get_trajectories()
         self._all_steps = self._get_all_steps()

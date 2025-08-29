@@ -58,6 +58,9 @@ class ArgsConfig:
     batch_size: int = 32
     """Batch size per GPU for training."""
 
+    window_length: int = 20
+    """Batch size per GPU for training."""
+
     max_steps: int = 10000
     """Maximum number of training steps."""
 
@@ -156,6 +159,7 @@ def main(config: ArgsConfig):
             transforms=transforms,
             embodiment_tag=embodiment_tag,  # This will override the dataset's embodiment tag to "new_embodiment"
             video_backend=config.video_backend,
+            window_length=config.window_length, 
         )
     else:
         single_datasets = []
@@ -169,6 +173,7 @@ def main(config: ArgsConfig):
                 transforms=transforms,
                 embodiment_tag=embodiment_tag,
                 video_backend=config.video_backend,
+                window_length=config.window_length, 
             )
             single_datasets.append(dataset)
 
