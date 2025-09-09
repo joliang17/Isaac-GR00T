@@ -164,39 +164,26 @@ class GR00T_N1_5(PreTrainedModel):
     ) -> BatchFeature:
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         backbone_outputs = self.backbone(backbone_inputs)
-        dit_indices = backbone_outputs["dit_indices"]  # LongTensor [Bd] (may be empty)
+        # dit_indices = backbone_outputs["dit_indices"]  # LongTensor [Bd] (may be empty)
 
         # Always compute + carry routing/tool losses
         route_loss     = backbone_outputs["route_loss"]
         tools_lm_loss  = backbone_outputs["tools_lm_loss"]
         transcript_lm_loss = backbone_outputs.get("transcript_lm_loss", torch.tensor(0.0, device=self.device))
+        
+        action_head_outputs = self.action_head(backbone_outputs, action_inputs)
+        self.validate_data(action_head_outputs, backbone_outputs, is_training=True)
 
-        # If no ACTION rows: skip action head; return losses only
-        if dit_indices.numel() == 0:
-            return BatchFeature(
-                data={
-                    "loss": route_loss + tools_lm_loss,
-                    "route_loss": route_loss,
-                    "tools_lm_loss": tools_lm_loss,
-                    "transcript_lm_loss": transcript_lm_loss,
-                    "action_head_loss": torch.tensor(0, device=self.device),
-                    "action_head_skipped": True,
-                }
-            )
-        else:
-            action_head_outputs = self.action_head(backbone_outputs, action_inputs)
-            self.validate_data(action_head_outputs, backbone_outputs, is_training=True)
-
-            # Merge route/tool losses into the output and total loss.
-            # Keep the pure action-head loss for logging as `action_head_loss`.
-            ah_loss = action_head_outputs["loss"]
-            action_head_outputs["action_head_loss"] = ah_loss
-            action_head_outputs["route_loss"] = route_loss
-            action_head_outputs["tools_lm_loss"] = tools_lm_loss
-            action_head_outputs["transcript_lm_loss"] = transcript_lm_loss
-            action_head_outputs["loss"] = ah_loss + route_loss + tools_lm_loss + transcript_lm_loss
-            action_head_outputs["action_head_skipped"] = False
-            return action_head_outputs
+        # Merge route/tool losses into the output and total loss.
+        # Keep the pure action-head loss for logging as `action_head_loss`.
+        ah_loss = action_head_outputs["loss"]
+        action_head_outputs["action_head_loss"] = ah_loss
+        action_head_outputs["route_loss"] = route_loss
+        action_head_outputs["tools_lm_loss"] = tools_lm_loss
+        action_head_outputs["transcript_lm_loss"] = transcript_lm_loss
+        action_head_outputs["loss"] = ah_loss + route_loss + tools_lm_loss + transcript_lm_loss
+        action_head_outputs["action_head_skipped"] = False
+        return action_head_outputs
 
     def get_action(
         self,
@@ -209,8 +196,91 @@ class GR00T_N1_5(PreTrainedModel):
         self.validate_data(action_head_outputs, backbone_outputs, is_training=False)
         return action_head_outputs
 
+    def formulate_input_traj(self, inputs):
+        """
+        Find all pairs (x, x_length) in `inputs` and flatten them.
+
+        For each valid pair where `inputs[x]` is a tensor shaped [B, T, ...] and
+        `inputs[f"{x}_length"]` is [B], returns:
+          - f"{x}_flat":       [sum(lengths), ...]
+          - f"{x}_batch_idx": LongTensor [sum(lengths)] mapping time steps to batch indices
+          - f"{x}_ptr":       LongTensor [B+1] prefix sums
+        """
+
+        def _pack_by_length(x: torch.Tensor, lengths: torch.Tensor):
+            assert x.dim() >= 2, f"Expected [B, T, ...], got {tuple(x.shape)}"
+            B, T_max = x.shape[0], x.shape[1]
+            device = x.device
+            # Ensure lengths is on device and clamped to [0, T_max]
+            if not isinstance(lengths, torch.Tensor):
+                lengths = torch.as_tensor(lengths, device=device)
+            lengths = lengths.to(device=device, dtype=torch.long).clamp(min=0, max=T_max)
+
+            segments = []
+            batch_idx = []
+            for b in range(B):
+                Lb = int(lengths[b].item())
+                if Lb > 0:
+                    segments.append(x[b, :Lb])
+                    batch_idx.append(torch.full((Lb,), b, dtype=torch.long, device=device))
+
+            if len(segments) == 0:
+                tail = x.shape[2:]
+                flat = x.new_zeros((0,) + tail)
+                batch_idx = torch.empty((0,), dtype=torch.long, device=device)
+                ptr = torch.zeros((B + 1,), dtype=torch.long, device=device)
+                return flat, batch_idx, ptr
+
+            flat = torch.cat(segments, dim=0)
+            batch_idx = torch.cat(batch_idx, dim=0)
+            ptr = torch.empty((B + 1,), dtype=torch.long, device=device)
+            ptr[0] = 0
+            ptr[1:] = lengths.cumsum(0)
+            return flat, batch_idx, ptr
+
+        out = {}
+        suffix = "_length"
+        list_base = []
+        for key, value in inputs.items():
+            if not isinstance(key, str) or not key.endswith(suffix):
+                continue
+            base = key[: -len(suffix)]
+            if base not in inputs:
+                continue
+            seq = inputs[base]
+            lengths = value
+            # Only handle tensors that look like [B, T, ...]
+            if not isinstance(seq, torch.Tensor) or seq.dim() < 2:
+                continue
+            flat, batch_idx, ptr = _pack_by_length(seq, lengths)
+            if 'action' in base:
+                # have action_dim
+                flat = flat.reshape(-1, self.action_horizon, self.action_dim)
+
+            list_base.append(base)
+            out[f"{base}_orig"] = seq
+            out[f"{base}_length"] = lengths
+            out[f"{base}_flat"] = flat
+            out[f"{base}_batch_idx"] = batch_idx
+            out[f"{base}_ptr"] = ptr
+            inputs[base] = flat
+
+        for base in list_base:
+            del inputs[base + suffix]
+
+        if len(list_base) == 0:
+            # no action tokens
+            # flatten state / actions
+            list_keys = ['state', 'state_mask', 'action', 'action_mask', ]
+            for key in list_keys:
+                inputs[key] = inputs[key].reshape(-1, inputs[key].size(2), inputs[key].size(3))
+
+        return out, inputs, list_base
+
     def prepare_input(self, inputs) -> Tuple[BatchFeature, BatchFeature]:
+        original, inputs, list_base = self.formulate_input_traj(inputs)
         self.validate_inputs(inputs)
+            
         backbone_inputs = self.backbone.prepare_input(inputs)
         action_inputs = self.action_head.prepare_input(inputs)
 

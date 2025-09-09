@@ -318,15 +318,22 @@ class FlowmatchingActionHead(nn.Module):
                 action_input[k] = expanded
 
         # Get vision and language embeddings.
-        vl_embs = backbone_output.backbone_features
-        vl_attn_mask = backbone_output.backbone_attention_mask
+        vl_embs = backbone_output.backbone_features_multi
+        vl_attn_mask = backbone_output.backbone_attention_mask_multi
         device = vl_embs.device
+        num_action = action_input.state.shape[0]
 
         # Get embodiment ID.
         embodiment_id = action_input.embodiment_id
+        embodiment_id = embodiment_id[:1].repeat(num_action)
 
         # Embed state.
-        state_features = self.state_encoder(action_input.state, embodiment_id)
+        if len(action_input.state.shape) < 3:
+            state_input = action_input.state.unsqueeze(1)
+        else:
+            state_input = action_input.state
+
+        state_features = self.state_encoder(state_input, embodiment_id)
 
         # Embed noised action trajectory.
         actions = action_input.action
@@ -350,8 +357,6 @@ class FlowmatchingActionHead(nn.Module):
         # Join vision, language, state and action embedding along sequence dimension.
         future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
         sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
-
-        vl_attn_mask = backbone_output.backbone_attention_mask
 
         model_output = self.model(
             hidden_states=sa_embs,

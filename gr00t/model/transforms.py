@@ -103,9 +103,22 @@ def collate(features: List[dict], eagle_processor) -> dict:
             # Concat in existing batch dimension.
             batch[key] = torch.cat(values)
         else:
-            # state, state_mask, action and action_mask.
-            # Stack to form the batch dimension.
-            batch[key] = torch.from_numpy(np.stack(values))
+            try:
+                uniq_len = len(set([len(item) for item in values]))
+            except: 
+                uniq_len = 1
+
+            if uniq_len != 1:
+                seqs = [torch.from_numpy(np.concatenate(s, axis=0)) for s in values]
+                padded = torch.nn.utils.rnn.pad_sequence(seqs, batch_first=True, padding_value=0.0)
+                lengths = torch.tensor([s.size(0) for s in seqs])
+                batch[key] = padded
+                batch[key + '_length'] = lengths
+            else:
+                # state, state_mask, action and action_mask.
+                # Stack to form the batch dimension.
+                batch[key] = torch.from_numpy(np.stack(values))
+
     return batch
 
 
