@@ -58,7 +58,7 @@ class ArgsConfig:
     batch_size: int = 32
     """Batch size per GPU for training."""
 
-    window_length: int = 150
+    window_length: int = 10
     """Batch size per GPU for training."""
 
     max_steps: int = 10000

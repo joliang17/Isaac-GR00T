@@ -17,6 +17,7 @@ import os
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoConfig, AutoModel, AutoTokenizer, AutoProcessor
 from transformers.feature_extraction_utils import BatchFeature
 import re
@@ -95,7 +96,7 @@ class EagleBackbone(nn.Module):
             tid = self.eagle_tokenizer.convert_tokens_to_ids(t)
             if tid is not None and tid != self.eagle_tokenizer.unk_token_id:
                 img_ids.append(tid)
-        self.img_ids = torch.tensor(img_ids, device=self.eagle_model.device)
+        self.img_ids = torch.tensor(img_ids)
 
         if project_to_dim is not None:
             self.eagle_linear = torch.nn.Linear(2048, project_to_dim)
@@ -203,7 +204,9 @@ class EagleBackbone(nn.Module):
         }
         eagle_input.pop("image_sizes", None)  # if present
         labels = eagle_input.pop("llm_labels")
-        mask_img = torch.isin(labels, self.img_ids)
+
+        # do not calculate loss on image tokens & action pad tokens
+        mask_img = torch.isin(labels, self.img_ids.to(labels.device))
         labels[mask_img] = -100
 
         out = self.eagle_model(**eagle_input, labels=labels, return_dict=True,)
@@ -335,23 +338,105 @@ class EagleBackbone(nn.Module):
         return out.loss  # scalar
         
 
+    def split_by_action_pad(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
+        """
+        Split per-sample sequences into contiguous segments using positions where
+        `labels == -100` (i.e., [PAD_A]).
+    
+        Example: if for batch 0 the [PAD_A] positions are [1885, 2150, 2415],
+        this returns three segments sliced as:
+            eagle_logits[0, 0:1885, :], eagle_logits[0, 1885:2150, :], eagle_logits[0, 2150:2415, :].
+        """
+        eagle_input = {
+            k.removeprefix("eagle_"): v
+            for k, v in vl_input.items()
+            if k.startswith("eagle_") and k != "eagle_num_images"
+        }
+        labels = eagle_input.pop("llm_labels")
+
+        B, T, D = eagle_logits.shape
+        device = eagle_logits.device
+
+        # Find all [PAD_A] positions across the batch
+        b_idx, t_idx = torch.where(labels == -100)
+        segments: list[torch.Tensor] = []
+        segments_mask: list[torch.Tensor] = []
+        seg_batch: list[int] = []
+        seg_starts: list[int] = []
+        seg_ends: list[int] = []
+        # Group positions per batch row and create [start:end) slices
+        for b in range(B):
+            pos_b = t_idx[b_idx == b]
+            if pos_b.numel() == 0:
+                continue
+            pos_b, _ = torch.sort(pos_b)
+            start = 0
+            for end in pos_b.tolist():
+                # Skip empty slices (e.g., if end == start)
+                if end > start:
+                    seg = eagle_logits[b, start:end, :]
+                    mask = eagle_mask[b, start:end]
+                    segments.append(seg)
+                    segments_mask.append(mask)
+                    seg_batch.append(b)
+                    seg_starts.append(start)
+                    seg_ends.append(end)
+                start = end
+
+        if len(segments) == 0:
+            # Return empty tensors on correct device/dtype when no segments exist
+            return (
+                [],
+                [],
+                torch.empty((0,), dtype=torch.long, device=device),
+                torch.empty((0,), dtype=torch.long, device=device),
+                torch.empty((0,), dtype=torch.long, device=device),
+            )
+        return (
+            segments,
+            segments_mask,
+            torch.tensor(seg_batch, dtype=torch.long, device=device),
+            torch.tensor(seg_starts, dtype=torch.long, device=device),
+            torch.tensor(seg_ends, dtype=torch.long, device=device),
+        )
+
+    def flatten_actions(self, list_embeds, list_masks):
+        if len(list_embeds) > 0:
+            # Pad to max length across segments; zero padding for embeddings, 0/False for masks
+            embeds_tensor = pad_sequence(list_embeds, batch_first=True)  # [A, Lmax, H]
+            masks_tensor = pad_sequence(list_masks, batch_first=True)  # [A, Lmax]
+        else:
+            embeds_tensor = None
+            masks_tensor = None
+        return embeds_tensor, masks_tensor
+
     def forward_route(self, vl_input: BatchFeature):
         # vl_input: ['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'step_input_ids', 'step_attention_mask', 'eagle_input_ids', 'eagle_attention_mask', 'eagle_pixel_values', 'eagle_image_sizes', 'embodiment_id']
         # 1) Run backbone once
         eagle_logits, route_pos, eagle_embeds, eagle_mask = self.forward_eagle(vl_input)
 
+        ##########################
+        # previously
         # 2) Compute route loss & labels (0=[ACTIONS], 1=[TOOLS])
-        route_loss, raw_label, route_label = self.calculate_route_loss(vl_input, eagle_logits, route_pos)
-        transcript_lm_loss  = self._transcript_lm_loss(vl_input)
+        # route_loss, raw_label, route_label = self.calculate_route_loss(vl_input, eagle_logits, route_pos)
+        route_loss = torch.tensor(0.0, device=eagle_logits.device)
+
+        #########################
+        # Now
+        # 2) extract action token hidden states based on action_pad_ids
+        list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_action_pad(vl_input, eagle_embeds, eagle_mask)
+        embeds_tensor, masks_tensor = self.flatten_actions(list_eagle_emb, list_eagle_mask)
+
+        # 3) Compute generated loss
+        transcript_lm_loss = self._transcript_lm_loss(vl_input)
 
         # 3) Split batch
         # if input with [TOOLS], need let model to generate text
         # if input with [ACTIONS], pass eagle embeds to DiT for action predictions
-        is_tools   = route_label == 1
-        is_actions = route_label == 0
 
-        # 4) LM loss for tool text (teacher forcing on step_input_ids)
-        tools_lm_loss = self._tools_lm_loss(vl_input, is_tools)
+        # # 4) LM loss for tool text (teacher forcing on step_input_ids)
+        # tools_lm_loss = self._tools_lm_loss(vl_input, is_tools)
+        tools_lm_loss = torch.tensor(0.0, device=eagle_logits.device)
 
         out = {
             "route_loss": route_loss,
@@ -360,10 +445,8 @@ class EagleBackbone(nn.Module):
             # Keep full-batch embeds for the action head (FlowMatching will mask itself)
             "eagle_embeds": eagle_embeds,
             "eagle_mask":   eagle_mask,
-            "dit_indices":  is_actions.nonzero(as_tuple=False).squeeze(-1)
-                            if is_actions.any() else torch.empty(
-                                (0,), dtype=torch.long, device=eagle_embeds.device
-                            ),
+            "eagle_embeds_multi": embeds_tensor,
+            "eagle_mask_multi": masks_tensor,
         }
 
         # (Optional) Inference-time generation for TOOLS rows
@@ -393,21 +476,8 @@ class EagleBackbone(nn.Module):
         out = self.forward_route(vl_input)
         eagle_embeds = out["eagle_embeds"]
         eagle_mask   = out["eagle_mask"]
-        dit_indices  = out["dit_indices"]
-
-        # Filter to ACTION rows only (keep empty batch if none)
-        if dit_indices.numel() > 0:
-            eagle_embeds = eagle_embeds.index_select(0, dit_indices)
-            eagle_mask   = eagle_mask.index_select(0, dit_indices)
-        else:
-            # Keep correct dtype/device with 0 batch size
-            T = eagle_embeds.size(1)
-            H = eagle_embeds.size(2)
-            device = eagle_embeds.device
-            dtype  = eagle_embeds.dtype
-            eagle_embeds = torch.empty((0, T, H), device=device, dtype=dtype)
-            eagle_mask   = torch.empty((0, T), device=device, dtype=out["eagle_mask"].dtype)
-
+        eagle_embeds_multi   = out["eagle_embeds_multi"]
+        eagle_mask_multi     = out["eagle_mask_multi"]
 
         # YL (TODO HACK): to resolve DDP issue when tune_visual=True
         # Ensure all trainable parameters in vision_model are used in the forward pass for DDP compatibility
@@ -419,17 +489,20 @@ class EagleBackbone(nn.Module):
                 if param.requires_grad:
                     dummy_term = dummy_term + 0.0 * param.sum()
             eagle_embeds = eagle_embeds + dummy_term
-
+        
         return BatchFeature(
             data={
                 # Already filtered to ACTION rows
                 "backbone_features":       eagle_embeds,      # [Bd, T, H]
                 "backbone_attention_mask": eagle_mask,        # [Bd, T]
+                "backbone_features_multi":       eagle_embeds_multi,       # [A, Lmax, H]
+                "backbone_attention_mask_multi": eagle_mask_multi, # [A, Lmax]
 
                 # Mapping + diagnostics
-                "dit_indices":             dit_indices,       # indices into original batch
+                # "dit_indices":             dit_indices,       # indices into original batch
                 "route_loss":              out["route_loss"],
                 "tools_lm_loss":           out["tools_lm_loss"],
+                "transcript_lm_loss":      out["transcript_lm_loss"],
                 "gen_text":                out.get("gen_text", []),
                 "gen_indices":             out.get("gen_indices"),
                 # (Optional) expose original batch size if downstream wants it
