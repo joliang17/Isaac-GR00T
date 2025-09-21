@@ -267,141 +267,6 @@ class EagleBackbone(nn.Module):
         )
         return out.loss
         
-    def _tools_lm_loss(self, vl_input, is_tools: torch.Tensor):
-        """
-        Teacher-forcing LM loss on the target tool text in vl_input['step_input_ids'].
-        Only computed for rows where the route label == [TOOLS].
-        """
-
-        # 3) Use these indices for all per-image vision tensors
-        def select_per_image(key):
-            if key in forward_dict and forward_dict[key] is not None:
-                t = forward_dict[key]
-                # Only select if first dim equals total #images across the full (pre-take) batch
-                total_imgs = row_ptr[-1].item()
-                if t.dim() >= 1 and t.size(0) == total_imgs:
-                    forward_dict[key] = t.index_select(0, img_idx)
-
-        if not is_tools.any():
-            return torch.tensor(0.0, device=next(self.parameters()).device)
-
-        take = is_tools.nonzero(as_tuple=False).squeeze(-1)
-        bs = is_tools.shape[0]
-
-        # Slice eagle prompt (images + task text)
-        eagle_input = {k.removeprefix("eagle_"): v for k, v in vl_input.items() if k.startswith("eagle_")}
-        eagle_input.pop("image_sizes", None)
-        eagle_llm_labels = eagle_input.pop("llm_labels", None)
-
-        eagle_ids  = eagle_input["input_ids"].index_select(0, take)            # [Bt, Te]
-        eagle_mask = eagle_input["attention_mask"].index_select(0, take)       # [Bt, Te]
-
-        # Slice step target text
-        step_ids   = vl_input["step_input_ids"].index_select(0, take)          # [Bt, Ts]
-        step_mask  = vl_input["step_attention_mask"].index_select(0, take)     # [Bt, Ts]
-
-        # Concatenate prompt ⊕ target (left-padded already; simple cat works)
-        concat_ids  = torch.cat([eagle_ids,  step_ids],  dim=1)                 # [Bt, Te+Ts]
-        concat_mask = torch.cat([eagle_mask, step_mask], dim=1)                 # [Bt, Te+Ts]
-
-        # Labels: supervise ONLY on the step segment (standard HF CLM shift is internal).
-        labels = concat_ids.clone()
-        labels[concat_mask == 0] = -100
-
-        # Mask out the entire eagle prompt part per row
-        Te = eagle_mask.sum(dim=1)  # [Bt]
-        pos = torch.arange(concat_ids.size(1), device=concat_ids.device).unsqueeze(0)  # [1, L]
-        labels[pos < Te.unsqueeze(1)] = -100
-
-        # Build a minimal forward dict for the model
-        forward_dict = dict(eagle_input)
-        forward_dict["input_ids"]       = concat_ids  # [B, S1 + S2]
-        forward_dict["attention_mask"]  = concat_mask  # [B, S1 + S2]
-        # IMPORTANT: keep the same vision inputs for conditioning
-        # (pixel_values / video inputs are already batched in eagle_input)
-        if "pixel_values" in forward_dict:
-
-            # 1) Build image index spans for each original batch row
-            num_images = forward_dict.pop("num_images")
-            num_images = num_images.squeeze(1)
-            row_ptr = torch.cat([num_images.new_zeros(1), num_images.cumsum(0)])
-            # 2) Gather image indices that belong to the kept rows
-            device = concat_ids.device
-            starts = row_ptr.index_select(0, take)               # (Bt,)
-            ends   = row_ptr.index_select(0, take + 1)           # (Bt,)
-
-            img_idx_list = [torch.arange(s.item(), e.item(), device=device, dtype=torch.long) for s, e in zip(starts, ends)]
-            img_idx = torch.cat(img_idx_list, dim=0) if img_idx_list else torch.empty(0, dtype=torch.long, device=device)
-
-            select_per_image("pixel_values")
-        if "video_pixel_values" in forward_dict:
-            forward_dict["video_pixel_values"] = forward_dict["video_pixel_values"].index_select(0, take)
-
-        out = self.eagle_model(**forward_dict, labels=labels, return_dict=True)
-        return out.loss  # scalar
-        
-
-    def split_by_action_pad(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
-        """
-        Split per-sample sequences into contiguous segments using positions where
-        `labels == -100` (i.e., [PAD_A]).
-    
-        Example: if for batch 0 the [PAD_A] positions are [1885, 2150, 2415],
-        this returns three segments sliced as:
-            eagle_logits[0, 0:1885, :], eagle_logits[0, 1885:2150, :], eagle_logits[0, 2150:2415, :].
-        """
-        eagle_input = {
-            k.removeprefix("eagle_"): v
-            for k, v in vl_input.items()
-            if k.startswith("eagle_") and k != "eagle_num_images"
-        }
-        labels = eagle_input.pop("llm_labels")
-
-        B, T, D = eagle_logits.shape
-        device = eagle_logits.device
-
-        # Find all [PAD_A] positions across the batch
-        b_idx, t_idx = torch.where(labels == -100)
-        segments: list[torch.Tensor] = []
-        segments_mask: list[torch.Tensor] = []
-        seg_batch: list[int] = []
-        seg_starts: list[int] = []
-        seg_ends: list[int] = []
-        # Group positions per batch row and create [start:end) slices
-        for b in range(B):
-            pos_b = t_idx[b_idx == b]
-            if pos_b.numel() == 0:
-                continue
-            pos_b, _ = torch.sort(pos_b)
-            start = 0
-            for end in pos_b.tolist():
-                # Skip empty slices (e.g., if end == start)
-                if end > start:
-                    seg = eagle_logits[b, start:end, :]
-                    mask = eagle_mask[b, start:end]
-                    segments.append(seg)
-                    segments_mask.append(mask)
-                    seg_batch.append(b)
-                    seg_starts.append(start)
-                    seg_ends.append(end)
-                start = end
-
-        if len(segments) == 0:
-            # Return empty tensors on correct device/dtype when no segments exist
-            return (
-                [],
-                [],
-                torch.empty((0,), dtype=torch.long, device=device),
-                torch.empty((0,), dtype=torch.long, device=device),
-                torch.empty((0,), dtype=torch.long, device=device),
-            )
-        return (
-            segments,
-            segments_mask,
-            torch.tensor(seg_batch, dtype=torch.long, device=device),
-            torch.tensor(seg_starts, dtype=torch.long, device=device),
-            torch.tensor(seg_ends, dtype=torch.long, device=device),
-        )
 
     def split_by_img_id(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
         """
@@ -540,66 +405,45 @@ class EagleBackbone(nn.Module):
         # vl_input: ['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'step_input_ids', 'step_attention_mask', 'eagle_input_ids', 'eagle_attention_mask', 'eagle_pixel_values', 'eagle_image_sizes', 'embodiment_id']
         # 1) Run backbone once
         eagle_logits, route_pos, eagle_embeds, eagle_mask = self.forward_eagle(vl_input)
-        import pdb;pdb.set_trace()
+        
+        # if there is no step information (single instruction input)
+        input_keys = vl_input.keys()
+        step_input = [item for item in input_keys if 'step' in item]
+        if len(step_input) == 0:
+            #########################
+            # normal input
+            # directly return logits and embd
+            transcript_lm_loss = torch.tensor(0.0, device=eagle_logits.device)
 
-        ##########################
-        # previously for 1-step switch
-        # 2) Compute route loss & labels (0=[ACTIONS], 1=[TOOLS])
-        # route_loss, raw_label, route_label = self.calculate_route_loss(vl_input, eagle_logits, route_pos)
-        route_loss = torch.tensor(0.0, device=eagle_logits.device)
+            out = {
+                "transcript_lm_loss": transcript_lm_loss, 
+                "eagle_embeds": eagle_embeds,
+                "eagle_mask":   eagle_mask,
+                "eagle_embeds_multi": None,
+                "eagle_mask_multi": None,
+            }
 
-        #########################
-        # Now
-        # 2) extract action token hidden states based on action_pad_ids
-        list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
-        embeds_tensor, masks_tensor = self.flatten_actions(list_eagle_emb, list_eagle_mask)
-
-        # 3) Compute generated loss
-        transcript_lm_loss = self._transcript_lm_loss(vl_input)
-
-        # 3) Split batch
-        # if input with [TOOLS], need let model to generate text
-        # if input with [ACTIONS], pass eagle embeds to DiT for action predictions
-
-        # # 4) LM loss for tool text (teacher forcing on step_input_ids)
-        # tools_lm_loss = self._tools_lm_loss(vl_input, is_tools)
-        tools_lm_loss = torch.tensor(0.0, device=eagle_logits.device)
-
-        out = {
-            "route_loss": route_loss,
-            "tools_lm_loss": tools_lm_loss,
-            "transcript_lm_loss": transcript_lm_loss,   # <<< NEW
-            # Keep full-batch embeds for the action head (FlowMatching will mask itself)
-            "eagle_embeds": eagle_embeds,
-            "eagle_mask":   eagle_mask,
-            "eagle_embeds_multi": embeds_tensor,
-            "eagle_mask_multi": masks_tensor,
-        }
-
-        # (Optional) Inference-time generation for TOOLS rows
-        if not self.training and is_tools.any():
-            eagle_input = {k.removeprefix("eagle_"): v for k, v in vl_input.items() if k.startswith("eagle_")}
-            eagle_input.pop("image_sizes", None)
-            take = is_tools.nonzero(as_tuple=False).squeeze(-1)
-            sub = {k: (v.index_select(0, take) if isinstance(v, torch.Tensor) and v.dim() > 0 else v)
-                for k, v in eagle_input.items()}
-            gen = self.eagle_model.generate(
-                **sub, max_new_tokens=64, do_sample=False, return_dict_in_generate=True
-            )
-            in_len = sub["input_ids"].size(1)
-            new_tokens = gen.sequences[:, in_len:]
-            texts = self.eagle_tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
-            out["gen_text"]    = texts
-            out["gen_indices"] = take
         else:
-            out["gen_text"]    = []
-            out["gen_indices"] = torch.empty((0,), dtype=torch.long, device=eagle_embeds.device)
+            #########################
+            # 2) extract action token hidden states based on action_pad_ids
+            list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
+            embeds_tensor, masks_tensor = self.flatten_actions(list_eagle_emb, list_eagle_mask)
+
+            # 3) Compute generated loss
+            transcript_lm_loss = self._transcript_lm_loss(vl_input)
+
+            out = {
+                "transcript_lm_loss": transcript_lm_loss,
+                "eagle_embeds": eagle_embeds,
+                "eagle_mask":   eagle_mask,
+                "eagle_embeds_multi": embeds_tensor,
+                "eagle_mask_multi": masks_tensor,
+            }
 
         return out
 
     def forward(self, vl_input: BatchFeature) -> BatchFeature:
         self.set_frozen_modules_to_eval_mode()
-        # eagle_logits, eagle_embeds, eagle_mask = self.forward_eagle(vl_input)
         out = self.forward_route(vl_input)
         eagle_embeds = out["eagle_embeds"]
         eagle_mask   = out["eagle_mask"]
@@ -625,13 +469,7 @@ class EagleBackbone(nn.Module):
                 "backbone_features_multi":       eagle_embeds_multi,       # [A, Lmax, H]
                 "backbone_attention_mask_multi": eagle_mask_multi, # [A, Lmax]
 
-                # Mapping + diagnostics
-                # "dit_indices":             dit_indices,       # indices into original batch
-                "route_loss":              out["route_loss"],
-                "tools_lm_loss":           out["tools_lm_loss"],
                 "transcript_lm_loss":      out["transcript_lm_loss"],
-                "gen_text":                out.get("gen_text", []),
-                "gen_indices":             out.get("gen_indices"),
                 # (Optional) expose original batch size if downstream wants it
                 "orig_batch_size":         out["eagle_embeds"].size(0),
             }
