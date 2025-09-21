@@ -204,8 +204,6 @@ def eval_libero(cfg) -> None:
                     wrist_view.append(wrist_img)
 
                     # Query model to get action
-                    # TODO:
-                    # import pdb;pdb.set_trace()
                     obs_dict = process_observation(obs, task.language, headless=args.headless)
                     action_chunk = gr00t_policy.get_action(obs_dict)
                     action = convert_to_libero_action(action_chunk, action_keys)
@@ -227,7 +225,6 @@ def eval_libero(cfg) -> None:
             task_episodes += 1
             total_episodes += 1
 
-            import pdb;pdb.set_trace()
             # Save a replay video of the episode
             save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, )
 
