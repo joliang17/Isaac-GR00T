@@ -164,11 +164,6 @@ class GR00T_N1_5(PreTrainedModel):
     ) -> BatchFeature:
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         backbone_outputs = self.backbone(backbone_inputs)
-        # dit_indices = backbone_outputs["dit_indices"]  # LongTensor [Bd] (may be empty)
-
-        # Always compute + carry routing/tool losses
-        route_loss     = backbone_outputs["route_loss"]
-        tools_lm_loss  = backbone_outputs["tools_lm_loss"]
         transcript_lm_loss = backbone_outputs.get("transcript_lm_loss", torch.tensor(0.0, device=self.device))
         
         action_head_outputs = self.action_head(backbone_outputs, action_inputs)
@@ -178,10 +173,8 @@ class GR00T_N1_5(PreTrainedModel):
         # Keep the pure action-head loss for logging as `action_head_loss`.
         ah_loss = action_head_outputs["loss"]
         action_head_outputs["action_head_loss"] = ah_loss
-        action_head_outputs["route_loss"] = route_loss
-        action_head_outputs["tools_lm_loss"] = tools_lm_loss
         action_head_outputs["transcript_lm_loss"] = transcript_lm_loss
-        action_head_outputs["loss"] = ah_loss + route_loss + tools_lm_loss + transcript_lm_loss
+        action_head_outputs["loss"] = ah_loss + transcript_lm_loss
         action_head_outputs["action_head_skipped"] = False
         return action_head_outputs
 
@@ -278,7 +271,12 @@ class GR00T_N1_5(PreTrainedModel):
         return out, inputs, list_base
 
     def prepare_input(self, inputs) -> Tuple[BatchFeature, BatchFeature]:
-        original, inputs, list_base = self.formulate_input_traj(inputs)
+        # if there is no step information (single instruction input)
+        input_keys = inputs.keys()
+        step_input = [item for item in input_keys if 'step' in item]
+        if len(step_input) > 0:
+            original, inputs, list_base = self.formulate_input_traj(inputs)
+
         self.validate_inputs(inputs)
             
         backbone_inputs = self.backbone.prepare_input(inputs)
