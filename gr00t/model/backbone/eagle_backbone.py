@@ -89,7 +89,7 @@ class EagleBackbone(nn.Module):
         self.endtools_id = self.eagle_tokenizer.convert_tokens_to_ids("[EOT]")
         self.pad_action = self.eagle_tokenizer.convert_tokens_to_ids("[PAD_A]")
         self.pad_id = self.eagle_tokenizer.convert_tokens_to_ids("<|endoftext|>")
-
+        self.img_id = self.eagle_tokenizer.convert_tokens_to_ids("<img>")
         maybe_image_tokens = ["<IMG_CONTEXT>", "<img>", "</img>", ]  # include what your tokenizer actually uses
         img_ids = []
         for t in maybe_image_tokens:
@@ -178,7 +178,6 @@ class EagleBackbone(nn.Module):
         eagle_input.pop('llm_labels')
         eagle_output = self.eagle_model(**eagle_input, output_hidden_states=True, return_dict=True)
         eagle_features = eagle_output.hidden_states[self.select_layer]
-
         eagle_features = self.eagle_linear(eagle_features)
         eagle_logits = eagle_output.logits
 
@@ -208,6 +207,10 @@ class EagleBackbone(nn.Module):
         # do not calculate loss on image tokens & action pad tokens
         mask_img = torch.isin(labels, self.img_ids.to(labels.device))
         labels[mask_img] = -100
+
+        # FOR DEBUG:
+        # unique_ids = torch.unique(eagle_input['input_ids'][torch.where(labels == -100)])
+        # self.eagle_tokenizer.decode(unique_ids)
 
         out = self.eagle_model(**eagle_input, labels=labels, return_dict=True,)
         return out.loss
@@ -400,6 +403,129 @@ class EagleBackbone(nn.Module):
             torch.tensor(seg_ends, dtype=torch.long, device=device),
         )
 
+    def split_by_img_id(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
+        """
+        Split sequences into per-image segments using the position-1 of the `<img>` token
+        as separators. Only keep segments whose next route token is `[ACTIONS]` (skip `[TOOLS]`).
+
+        For each batch row, this function:
+        - Finds all occurrences of `<img>` in `input_ids`.
+        - Defines segments starting at each `<img>` and ending just before the next `<img>`.
+        - Within each candidate segment, finds the first of `[ACTIONS]` or `[TOOLS]` after the `<img>`.
+          Keeps the segment only if `[ACTIONS]` occurs first, and trims the segment to end before
+          the following `[PAD_A]` token (if found).
+
+        Returns lists of segments and masks as slices of `eagle_logits`/`eagle_mask`, plus index
+        tensors describing (batch, start, end) for each segment.
+        """
+        eagle_input = {
+            k.removeprefix("eagle_"): v
+            for k, v in vl_input.items()
+            if k.startswith("eagle_") and k != "eagle_num_images"
+        }
+
+        input_ids = eagle_input["input_ids"]            # [B, T]
+        attn_mask = eagle_input["attention_mask"]       # [B, T]
+
+        B, T = input_ids.shape
+        device = input_ids.device
+
+        # Token ids
+        img_id      = self.eagle_tokenizer.convert_tokens_to_ids("<img>")
+        actions_id  = self.actions_id
+        tools_id    = self.tools_id
+        pad_a_id    = self.pad_action
+
+        segments: list[torch.Tensor] = []
+        segments_mask: list[torch.Tensor] = []
+        seg_batch: list[int] = []
+        seg_starts: list[int] = []
+        seg_ends: list[int] = []
+
+        # Compute valid lengths from attention mask (left-padded sequences)
+        valid_len = attn_mask.sum(dim=1).to(torch.long)  # [B]
+
+        for b in range(B):
+            ids_b = input_ids[b]
+            mask_b = eagle_mask[b]
+            Lb = valid_len[b].item()
+            first_valid = T - Lb  # left padding: valid tokens start here
+            # Positions of <img> among valid tokens; convert to absolute positions
+            img_pos = (ids_b[first_valid:] == img_id).nonzero(as_tuple=False).squeeze(-1)
+            if img_pos.numel() > 0:
+                img_pos = img_pos + first_valid
+            if img_pos.numel() == 0:
+                continue
+
+            for i, img_p in enumerate(img_pos.tolist()):
+                # Start at position-1 of <img>, clamped to first_valid
+                start_pos = max(first_valid, img_p - 5)
+                # Segment end boundary: just before the next <img>, or up to last valid index
+                if i + 1 < img_pos.numel():
+                    end_boundary = img_pos[i + 1].item() - 6
+                else:
+                    end_boundary = T - 1
+
+                if end_boundary < start_pos:
+                    continue  # empty
+
+                # Within [start_pos, end_boundary], find the first route token: [ACTIONS] or [TOOLS]
+                window_ids = ids_b[start_pos : end_boundary + 1]
+                # Find first occurrence indices relative to the window
+                act_rel = (window_ids == actions_id).nonzero(as_tuple=False)
+                tol_rel = (window_ids == tools_id).nonzero(as_tuple=False)
+
+                # Helper to get scalar position or None
+                def first_pos(rel_idx):
+                    return rel_idx[0, 0].item() if rel_idx.numel() > 0 else None
+
+                act_first = first_pos(act_rel)
+                tol_first = first_pos(tol_rel)
+
+                # Keep only if [ACTIONS] appears before [TOOLS] (or [TOOLS] absent)
+                if act_first is None:
+                    continue
+                if tol_first is not None and tol_first < act_first:
+                    continue
+
+                # Optional: trim the end to the first [PAD_A] after [ACTIONS]
+                pad_rel = (window_ids[act_first:] == pad_a_id).nonzero(as_tuple=False)
+                if pad_rel.numel() > 0:
+                    # Absolute index of PAD_A; use half-open slice [start:end) (exclude PAD_A)
+                    end_exclusive = start_pos + act_first + pad_rel[0, 0].item()
+                else:
+                    # If no PAD_A found before next image, keep full boundary (inclusive -> exclusive)
+                    end_exclusive = end_boundary + 1
+
+                if end_exclusive <= start_pos:
+                    continue
+
+                seg = eagle_logits[b, start_pos:end_exclusive, :]
+                msk = mask_b[start_pos:end_exclusive]
+
+                segments.append(seg)
+                segments_mask.append(msk)
+                seg_batch.append(b)
+                seg_starts.append(start_pos)
+                seg_ends.append(end_exclusive)
+
+        if len(segments) == 0:
+            return (
+                [],
+                [],
+                torch.empty((0,), dtype=torch.long, device=device),
+                torch.empty((0,), dtype=torch.long, device=device),
+                torch.empty((0,), dtype=torch.long, device=device),
+            )
+
+        return (
+            segments,
+            segments_mask,
+            torch.tensor(seg_batch, dtype=torch.long, device=device),
+            torch.tensor(seg_starts, dtype=torch.long, device=device),
+            torch.tensor(seg_ends, dtype=torch.long, device=device),
+        )
+
     def flatten_actions(self, list_embeds, list_masks):
         if len(list_embeds) > 0:
             # Pad to max length across segments; zero padding for embeddings, 0/False for masks
@@ -414,9 +540,10 @@ class EagleBackbone(nn.Module):
         # vl_input: ['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'step_input_ids', 'step_attention_mask', 'eagle_input_ids', 'eagle_attention_mask', 'eagle_pixel_values', 'eagle_image_sizes', 'embodiment_id']
         # 1) Run backbone once
         eagle_logits, route_pos, eagle_embeds, eagle_mask = self.forward_eagle(vl_input)
+        import pdb;pdb.set_trace()
 
         ##########################
-        # previously
+        # previously for 1-step switch
         # 2) Compute route loss & labels (0=[ACTIONS], 1=[TOOLS])
         # route_loss, raw_label, route_label = self.calculate_route_loss(vl_input, eagle_logits, route_pos)
         route_loss = torch.tensor(0.0, device=eagle_logits.device)
@@ -424,7 +551,7 @@ class EagleBackbone(nn.Module):
         #########################
         # Now
         # 2) extract action token hidden states based on action_pad_ids
-        list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_action_pad(vl_input, eagle_embeds, eagle_mask)
+        list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
         embeds_tensor, masks_tensor = self.flatten_actions(list_eagle_emb, list_eagle_mask)
 
         # 3) Compute generated loss
