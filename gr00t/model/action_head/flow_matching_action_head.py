@@ -276,28 +276,6 @@ class FlowmatchingActionHead(nn.Module):
 
         backbone_output = self.process_backbone_output(backbone_output)
 
-        # ADDED: === Align action_input with ACTION rows selected upstream ===
-        # backbone_output["backbone_features"] has already been filtered using "dit_indices".
-        take = backbone_output.get("dit_indices", None)
-        if take is not None:
-            # If no ACTION rows, short-circuit with a 0 loss scalar on correct device/dtype.
-            if take.numel() == 0 or backbone_output["backbone_features"].size(0) == 0:
-                dummy = backbone_output["backbone_features"]
-                zero = dummy.sum() * 0.0  # scalar, correct device/dtype, keeps graph
-                return BatchFeature(data={"loss": zero, })
-
-            # Infer original B from action_input; index every batch-shaped tensor to Bd
-            # (Only when its first dim matches the original batch size.)
-            B_full = None
-            for v in action_input.values():
-                if isinstance(v, torch.Tensor) and v.dim() > 0:
-                    B_full = v.size(0)
-                    break
-            if B_full is not None:
-                for k, v in list(action_input.items()):
-                    if isinstance(v, torch.Tensor) and v.dim() > 0 and v.size(0) == B_full:
-                        action_input[k] = v.index_select(0, take)
-
         if self.config.expand_batch is not None:
             for k, v in backbone_output.items():
                 ndim = len(v.shape)
@@ -318,14 +296,21 @@ class FlowmatchingActionHead(nn.Module):
                 action_input[k] = expanded
 
         # Get vision and language embeddings.
-        vl_embs = backbone_output.backbone_features_multi
-        vl_attn_mask = backbone_output.backbone_attention_mask_multi
+        if backbone_output.backbone_features_multi is not None:
+            vl_embs = backbone_output.backbone_features_multi
+            vl_attn_mask = backbone_output.backbone_attention_mask_multi
+            num_action = action_input.state.shape[0]
+        else:
+            vl_embs = backbone_output.backbone_features
+            vl_attn_mask = None
+            num_action = 0
+
         device = vl_embs.device
-        num_action = action_input.state.shape[0]
 
         # Get embodiment ID.
         embodiment_id = action_input.embodiment_id
-        embodiment_id = embodiment_id[:1].repeat(num_action)
+        if num_action > 0:
+            embodiment_id = embodiment_id[:1].repeat(num_action)
 
         # Embed state.
         if len(action_input.state.shape) < 3:

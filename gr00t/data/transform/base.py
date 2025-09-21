@@ -15,7 +15,7 @@
 
 from abc import ABC, abstractmethod
 from typing import Any
-
+import traceback
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from gr00t.data.schema import DatasetMetadata

@@ -72,6 +72,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 curr_text_list = v["text_list"]
                 curr_image_inputs = v["image_inputs"]
                 curr_step_anno_list = v["step_annotation"]
+                curr_step_anno_list = [item for item in curr_step_anno_list if item is not None]
                 text_list += curr_text_list
                 image_inputs += curr_image_inputs
                 step_anno_list += curr_step_anno_list
@@ -81,9 +82,11 @@ def collate(features: List[dict], eagle_processor) -> dict:
 
             # ADDED: change to encode step annotations 
             anno_key = "step"
-            step_ids = eagle_processor.tokenizer(step_anno_list, padding=True, truncation=True, return_tensors="pt")
-            for k, v in step_ids.items():
-                batch[f"{anno_key}_{k}"] = v
+            step_anno_list = [item for item in step_anno_list if item is not None]
+            if len(step_anno_list) > 0:
+                step_ids = eagle_processor.tokenizer(step_anno_list, padding=True, truncation=True, return_tensors="pt")
+                for k, v in step_ids.items():
+                    batch[f"{anno_key}_{k}"] = v
 
             eagle_inputs = eagle_processor(text=text_list,images=image_inputs, return_tensors="pt", padding=True)
 
@@ -232,6 +235,7 @@ class GR00TTransform(InvertibleModalityTransform):
             task_lang = list_lang[0]
             step_lang = list_lang[1]
         else:
+            # normal instruction input
             task_lang = lang
             step_lang = None
 

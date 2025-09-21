@@ -48,7 +48,7 @@ class ArgsConfig:
     dataset_path: List[str]
     """Path to the dataset directory or directories"""
 
-    output_dir: str = "/tmp/gr00t"
+    output_dir: str = "gr00t_model"
     """Directory to save model checkpoints."""
 
     data_config: Literal[tuple(DATA_CONFIG_MAP.keys())] = "franka_arms_only"
@@ -124,7 +124,7 @@ class ArgsConfig:
     embodiment_tag: Literal[tuple(EMBODIMENT_TAG_MAPPING.keys())] = "new_embodiment"
     """Embodiment tag to use for training. e.g. 'new_embodiment', 'gr1'"""
 
-    video_backend: Literal["decord", "torchvision_av"] = "decord"
+    video_backend: Literal["decord", "torchvision_av", "opencv"] = "torchvision_av"
     """Video backend to use for training. [decord, torchvision_av]"""
 
     # Mixture dataset parameters

@@ -107,7 +107,6 @@ class Gr00tPolicy(BasePolicy):
         # Load model
         self._load_model(model_path)
         # Load transforms
-        import pdb;pdb.set_trace()
         self._load_metadata(self.model_path / "experiment_cfg")
         # Load horizons
         self._load_horizons()
@@ -283,7 +282,6 @@ class Gr00tPolicy(BasePolicy):
         with open(metadata_path, "r") as f:
             metadatas = json.load(f)
         
-        import pdb;pdb.set_trace()
         # Get metadata for the specific embodiment
         metadata_dict = metadatas.get(self.embodiment_tag.value)
         if metadata_dict is None:
