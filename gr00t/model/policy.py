@@ -246,7 +246,6 @@ class Gr00tPolicy(BasePolicy):
         # Update action_horizon to match modality config
         # Get the expected action horizon from the modality config
         expected_action_horizon = len(self._modality_config["action"].delta_indices)
-        import pdb;pdb.set_trace()
         if expected_action_horizon != model.action_head.config.action_horizon:
             print(
                 f"Policy: Recreating action head with action_horizon {expected_action_horizon} (was {model.action_head.config.action_horizon})"
