@@ -37,13 +37,30 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, action_head_
 
     # Inspect model structure to find the correct paths
     for name, module in model.named_modules():
-        if action_head_only and "action_head" not in name:
+        # if action_head_only and "action_head" not in name:
+        #     continue
+
+        # exclude action_head subtree from LoRA
+        if name.startswith("action_head") or ".action_head" in name:
+            continue
+        if ".vision_model" in name:
             continue
 
         # Look for linear layers in attention mechanisms
         if isinstance(module, torch.nn.Linear):
             if any(x in name for x in ["q_proj", "v_proj", "to_q", "to_v", "k_proj", "to_k"]):
                 target_modules.append(name)
+
+    # IMPORTANT: declare action_head as a module to save (full FT)
+    modules_to_save = []
+    # Support either top-level or nested action_head
+    for candidate in ["action_head", "backbone.action_head"]:
+        # only add if it exists
+        try:
+            _ = dict(model.named_modules())[candidate]
+            modules_to_save.append(candidate)
+        except KeyError:
+            pass
 
     lora_config = LoraConfig(
         r=rank,
@@ -52,11 +69,11 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, action_head_
         lora_dropout=lora_dropout,
         bias="none",
         task_type="CAUSAL_LM",
+        modules_to_save=modules_to_save,
     )
 
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
-
     model = _wrap_forward(model)
 
     return model
@@ -277,16 +294,6 @@ def get_lora_model_llmonly(
         if isinstance(module, torch.nn.Linear):
             target_modules.append(name)
 
-    # Safety: de-dup and sort by length so child modules appear after parents (stable behavior)
-    target_modules = sorted(set(target_modules), key=len)
-
-    if not target_modules:
-        raise RuntimeError("No Linear layers found outside 'action_head' to apply LoRA to.")
-
-    # 2) Freeze EVERYTHING first
-    for p in model.parameters():
-        p.requires_grad = False
-
     # 3) Apply LoRA to the collected modules
     lora_cfg = LoraConfig(
         r=rank,
@@ -296,31 +303,27 @@ def get_lora_model_llmonly(
         bias="none",
         task_type="CAUSAL_LM",
     )
+
     model = get_peft_model(model, lora_cfg)
-    # (PEFT sets lora_* params to requires_grad=True; base linear weights remain frozen)
 
-    # 4) Make action_head fully trainable (no LoRA on it, full FT)
-    if hasattr(model, "action_head"):
-        for p in model.action_head.parameters():
-            p.requires_grad = True
-    else:
-        # If action_head is nested (e.g., model.backbone.action_head), adapt here
-        try:
-            ah = getattr(model, "action_head", None) or getattr(model.backbone, "action_head", None)
-            if ah is not None:
-                for p in ah.parameters():
-                    p.requires_grad = True
-            else:
-                print("[get_lora_model] Warning: couldn't find 'action_head' to unfreeze.")
-        except Exception:
-            print("[get_lora_model] Warning: couldn't find 'action_head' to unfreeze.")
+    # # 4) Make action_head fully trainable (no LoRA on it, full FT)
+    # if hasattr(model, "action_head"):
+    #     for p in model.action_head.parameters():
+    #         p.requires_grad = True
+    # else:
+    #     # If action_head is nested (e.g., model.backbone.action_head), adapt here
+    #     try:
+    #         ah = getattr(model, "action_head", None) or getattr(model.backbone, "action_head", None)
+    #         if ah is not None:
+    #             for p in ah.parameters():
+    #                 p.requires_grad = True
+    #         else:
+    #             print("[get_lora_model] Warning: couldn't find 'action_head' to unfreeze.")
+    #     except Exception:
+    #         print("[get_lora_model] Warning: couldn't find 'action_head' to unfreeze.")
 
-    # 5) Quick report
-    try:
-        model.print_trainable_parameters()
-    except Exception:
-        pass
-    
+    model.print_trainable_parameters()
+
     model = _wrap_forward(model)
 
     return model

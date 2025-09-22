@@ -14,6 +14,7 @@
 source /etc/profile.d/modules.sh
 module add cuda/12.4.1
 module add gcc/11.2.0
+module add ffmpeg/7.1
 
 source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 

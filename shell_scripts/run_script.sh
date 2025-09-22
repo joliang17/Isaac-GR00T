@@ -32,4 +32,4 @@ source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 
 # python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 2 --lora_llm_model --window_length=10 --data_config libero_traj_arms --video_backend torchvision_av
 
-python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_test --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 2 --lora_llm_model --window_length=10 --data_config libero_traj_arms --video_backend torchvision_av
+python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_test --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 2 --lora_llm_model --window_length=10 --data_config libero_traj_arms --video_backend torchvision_av --save_steps 1000 --output_dir checkpoint/groot_libero_traj
