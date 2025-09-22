@@ -215,6 +215,8 @@ def eval_libero(cfg) -> None:
                             cur_instr = task_instruction
                         else:
                             cur_instr = ""
+
+                        import pdb;pdb.set_trace()
                         # task instruction is already included in past_key_values_traj
                         obs_dict = process_observation(obs, cur_instr, headless=args.headless)
                         action_chunk, tools_output, past_key_values_traj = gr00t_policy.get_action(obs_dict, past_key_values=past_key_values_traj, mode='interleaved')
@@ -257,6 +259,7 @@ def eval_libero(cfg) -> None:
                     traceback.print_exc()
                     print(f"Caught exception: {e}")
                     log_file.write(f"Caught exception: {e}\n")
+                    sys.exit(-1)
                     break
 
             task_episodes += 1
@@ -307,9 +310,9 @@ if __name__ == "__main__":
     parser.add_argument("--num_trials_per_task", type=int, default=5)
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--headless", type=bool, default=True)
-    parser.add_argument("--model_path", type=str, default="youliangtan/gr00t-n1.5-libero-long-posttrain")
+    parser.add_argument("--model_path", type=str, default="/fs/nexus-scratch/yliang17/Research/VLA/GR00T/gr00t_model/checkpoint-10000")
     parser.add_argument("--embodiment_tag", type=str, default="new_embodiment")
-    parser.add_argument("--data_config", type=str, default="libero_original")
+    parser.add_argument("--data_config", type=str, default="libero_traj_arms")
     parser.add_argument("--denoising_steps", type=int, default=8)
     args = parser.parse_args()
 
