@@ -188,6 +188,10 @@ def eval_libero(cfg) -> None:
             print(f"Starting episode {task_episodes+1}...")
             log_file.write(f"Starting episode {task_episodes+1}...\n")
             past_key_values_traj = None
+            past_key_values_tools = None
+            inside_tools = False
+            task_instruction = ""
+            current_tool_instruction = ""
             while t < max_steps + cfg.num_steps_wait:
                 try:
                     # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
@@ -206,12 +210,15 @@ def eval_libero(cfg) -> None:
 
                     if not inside_tools:
                         # on trajectory level
-
+                        if task_instruction == '':
+                            task_instruction = task.language
+                            cur_instr = task_instruction
+                        else:
+                            cur_instr = ""
                         # task instruction is already included in past_key_values_traj
-                        obs_dict = process_observation(obs, '', headless=args.headless)
+                        obs_dict = process_observation(obs, cur_instr, headless=args.headless)
                         action_chunk, tools_output, past_key_values_traj = gr00t_policy.get_action(obs_dict, past_key_values=past_key_values_traj, mode='interleaved')
 
-                        # TODO:
                         if tools_output != '':
                             # generated skill instructions
                             # start a new inference session, generate actions to achieve the tools, until finish
