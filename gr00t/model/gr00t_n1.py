@@ -184,6 +184,23 @@ class GR00T_N1_5(PreTrainedModel):
         past_key_values=None,
         mode: str='baseline'
     ) -> BatchFeature:
+        def create_empty_actions(backbone_inputs):
+            token_device = backbone_inputs['eagle_input_ids'].device if 'eagle_input_ids' in backbone_inputs else self.device
+            backbone_outputs['generated_tool_token_ids'] = torch.tensor(
+                decode_tokens, dtype=torch.long, device=token_device
+            )
+
+            batch_size = backbone_outputs[BACKBONE_FEATURE_KEY].shape[0]
+            zero_actions = torch.zeros(
+                (batch_size, self.action_horizon, self.action_dim),
+                dtype=self.action_head.dtype,
+                device=self.device,
+            )
+            action_head_outputs = BatchFeature(data={ACTION_KEY: zero_actions})
+            action_head_outputs['action_head_skipped'] = True
+            return action_head_outputs
+
+
         # Because the behavior of backbones remains the same for training and inference, we can use `forward` for backbones.
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         tools_output = ''
@@ -212,6 +229,7 @@ class GR00T_N1_5(PreTrainedModel):
                 # Step 2a: use the action head when the route token is [ACTIONS]
                 action_head_outputs = self.action_head.get_action(backbone_outputs, action_inputs)
                 action_head_outputs['action_head_skipped'] = False
+                
             elif token_id == self.backbone.tools_id:
                 # Step 2b: keep generating tool tokens until we observe [EOT]
                 max_generation_steps = max(1, getattr(self, 'max_generation_steps', 64))
@@ -241,26 +259,23 @@ class GR00T_N1_5(PreTrainedModel):
                     steps += 1
 
                 decode_tokens = [self.backbone.tools_id] + tools_tokens
+                if reached_end:
+                    decode_tokens.append(self.backbone.endtools_id)
+
                 tools_output = self.backbone.eagle_tokenizer.decode(
                     decode_tokens, skip_special_tokens=True
                 ).strip()
 
-                if reached_end:
-                    decode_tokens.append(self.backbone.endtools_id)
+                action_head_outputs = create_empty_actions(backbone_inputs)
 
-                token_device = backbone_inputs['eagle_input_ids'].device if 'eagle_input_ids' in backbone_inputs else self.device
-                backbone_outputs['generated_tool_token_ids'] = torch.tensor(
-                    decode_tokens, dtype=torch.long, device=token_device
-                )
+            elif token_id == self.backbone.skills_end:
+                # Step 2c: refers to the end of a skill execution
+                decode_tokens = [self.backbone.skills_end]
+                tools_output = self.backbone.eagle_tokenizer.decode(
+                    decode_tokens, skip_special_tokens=True
+                ).strip()
+                action_head_outputs = create_empty_actions(backbone_inputs)
 
-                batch_size = backbone_outputs[BACKBONE_FEATURE_KEY].shape[0]
-                zero_actions = torch.zeros(
-                    (batch_size, self.action_horizon, self.action_dim),
-                    dtype=self.action_head.dtype,
-                    device=self.device,
-                )
-                action_head_outputs = BatchFeature(data={ACTION_KEY: zero_actions})
-                action_head_outputs['action_head_skipped'] = True
             else:
                 raise ValueError(f'Unexpected route token id: {token_id}')
 
