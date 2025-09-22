@@ -162,6 +162,7 @@ class GR00T_N1_5(PreTrainedModel):
         self,
         inputs: dict,
     ) -> BatchFeature:
+        
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         backbone_outputs = self.backbone(backbone_inputs)
         transcript_lm_loss = backbone_outputs.get("transcript_lm_loss", torch.tensor(0.0, device=self.device))
@@ -200,6 +201,7 @@ class GR00T_N1_5(PreTrainedModel):
             action_head_outputs['action_head_skipped'] = True
             return action_head_outputs
 
+        import pdb;pdb.set_trace()
 
         # Because the behavior of backbones remains the same for training and inference, we can use `forward` for backbones.
         backbone_inputs, action_inputs = self.prepare_input(inputs)
@@ -211,6 +213,7 @@ class GR00T_N1_5(PreTrainedModel):
             action_head_outputs['action_head_skipped'] = False
             past_key_values = None
         else:
+            import pdb;pdb.set_trace()
             generated_ids, backbone_outputs = self.backbone.generate(
                 backbone_inputs, max_token=1, past_key_values=past_key_values
             )
