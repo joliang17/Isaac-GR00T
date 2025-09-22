@@ -205,7 +205,7 @@ def eval_libero(cfg) -> None:
 
                     # Query model to get action
                     obs_dict = process_observation(obs, task.language, headless=args.headless)
-                    action_chunk = gr00t_policy.get_action(obs_dict)
+                    action_chunk, _, _ = gr00t_policy.get_action(obs_dict, mode='baseline')
                     action = convert_to_libero_action(action_chunk, action_keys)
 
                     # Execute action in environment

@@ -88,6 +88,7 @@ class EagleBackbone(nn.Module):
         self.tools_id = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS]")
         self.endtools_id = self.eagle_tokenizer.convert_tokens_to_ids("[EOT]")
         self.pad_action = self.eagle_tokenizer.convert_tokens_to_ids("[PAD_A]")
+        self.skills_end = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS_END]")
         self.pad_id = self.eagle_tokenizer.convert_tokens_to_ids("<|endoftext|>")
         self.img_id = self.eagle_tokenizer.convert_tokens_to_ids("<img>")
         maybe_image_tokens = ["<IMG_CONTEXT>", "<img>", "</img>", ]  # include what your tokenizer actually uses
