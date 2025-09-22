@@ -275,15 +275,22 @@ def main(config: ArgsConfig):
                 action_head_only=not config.lora_full_model,
             )
         else:
-            # lora only for llm, action_head is fully finetune
-            model = get_lora_model_llmonly(
+            model = get_lora_model(
                 model,
                 rank=config.lora_rank,
                 lora_alpha=config.lora_alpha,
                 lora_dropout=config.lora_dropout,
-                apply_to_llm=True,
-                train_action_head=True, 
+                action_head_only=not config.lora_full_model,
             )
+            # lora only for llm, action_head is fully finetune
+            # model = get_lora_model_llmonly(
+            #     model,
+            #     rank=config.lora_rank,
+            #     lora_alpha=config.lora_alpha,
+            #     lora_dropout=config.lora_dropout,
+            #     apply_to_llm=True,
+            #     train_action_head=True, 
+            # )
 
     # 2.1 modify training args
     training_args = TrainingArguments(
@@ -369,7 +376,6 @@ if __name__ == "__main__":
             # Remove any existing CUDA_VISIBLE_DEVICES from environment
             if "CUDA_VISIBLE_DEVICES" in os.environ:
                 del os.environ["CUDA_VISIBLE_DEVICES"]
-
             # Use subprocess.run instead of os.system
             cmd = [
                 "torchrun",
