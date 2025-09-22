@@ -150,7 +150,7 @@ class EagleBackbone(nn.Module):
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
 
-    def forward_eagle(self, vl_input: BatchFeature) -> BatchFeature:
+    def forward_eagle(self, vl_input: BatchFeature, past_key_values=None) -> BatchFeature:
         eagle_prefix = "eagle_"
         eagle_input = {
             k.removeprefix(eagle_prefix): v
@@ -176,7 +176,9 @@ class EagleBackbone(nn.Module):
             eagle_input["attention_mask"] = torch.cat([eagle_input["attention_mask"], pad_mask], dim=1)
 
         eagle_input.pop('llm_labels')
-        eagle_output = self.eagle_model(**eagle_input, output_hidden_states=True, return_dict=True)
+        eagle_output = self.eagle_model(**eagle_input, past_key_values=past_key_values, output_hidden_states=True, return_dict=True, use_cache=True)
+        past_key_values = eagle_output.past_key_values
+
         eagle_features = eagle_output.hidden_states[self.select_layer]
         eagle_features = self.eagle_linear(eagle_features)
         eagle_logits = eagle_output.logits
@@ -184,7 +186,7 @@ class EagleBackbone(nn.Module):
         attn = eagle_input.get("attention_mask")   # [B, T]
         route_pos = attn.sum(dim=1) - 1        # [B]
 
-        return eagle_logits, route_pos, eagle_features, eagle_input["attention_mask"]
+        return eagle_logits, route_pos, eagle_features, eagle_input["attention_mask"], past_key_values
 
     def _transcript_lm_loss(self, vl_input: BatchFeature) -> torch.Tensor:
         """
@@ -213,58 +215,6 @@ class EagleBackbone(nn.Module):
         # self.eagle_tokenizer.decode(unique_ids)
 
         out = self.eagle_model(**eagle_input, labels=labels, return_dict=True,)
-        return out.loss
-        
-    def calculate_route_loss(self, vl_input, eagle_logits, route_pos):
-        """
-        Two-class CE at the route position: { [ACTIONS], [TOOLS] }.
-        """
-        B = eagle_logits.shape[0]
-        idx = torch.arange(B, device=eagle_logits.device)
-        step_logits = eagle_logits[idx, route_pos, :]            # [B, vocab]
-        route_logits_2 = torch.stack(
-            [step_logits[:, self.actions_id], step_logits[:, self.tools_id]], dim=-1
-        )  # [B, 2]
-
-        raw_label, route_label = self._extract_route_targets(vl_input)
-        if (route_label == -100).any():
-            bad = torch.unique(raw_label[route_label == -100]).tolist()
-            raise RuntimeError(f"Unexpected route tokens in step_input_ids: {bad}")
-
-        loss = F.cross_entropy(route_logits_2, route_label)
-        return loss, raw_label, route_label  # route_label in {0,1}
-
-
-    def _extract_route_targets(self, vl_input):
-        """Return (raw_token_id[B], class_index[B]) for last non-pad token in step_*."""
-        step_ids  = vl_input["step_input_ids"]               # [B, T]
-        step_mask = vl_input["step_attention_mask"]          # [B, T]
-        (step_ids * step_mask).sum(dim=1)
-
-        B, T = step_ids.size()
-        device = step_ids.device
-        idx = torch.arange(B, device=device)
-
-        # left-padded: 0...0 1...1
-        # #valid = step_mask.sum(); first_pos = T - #valid
-        valid = step_mask.sum(dim=1).clamp(min=1)            # [B], avoid 0 to stay in-bounds
-        first_pos = (T - valid).to(torch.long)               # [B]
-        raw_label = step_ids[idx, first_pos]                 # [B] (token ids)
-
-        # map to {0:[ACTIONS], 1:[TOOLS]}, keep -100 for unexpected
-        route_label = torch.full_like(raw_label, -100, dtype=torch.long)
-        route_label[raw_label == self.actions_id] = 0
-        route_label[raw_label == self.tools_id]  = 1
-        return raw_label, route_label
-
-
-    def _tag_ce_loss(self, eagle_input, eagle_labels):
-        # Only compute CE where labels != -100 (you decide what to supervise in collate)
-        out = self.eagle_model(
-            **eagle_input,
-            labels=eagle_labels,      # same shape as input_ids, -100 where we don’t supervise
-            return_dict=True
-        )
         return out.loss
         
 
@@ -391,6 +341,7 @@ class EagleBackbone(nn.Module):
             torch.tensor(seg_ends, dtype=torch.long, device=device),
         )
 
+
     def flatten_actions(self, list_embeds, list_masks):
         if len(list_embeds) > 0:
             # Pad to max length across segments; zero padding for embeddings, 0/False for masks
@@ -401,10 +352,11 @@ class EagleBackbone(nn.Module):
             masks_tensor = None
         return embeds_tensor, masks_tensor
 
-    def forward_route(self, vl_input: BatchFeature):
+
+    def forward_route(self, vl_input: BatchFeature, past_key_values=None):
         # vl_input: ['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'step_input_ids', 'step_attention_mask', 'eagle_input_ids', 'eagle_attention_mask', 'eagle_pixel_values', 'eagle_image_sizes', 'embodiment_id']
         # 1) Run backbone once
-        eagle_logits, route_pos, eagle_embeds, eagle_mask = self.forward_eagle(vl_input)
+        eagle_logits, route_pos, eagle_embeds, eagle_mask, past_key_values = self.forward_eagle(vl_input, past_key_values=past_key_values)
         
         # if there is no step information (single instruction input)
         input_keys = vl_input.keys()
@@ -421,6 +373,7 @@ class EagleBackbone(nn.Module):
                 "eagle_mask":   eagle_mask,
                 "eagle_embeds_multi": None,
                 "eagle_mask_multi": None,
+                "past_key_values": past_key_values
             }
 
         else:
@@ -438,13 +391,14 @@ class EagleBackbone(nn.Module):
                 "eagle_mask":   eagle_mask,
                 "eagle_embeds_multi": embeds_tensor,
                 "eagle_mask_multi": masks_tensor,
+                "past_key_values": past_key_values
             }
 
         return out
 
-    def forward(self, vl_input: BatchFeature) -> BatchFeature:
+    def forward(self, vl_input: BatchFeature, past_key_values=None) -> BatchFeature:
         self.set_frozen_modules_to_eval_mode()
-        out = self.forward_route(vl_input)
+        out = self.forward_route(vl_input, past_key_values=past_key_values)
         eagle_embeds = out["eagle_embeds"]
         eagle_mask   = out["eagle_mask"]
         eagle_embeds_multi   = out["eagle_embeds_multi"]
@@ -472,65 +426,111 @@ class EagleBackbone(nn.Module):
                 "transcript_lm_loss":      out["transcript_lm_loss"],
                 # (Optional) expose original batch size if downstream wants it
                 "orig_batch_size":         out["eagle_embeds"].size(0),
+                "past_key_values": past_key_values
             }
         )
 
+    def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None):
+        """Greedy token generation for the language backbone.
 
-    @torch.no_grad()
-    # TODO: 
-    def get_prediction(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
+        Args:
+            vl_input: BatchFeature holding the model inputs. The tensors under
+                `eagle_input_ids` and `eagle_attention_mask` are updated in-place
+                with the generated tokens so the caller can reuse the batch.
+            max_token: Maximum number of tokens to generate. When greater than 1,
+                generation stops early once all sequences emit `[EOT]`.
+            past_key_values: Optional cache passed through to the underlying
+                language model. The cache is recomputed before returning so the
+                caller receives a fresh set for the updated sequence.
 
-        backbone_output = self.process_backbone_output(backbone_output)
+        Returns:
+            A tuple `(generated_ids, backbone_outputs)` where `generated_ids` is a
+            tensor of shape `[B]` when a single token is produced or `[B, T]` for
+            multiple tokens, and `backbone_outputs` matches the structure returned
+            by `forward()` with features computed on the updated prompt.
+        """
+        if max_token is None or max_token < 1:
+            max_token = 1
 
-        # Get vision and language embeddings.
-        vl_embs = backbone_output.backbone_features
-        embodiment_id = action_input.embodiment_id
+        if not isinstance(vl_input, BatchFeature):
+            vl_input = BatchFeature(data=dict(vl_input))
 
-        # Embed state.
-        state_features = self.state_encoder(action_input.state, embodiment_id)
+        if "eagle_input_ids" not in vl_input or "eagle_attention_mask" not in vl_input:
+            raise KeyError("Expected `eagle_input_ids` and `eagle_attention_mask` in vl_input")
 
-        # Set initial actions as the sampled noise.
-        batch_size = vl_embs.shape[0]
-        device = vl_embs.device
-        actions = torch.randn(
-            size=(batch_size, self.config.action_horizon, self.config.action_dim),
-            dtype=vl_embs.dtype,
-            device=device,
-        )
+        self.set_frozen_modules_to_eval_mode()
 
-        num_steps = self.num_inference_timesteps
-        dt = 1.0 / num_steps
+        input_ids = vl_input["eagle_input_ids"]
+        attention_mask = vl_input["eagle_attention_mask"]
 
-        # Run denoising steps.
-        for t in range(num_steps):
-            t_cont = t / float(num_steps)  # e.g. goes 0, 1/N, 2/N, ...
-            t_discretized = int(t_cont * self.num_timestep_buckets)
+        if not isinstance(input_ids, torch.Tensor) or not isinstance(attention_mask, torch.Tensor):
+            raise TypeError("`eagle_input_ids` and `eagle_attention_mask` must be tensors")
 
-            # Embed noised action trajectory.
-            timesteps_tensor = torch.full(
-                size=(batch_size,), fill_value=t_discretized, device=device
-            )
-            action_features = self.action_encoder(actions, timesteps_tensor, embodiment_id)
-            # Maybe add position embedding.
-            if self.config.add_pos_embed:
-                pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
-                pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
-                action_features = action_features + pos_embs
+        batch_size = input_ids.size(0)
+        device = input_ids.device
 
-            # Join vision, language, state and action embedding along sequence dimension.
-            future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
-            sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+        generated_tokens: list[torch.Tensor] = []
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        cache = past_key_values
 
-            # Run model forward.
-            model_output = self.model(
-                hidden_states=sa_embs,
-                encoder_hidden_states=vl_embs,
-                timestep=timesteps_tensor,
-            )
-            pred = self.action_decoder(model_output, embodiment_id)
+        with torch.no_grad():
+            for _ in range(max_token):
+                logits, route_pos, _, _, cache = self.forward_eagle(
+                    vl_input, past_key_values=cache
+                )
 
-            pred_velocity = pred[:, -self.action_horizon :]
+                if logits.size(0) != batch_size:
+                    raise RuntimeError("Batch size changed during generation")
 
-            # Update actions using euler integration.
-            actions = actions + dt * pred_velocity
-        return BatchFeature(data={"action_pred": actions})
+                if route_pos.dtype != torch.long:
+                    route_pos = route_pos.to(torch.long)
+                route_pos = route_pos.clamp(min=0)
+
+                batch_indices = torch.arange(batch_size, device=device)
+                next_token_logits = logits[batch_indices, route_pos, :]
+                next_token_raw = next_token_logits.argmax(dim=-1)
+
+                prev_finished = finished.clone()
+                recorded_token = torch.where(
+                    prev_finished,
+                    torch.full_like(next_token_raw, self.endtools_id),
+                    next_token_raw,
+                )
+                generated_tokens.append(recorded_token)
+
+                finished = prev_finished | (next_token_raw == self.endtools_id)
+
+                tokens_to_append = torch.where(
+                    prev_finished.unsqueeze(1),
+                    torch.full_like(next_token_raw.unsqueeze(1), self.pad_id),
+                    next_token_raw.unsqueeze(1),
+                )
+                mask_to_append = torch.where(
+                    prev_finished.unsqueeze(1),
+                    torch.zeros_like(tokens_to_append, dtype=attention_mask.dtype),
+                    torch.ones_like(tokens_to_append, dtype=attention_mask.dtype),
+                )
+
+                input_ids = torch.cat([input_ids, tokens_to_append], dim=1)
+                attention_mask = torch.cat([attention_mask, mask_to_append], dim=1)
+
+                vl_input["eagle_input_ids"] = input_ids
+                vl_input["eagle_attention_mask"] = attention_mask
+
+                if max_token == 1 or finished.all():
+                    break
+
+        # Recompute backbone features so downstream heads consume the updated prompt.
+        with torch.no_grad():
+            backbone_outputs = self.forward(vl_input, past_key_values=cache)
+
+        backbone_outputs["past_key_values"] = cache
+
+        if not generated_tokens:
+            generated_ids = torch.empty((batch_size, 0), dtype=torch.long, device=device)
+        else:
+            generated_ids = torch.stack(generated_tokens, dim=1)
+            if generated_ids.size(1) == 1:
+                generated_ids = generated_ids.squeeze(1)
+
+        return generated_ids, backbone_outputs
