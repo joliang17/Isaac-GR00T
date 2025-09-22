@@ -28,7 +28,8 @@ from gr00t.data.embodiment_tags import EmbodimentTag
 from gr00t.data.schema import DatasetMetadata
 from gr00t.data.transform.base import ComposedModalityTransform
 from gr00t.model.gr00t_n1 import GR00T_N1_5
-
+from peft import PeftModel
+from gr00t.utils.peft import get_lora_model, get_lora_model_llmonly
 COMPUTE_DTYPE = torch.bfloat16
 
 
@@ -143,7 +144,7 @@ class Gr00tPolicy(BasePolicy):
         """
         return self._modality_transform.unapply(action)
 
-    def get_action(self, observations: Dict[str, Any]) -> Dict[str, Any]:
+    def get_action(self, observations: Dict[str, Any], past_key_values=None, mode: str='baseline') -> Dict[str, Any]:
         """
         Make a prediction with the model.
         Args:
@@ -178,20 +179,20 @@ class Gr00tPolicy(BasePolicy):
         # Apply transforms
         normalized_input = self.apply_transforms(observations)
 
-        normalized_action = self._get_action_from_normalized_input(normalized_input)
-        unnormalized_action = self._get_unnormalized_action(normalized_action)
+        normalized_action, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode)
+        unnormalized_action = self._get_unnormalized_action(normalized_action, )
 
         if not is_batch:
             unnormalized_action = squeeze_dict_values(unnormalized_action)
-        return unnormalized_action
+        return unnormalized_action, tools_output, past_key_values
 
-    def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any]) -> torch.Tensor:
+    def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline') -> torch.Tensor:
         # Set up autocast context if needed
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=COMPUTE_DTYPE):
-            model_pred = self.model.get_action(normalized_input)
+            model_pred, tools_output, past_key_values = self.model.get_action(normalized_input, past_key_values=past_key_values, mode=mode)
 
         normalized_action = model_pred["action_pred"].float()
-        return normalized_action
+        return normalized_action, tools_output, past_key_values
 
     def _get_unnormalized_action(self, normalized_action: torch.Tensor) -> Dict[str, Any]:
         return self.unapply_transforms({"action": normalized_action.cpu()})
@@ -238,13 +239,14 @@ class Gr00tPolicy(BasePolicy):
 
     def _load_model(self, model_path):
         model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=COMPUTE_DTYPE)
+
         model.eval()  # Set model to eval mode
         model.to(device=self.device)  # type: ignore
-
+ 
         # Update action_horizon to match modality config
         # Get the expected action horizon from the modality config
         expected_action_horizon = len(self._modality_config["action"].delta_indices)
-
+        import pdb;pdb.set_trace()
         if expected_action_horizon != model.action_head.config.action_horizon:
             print(
                 f"Policy: Recreating action head with action_horizon {expected_action_horizon} (was {model.action_head.config.action_horizon})"
