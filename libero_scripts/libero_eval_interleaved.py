@@ -187,6 +187,7 @@ def eval_libero(cfg) -> None:
 
             print(f"Starting episode {task_episodes+1}...")
             log_file.write(f"Starting episode {task_episodes+1}...\n")
+            past_key_values_traj = None
             while t < max_steps + cfg.num_steps_wait:
                 try:
                     # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
@@ -203,13 +204,39 @@ def eval_libero(cfg) -> None:
                     top_view.append(img)
                     wrist_view.append(wrist_img)
 
-                    # Query model to get action
-                    # TODO:
-                    # use mode == 'interleaved'
-                    
-                    obs_dict = process_observation(obs, task.language, headless=args.headless)
-                    action_chunk = gr00t_policy.get_action(obs_dict)
-                    action = convert_to_libero_action(action_chunk, action_keys)
+                    if not inside_tools:
+                        # on trajectory level
+
+                        # task instruction is already included in past_key_values_traj
+                        obs_dict = process_observation(obs, '', headless=args.headless)
+                        action_chunk, tools_output, past_key_values_traj = gr00t_policy.get_action(obs_dict, past_key_values=past_key_values_traj, mode='interleaved')
+
+                        # TODO:
+                        if tools_output != '':
+                            # generated skill instructions
+                            # start a new inference session, generate actions to achieve the tools, until finish
+                            inside_tools = True
+                            past_key_values_tools = None
+                            # for step t, regenerate the action with the new instructions
+                            obs_dict_tools = process_observation(obs, tools_output, headless=args.headless)
+                            action_chunk, _, past_key_values_tools = gr00t_policy.get_action(obs_dict, past_key_values=past_key_values_tools, mode='interleaved')
+
+                        # generate action_tokens for execution
+                        action = convert_to_libero_action(action_chunk, action_keys)
+
+                    else:
+                        # inside tools
+
+                        # skill instruction is already included in past_key_values_traj
+                        obs_dict = process_observation(obs, '', headless=args.headless)
+                        action_chunk, tools_output, past_key_values_tools = gr00t_policy.get_action(obs_dict, past_key_values=past_key_values_tools, mode='interleaved')
+                        if tools_output == '[TOOLS_END]':
+                            # skill finished, no action is needed at the current step
+                            inside_tools = False
+                            continue
+                        else:
+                            # action tokens are generated
+                            action = convert_to_libero_action(action_chunk, action_keys)
 
                     # Execute action in environment
                     obs, reward, done, info = env.step(action.tolist())
