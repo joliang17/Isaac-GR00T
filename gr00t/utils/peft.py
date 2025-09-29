@@ -1,5 +1,6 @@
 import torch
 from peft import LoraConfig, get_peft_model, PeftModel
+from transformers.feature_extraction_utils import BatchFeature
 
 
 def _wrap_forward(model):
@@ -16,16 +17,19 @@ def _wrap_forward(model):
         backbone_outputs = model.backbone(backbone_inputs)
         transcript_lm_loss = backbone_outputs.get("transcript_lm_loss", torch.tensor(0.0, device=model.device))
         
-        action_head_outputs = model.action_head(backbone_outputs, action_inputs)
-        model.validate_data(action_head_outputs, backbone_outputs, is_training=True)
+        if 'action' in inputs:
+            action_head_outputs = model.action_head(backbone_outputs, action_inputs)
+            model.validate_data(action_head_outputs, backbone_outputs, is_training=True)
+            action_head_outputs["action_head_skipped"] = False
+        else:
+            output_dict = {"loss": torch.tensor(0.0, device=model.device),}
+            action_head_outputs = BatchFeature(data=output_dict)
+            action_head_outputs["action_head_skipped"] = True
 
-        # Merge route/tool losses into the output and total loss.
-        # Keep the pure action-head loss for logging as `action_head_loss`.
         ah_loss = action_head_outputs["loss"]
         action_head_outputs["action_head_loss"] = ah_loss
         action_head_outputs["transcript_lm_loss"] = transcript_lm_loss
         action_head_outputs["loss"] = ah_loss + transcript_lm_loss
-        action_head_outputs["action_head_skipped"] = False
         return action_head_outputs
 
     model.forward = _forward_improved
@@ -54,7 +58,9 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, action_head_
     # IMPORTANT: declare action_head as a module to save (full FT)
     modules_to_save = []
     # Support either top-level or nested action_head
-    for candidate in ["action_head", "backbone.action_head"]:
+    # TODO:
+    for candidate in ["action_head", "backbone.action_head", 'backbone.eagle_model.language_model.model.embed_tokens']:
+    # for candidate in ["action_head", "backbone.action_head", ]:
         # only add if it exists
         try:
             _ = dict(model.named_modules())[candidate]
@@ -75,7 +81,7 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, action_head_
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
     model = _wrap_forward(model)
-
+    list_trainable_parameter_names(model)
     return model
 
 

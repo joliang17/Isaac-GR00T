@@ -62,6 +62,8 @@ class EagleBackbone(nn.Module):
         load_bf16: bool = False,
         eagle_path: str | None = None,
         project_to_dim: int = 1536,
+        train_mode: bool = True,
+        special_token_loss_weight: float = 2.0,
     ):
         """
         Args:
@@ -78,10 +80,26 @@ class EagleBackbone(nn.Module):
         self.eagle_processor = AutoProcessor.from_pretrained(
             DEFAULT_EAGLE_PATH, trust_remote_code=True, use_fast=True
         )
-        # specials = {"additional_special_tokens": ["<ACTIONS>", "<TOOLS>"]}
-        specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]"]}
-        self.eagle_processor.tokenizer.add_special_tokens(specials)
         self.eagle_tokenizer = self.eagle_processor.tokenizer
+
+        specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
+        # Filter out ones already present
+        existing = set(self.eagle_tokenizer.all_special_tokens)
+        to_add = [t for t in specials["additional_special_tokens"] if t not in existing]
+
+        if to_add:
+            num_added = self.eagle_tokenizer.add_special_tokens({"additional_special_tokens": to_add})
+            print(f"Added {num_added} new tokens: {to_add}")
+
+        self.eagle_tokenizer.add_special_tokens(specials)
+        self.eagle_processor.tokenizer = self.eagle_tokenizer
+        
+        # # TODO: only for evaluation
+        # old_vocab = self.eagle_model.get_input_embeddings().num_embeddings
+        # new_vocab = len(self.eagle_tokenizer)
+        # if new_vocab > old_vocab:
+        #     self.eagle_model.resize_token_embeddings(new_vocab, mean_resizing=False)
+        #     print(f"Resized Eagle2 VLM's embeddings: {old_vocab} -> {new_vocab} (added {new_vocab - old_vocab} tokens)")
 
         # Cache special token ids (single-token by construction)
         self.actions_id = self.eagle_tokenizer.convert_tokens_to_ids("[ACTIONS]")
@@ -98,6 +116,15 @@ class EagleBackbone(nn.Module):
             if tid is not None and tid != self.eagle_tokenizer.unk_token_id:
                 img_ids.append(tid)
         self.img_ids = torch.tensor(img_ids)
+
+        self.special_token_loss_weight = special_token_loss_weight
+        loss_token_ids = [self.actions_id, self.tools_id, self.endtools_id, self.pad_action, self.skills_end]
+        loss_token_ids = [tid for tid in dict.fromkeys(loss_token_ids) if tid is not None and tid >= 0]
+        self.special_loss_ids = (
+            torch.tensor(loss_token_ids, dtype=torch.long)
+            if loss_token_ids
+            else torch.empty(0, dtype=torch.long)
+        )
 
         if project_to_dim is not None:
             self.eagle_linear = torch.nn.Linear(2048, project_to_dim)
@@ -160,22 +187,6 @@ class EagleBackbone(nn.Module):
         }
         del eagle_input["image_sizes"]
 
-        # ADDED: add a special token here
-        if "input_ids" in eagle_input and "attention_mask" in eagle_input:
-            pad_token = torch.full(
-                (eagle_input["input_ids"].size(0), 1),
-                fill_value=self.pad_id,
-                dtype=eagle_input["input_ids"].dtype,
-                device=eagle_input["input_ids"].device,
-            )
-            pad_mask = torch.ones(
-                (eagle_input["attention_mask"].size(0), 1),
-                dtype=eagle_input["attention_mask"].dtype,
-                device=eagle_input["attention_mask"].device,
-            )
-            eagle_input["input_ids"] = torch.cat([eagle_input["input_ids"], pad_token], dim=1)
-            eagle_input["attention_mask"] = torch.cat([eagle_input["attention_mask"], pad_mask], dim=1)
-
         eagle_input.pop('llm_labels')
         eagle_output = self.eagle_model(**eagle_input, past_key_values=past_key_values, output_hidden_states=True, return_dict=True, use_cache=True)
         past_key_values = eagle_output.past_key_values
@@ -211,12 +222,47 @@ class EagleBackbone(nn.Module):
         mask_img = torch.isin(labels, self.img_ids.to(labels.device))
         labels[mask_img] = -100
 
-        # FOR DEBUG:
-        # unique_ids = torch.unique(eagle_input['input_ids'][torch.where(labels == -100)])
-        # self.eagle_tokenizer.decode(unique_ids)
+        outputs = self.eagle_model(**eagle_input, return_dict=True)
+        logits = outputs.logits
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
 
-        out = self.eagle_model(**eagle_input, labels=labels, return_dict=True,)
-        return out.loss
+        ######################################
+        # # DEBUG:
+        # unique_ids = torch.unique(eagle_input['input_ids'][torch.where(labels == -100)])
+        # ignore_tokens = self.eagle_tokenizer.decode(unique_ids)
+
+        # # shift_logits shape: [batch, seq_len, vocab_size]
+        # pred_ids = shift_logits.argmax(dim=-1)
+        # valid_pred_ids = pred_ids[shift_labels != -100]
+        # valid_label_ids = shift_labels[shift_labels != -100]
+        # decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids, skip_special_tokens=False)
+        # decoded_label = self.eagle_tokenizer.batch_decode(valid_label_ids, skip_special_tokens=False)
+
+        vocab_size = shift_logits.size(-1)
+        loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
+        per_token_loss = loss_fct(shift_logits.view(-1, vocab_size), shift_labels.view(-1))
+        per_token_loss = per_token_loss.view_as(shift_labels)
+
+        valid_mask = shift_labels != -100
+        if self.special_loss_ids.numel() > 0:
+            special_ids = self.special_loss_ids.to(shift_labels.device)
+            special_mask = torch.isin(shift_labels, special_ids) & valid_mask
+        else:
+            special_mask = torch.zeros_like(valid_mask)
+
+        weights = torch.ones_like(per_token_loss)
+        weights = weights.masked_fill(~valid_mask, 0.0)
+        if self.special_loss_ids.numel() > 0:
+            special_weight = torch.full_like(per_token_loss, self.special_token_loss_weight)
+            weights = torch.where(special_mask, special_weight, weights)
+
+        total_weight = weights.sum()
+        if total_weight.item() == 0:
+            return shift_logits.new_zeros(())
+
+        loss = (per_token_loss * weights).sum() / total_weight
+        return loss
         
 
     def split_by_img_id(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
@@ -358,7 +404,7 @@ class EagleBackbone(nn.Module):
         # vl_input: ['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'step_input_ids', 'step_attention_mask', 'eagle_input_ids', 'eagle_attention_mask', 'eagle_pixel_values', 'eagle_image_sizes', 'embodiment_id']
         # 1) Run backbone once
         eagle_logits, route_pos, eagle_embeds, eagle_mask, past_key_values = self.forward_eagle(vl_input, past_key_values=past_key_values)
-        
+
         # if there is no step information (single instruction input)
         input_keys = vl_input.keys()
         step_input = [item for item in input_keys if 'step' in item]
