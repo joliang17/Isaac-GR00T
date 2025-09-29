@@ -39,6 +39,6 @@ grep -v "^#" shell_scripts/run_script_param.sh \
         -e "s/TASK_NAME=.*/TASK_NAME=${TASK_NAME}/" \
   >> $TMP_SCRIPT
 
-sbatch $TMP_SCRIPT
+# sbatch $TMP_SCRIPT
 
-rm "$TMP_SCRIPT" 
+# rm "$TMP_SCRIPT" 
