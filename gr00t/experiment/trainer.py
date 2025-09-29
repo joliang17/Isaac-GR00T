@@ -15,11 +15,14 @@
 
 
 import os
+import glob
+
 from typing import Optional
 
 import numpy as np
 import torch
 import transformers
+import wandb
 from torch.utils.data import Dataset, Sampler
 from transformers.trainer import (
     ALL_LAYERNORM_LAYERS,
@@ -79,6 +82,15 @@ class DualBrainTrainer(transformers.Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         outputs = model(inputs)
         loss = outputs["loss"]
+
+        # Suppose model also returns other losses
+        action_head_loss = outputs.get("action_head_loss", None)
+        transcript_lm_loss = outputs.get("transcript_lm_loss", None)
+        if action_head_loss is not None:
+            wandb.log({"action_head_loss": action_head_loss.item()})
+        if transcript_lm_loss is not None:
+            wandb.log({"transcript_lm_loss": transcript_lm_loss.item()})
+        
         return (loss, outputs) if return_outputs else loss
 
     def create_optimizer(self):
@@ -130,7 +142,25 @@ class DualBrainTrainer(transformers.Trainer):
             state_dict = self.model.state_dict()
 
         if self.args.should_save:
-            return self.model.save_pretrained(output_dir, state_dict=state_dict)
+            tokenizer = self.model.backbone.eagle_tokenizer
+            tokenizer.save_pretrained(output_dir)
+
+            if hasattr(self.model, "merge_and_unload"):
+                merged = self.model.merge_and_unload()
+                merged.save_pretrained(output_dir, safe_serialization=True)
+            else:
+                self.model.save_pretrained(output_dir, safe_serialization=True, state_dict=state_dict)
+            
+            # ADDED: Keep only last 3 checkpoints
+            ckpts = sorted(
+                glob.glob(os.path.join(os.path.dirname(output_dir), "checkpoint-*")),
+                key=os.path.getmtime
+            )
+            if len(ckpts) > 3:
+                for ckpt in ckpts[:-3]:  # delete all but last 3
+                    print(f"Removing old checkpoint {ckpt}")
+                    os.system(f"rm -rf {ckpt}")
+            return 
 
     def train(
         self,
