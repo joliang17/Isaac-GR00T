@@ -51,6 +51,9 @@ class ArgsConfig:
     output_dir: str = "gr00t_model"
     """Directory to save model checkpoints."""
 
+    run_name: str = "vla_tooluse"
+    """Directory to save model checkpoints."""
+
     data_config: Literal[tuple(DATA_CONFIG_MAP.keys())] = "franka_arms_only"
     """Data configuration name from DATA_CONFIG_MAP, we assume all datasets have the same data config"""
 
@@ -277,7 +280,7 @@ def main(config: ArgsConfig):
     # 2.1 modify training args
     training_args = TrainingArguments(
         output_dir=config.output_dir,
-        run_name=None,
+        run_name=config.run_name,
         remove_unused_columns=False,
         deepspeed="",
         gradient_checkpointing=False,
