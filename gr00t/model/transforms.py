@@ -49,7 +49,7 @@ def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
         eagle_path, trust_remote_code=True, use_fast=True
     )
     # ADDED: add special tokens to tokenizer
-    specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]"]}
+    specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
     eagle_processor.tokenizer.add_special_tokens(specials)
 
     eagle_processor.tokenizer.padding_side = "left"
@@ -87,7 +87,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 step_ids = eagle_processor.tokenizer(step_anno_list, padding=True, truncation=True, return_tensors="pt")
                 for k, v in step_ids.items():
                     batch[f"{anno_key}_{k}"] = v
-
+            
             eagle_inputs = eagle_processor(text=text_list,images=image_inputs, return_tensors="pt", padding=True)
 
             for k, v in eagle_inputs.items():
@@ -249,7 +249,6 @@ class GR00TTransform(InvertibleModalityTransform):
                 "content": eagle_image + text_content,
             }
         ]
-        
         text_list = [
             self.eagle_processor.apply_chat_template(
                 eagle_conversation, tokenize=False, add_generation_prompt=True

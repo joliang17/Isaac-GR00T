@@ -265,33 +265,15 @@ def main(config: ArgsConfig):
     model.config.compute_dtype = "bfloat16"
 
     if config.lora_rank > 0:
-        if not config.lora_llm_model:
-            # normal lora training (only for action_head / full model)
-            model = get_lora_model(
-                model,
-                rank=config.lora_rank,
-                lora_alpha=config.lora_alpha,
-                lora_dropout=config.lora_dropout,
-                action_head_only=not config.lora_full_model,
-            )
-        else:
-            model = get_lora_model(
-                model,
-                rank=config.lora_rank,
-                lora_alpha=config.lora_alpha,
-                lora_dropout=config.lora_dropout,
-                action_head_only=not config.lora_full_model,
-            )
-            # lora only for llm, action_head is fully finetune
-            # model = get_lora_model_llmonly(
-            #     model,
-            #     rank=config.lora_rank,
-            #     lora_alpha=config.lora_alpha,
-            #     lora_dropout=config.lora_dropout,
-            #     apply_to_llm=True,
-            #     train_action_head=True, 
-            # )
-
+        # normal lora training (only for action_head / full model)
+        model = get_lora_model(
+            model,
+            rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout,
+            action_head_only=not config.lora_full_model,
+        )
+            
     # 2.1 modify training args
     training_args = TrainingArguments(
         output_dir=config.output_dir,

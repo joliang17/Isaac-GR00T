@@ -77,7 +77,6 @@ class GR00T_N1_5(PreTrainedModel):
 
         super().__init__(config)
         self.local_model_path = local_model_path
-
         self.backbone = EagleBackbone(**config.backbone_cfg)
         action_head_cfg = FlowmatchingActionHeadConfig(**config.action_head_cfg)
         self.action_head = FlowmatchingActionHead(action_head_cfg)
@@ -166,17 +165,21 @@ class GR00T_N1_5(PreTrainedModel):
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         backbone_outputs = self.backbone(backbone_inputs)
         transcript_lm_loss = backbone_outputs.get("transcript_lm_loss", torch.tensor(0.0, device=self.device))
-        
-        action_head_outputs = self.action_head(backbone_outputs, action_inputs)
-        self.validate_data(action_head_outputs, backbone_outputs, is_training=True)
+
+        if 'action' in inputs:
+            action_head_outputs = model.action_head(backbone_outputs, action_inputs)
+            model.validate_data(action_head_outputs, backbone_outputs, is_training=True)
+            action_head_outputs["action_head_skipped"] = False
+        else:
+            output_dict = {"loss": torch.tensor(0.0, device=model.device),}
+            action_head_outputs = BatchFeature(data=output_dict)
+            action_head_outputs["action_head_skipped"] = True
 
         # Merge route/tool losses into the output and total loss.
-        # Keep the pure action-head loss for logging as `action_head_loss`.
         ah_loss = action_head_outputs["loss"]
         action_head_outputs["action_head_loss"] = ah_loss
         action_head_outputs["transcript_lm_loss"] = transcript_lm_loss
         action_head_outputs["loss"] = ah_loss + transcript_lm_loss
-        action_head_outputs["action_head_skipped"] = False
         return action_head_outputs
 
     def get_action(
@@ -211,6 +214,7 @@ class GR00T_N1_5(PreTrainedModel):
             action_head_outputs['action_head_skipped'] = False
             past_key_values = None
         else:
+            # self.backbone.eagle_tokenizer.decode(backbone_inputs['eagle_input_ids'][0])
             generated_ids, backbone_outputs = self.backbone.generate(
                 backbone_inputs, max_token=1, past_key_values=past_key_values
             )
@@ -224,7 +228,7 @@ class GR00T_N1_5(PreTrainedModel):
                 token_id = int(generated_ids)
             else:
                 raise RuntimeError('Backbone.generate returned an unexpected token payload.')
-
+            
             if token_id == self.backbone.actions_id:
                 # Step 2a: use the action head when the route token is [ACTIONS]
                 action_head_outputs = self.action_head.get_action(backbone_outputs, action_inputs)
@@ -277,7 +281,8 @@ class GR00T_N1_5(PreTrainedModel):
                 action_head_outputs = create_empty_actions(backbone_inputs)
 
             else:
-                raise ValueError(f'Unexpected route token id: {token_id}')
+                decode_text = self.backbone.eagle_tokenizer.decode(token_id)
+                raise ValueError(f'Unexpected route token id: {token_id}, text token: {decode_text}')
 
         self.validate_data(action_head_outputs, backbone_outputs, is_training=False)
         return action_head_outputs, tools_output, past_key_values
@@ -359,8 +364,10 @@ class GR00T_N1_5(PreTrainedModel):
             # flatten state / actions
             list_keys = ['state', 'state_mask', 'action', 'action_mask', ]
             for key in list_keys:
-                inputs[key] = inputs[key].reshape(-1, inputs[key].size(2), inputs[key].size(3))
-
+                if inputs[key].numel() != 0:
+                    inputs[key] = inputs[key].reshape(-1, inputs[key].size(2), inputs[key].size(3))
+                else:
+                    del inputs[key]
         return out, inputs, list_base
 
     def prepare_input(self, inputs) -> Tuple[BatchFeature, BatchFeature]:

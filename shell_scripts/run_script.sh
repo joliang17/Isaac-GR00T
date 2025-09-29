@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=vla_test
-#SBATCH --output=vla_test.log
-#SBATCH --error=vla_test.log
+#SBATCH --job-name=groot_libero_action_1trace
+#SBATCH --output=groot_libero_action_1trace.log
+#SBATCH --error=groot_libero_action_1trace.log
 #SBATCH --time=48:00:00
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director
@@ -18,18 +18,14 @@ module add gcc/11.2.0
 
 source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 
-
-# finetune
-# python scripts/gr00t_finetune.py --dataset-path ./demo_data/robot_sim.PickNPlace --num-gpus 1
-
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/RoboMind/h5_simulation_lerobot --num-gpus 1
-
-
+WANDB_PROJECT="vla_tooluse"
+TASK_NAME=""
 # python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/RoboMind/h5_simulation_lerobot_traj --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 24 --lora_llm_model --dataloader_num_workers=0
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/RoboMind/h5_simulation_lerobot_traj --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 2 --lora_llm_model --dataloader_num_workers=0 --window_length=10
 
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/RoboMind/h5_simulation_lerobot_traj --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 2 --lora_llm_model --window_length=10
+# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_both --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 4 --lora_llm_model --window_length=10 --data_config libero_traj_arms --video_backend torchvision_av --save_steps 2000 --output_dir checkpoint/groot_libero_traj_weighted
 
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 2 --lora_llm_model --window_length=10 --data_config libero_traj_arms --video_backend torchvision_av
+# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_both --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 4 --lora_llm_model --window_length=10 --data_config libero_traj_arms --video_backend torchvision_av --save_steps 2000 --output_dir checkpoint/groot_libero_traj_1trace 
 
-python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_test --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 2 --lora_llm_model --window_length=10 --data_config libero_traj_arms --video_backend torchvision_av --save_steps 1000 --output_dir checkpoint/groot_libero_traj
+python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/action_only_video --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 4 --lora_llm_model --window_length=10 --data_config libero_traj_arms --video_backend torchvision_av --save_steps 2000 --output_dir checkpoint/groot_libero_action_1trace 
+
+# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_both --num-gpus 1 --lora_rank 32  --lora_alpha 128  --batch-size 4 --lora_llm_model --window_length=10 --data_config libero_traj_arms --video_backend torchvision_av --save_steps 2000 --output_dir checkpoint/groot_libero_traj_1trace_test --base_model_path="/fs/nexus-scratch/yliang17/Research/VLA/GR00T/checkpoint/groot_libero_traj_weighted/checkpoint-6000"
