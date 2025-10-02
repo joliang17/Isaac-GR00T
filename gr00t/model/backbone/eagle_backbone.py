@@ -62,7 +62,7 @@ class EagleBackbone(nn.Module):
         load_bf16: bool = False,
         eagle_path: str | None = None,
         project_to_dim: int = 1536,
-        train_mode: bool = True,
+        init_mode: bool = True,
         special_token_loss_weight: float = 2.0,
     ):
         """
@@ -94,12 +94,13 @@ class EagleBackbone(nn.Module):
         self.eagle_tokenizer.add_special_tokens(specials)
         self.eagle_processor.tokenizer = self.eagle_tokenizer
         
-        # # TODO: only for evaluation
-        # old_vocab = self.eagle_model.get_input_embeddings().num_embeddings
-        # new_vocab = len(self.eagle_tokenizer)
-        # if new_vocab > old_vocab:
-        #     self.eagle_model.resize_token_embeddings(new_vocab, mean_resizing=False)
-        #     print(f"Resized Eagle2 VLM's embeddings: {old_vocab} -> {new_vocab} (added {new_vocab - old_vocab} tokens)")
+        # ADDED: only for evaluation
+        if not init_mode:
+            old_vocab = self.eagle_model.get_input_embeddings().num_embeddings
+            new_vocab = len(self.eagle_tokenizer)
+            if new_vocab > old_vocab:
+                self.eagle_model.resize_token_embeddings(new_vocab, mean_resizing=False)
+                print(f"Resized Eagle2 VLM's embeddings: {old_vocab} -> {new_vocab} (added {new_vocab - old_vocab} tokens)")
 
         # Cache special token ids (single-token by construction)
         self.actions_id = self.eagle_tokenizer.convert_tokens_to_ids("[ACTIONS]")
@@ -227,7 +228,7 @@ class EagleBackbone(nn.Module):
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
 
-        ######################################
+        #####################################
         # # DEBUG:
         # unique_ids = torch.unique(eagle_input['input_ids'][torch.where(labels == -100)])
         # ignore_tokens = self.eagle_tokenizer.decode(unique_ids)
@@ -238,6 +239,7 @@ class EagleBackbone(nn.Module):
         # valid_label_ids = shift_labels[shift_labels != -100]
         # decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids, skip_special_tokens=False)
         # decoded_label = self.eagle_tokenizer.batch_decode(valid_label_ids, skip_special_tokens=False)
+        # import pdb;pdb.set_trace()
 
         vocab_size = shift_logits.size(-1)
         loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
