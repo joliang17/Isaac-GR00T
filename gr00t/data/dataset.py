@@ -318,7 +318,6 @@ class LeRobotSingleDataset(Dataset):
             original_key = le_modality_meta.video[new_key].original_key
             if original_key is None:
                 original_key = new_key
-            # import pdb;pdb.set_trace()
             le_video_meta = le_info["features"][original_key]
             height = le_video_meta["shape"][le_video_meta["names"].index("height")]
             width = le_video_meta["shape"][le_video_meta["names"].index("width")]
@@ -633,15 +632,27 @@ class LeRobotSingleDataset(Dataset):
         # task_instruction: <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>Open the cabinet door<|im_end|>\n<|im_start|>assistant\n
         task_instruction_postfix = "<|im_end|>\n<|im_start|>assistant\n"
         task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix, '')
-
         list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
-        list_transformed_steps_added = [item + ("[EOT]" if "[TOOLS]" in item else "[PAD_A]") + (f"<image-{i+2}>" if i < len(list_transformed_steps) - 1 else "") for i, item in enumerate(list_transformed_steps)]
+        # [TOOLS]instruction[EOT] or [ACTIONS][PAD_A]
+        list_transformed_steps_added = [
+            item
+            + ("[EOT]" if "[TOOLS]" in item else "[PAD_A]" if "[ACTIONS]" in item else "")
+            + (f"<image-{i+2}>" if i < len(list_transformed_steps) - 1 else "")
+            for i, item in enumerate(list_transformed_steps)
+        ]
         list_transformed_state = [list_step_transform[i]['state'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
         list_transformed_state_mask = [list_step_transform[i]['state_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
         list_transformed_action = [list_step_transform[i]['action'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
         list_transformed_action_mask = [list_step_transform[i]['action_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
+        if '[Skill-mode]' in task_instruction:
+            # only [ACTIONS]
+            # <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>skillinstruction<image-2>[ACTIONS][PAD_A]<image-2>[ACTIONS][PAD_A]..[TOOLS_END]<|im_end|>\n<|im_start|>assistant\n
+            concated_text = task_instruction.replace('Skill-mode: ', "[SKILL_MODE]") + "".join(list_transformed_steps_added) + task_instruction_postfix
+        else:
+            # [ACTIONS] & [TOOLS]
+            # <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>taskinstruction<image-2>[TOOLS]xx[EOT]<image-2>[ACTIONS][PAD_A].. <|im_end|>\n<|im_start|>assistant\n
+            concated_text = task_instruction.replace('<image-1>', "<image-1>[TRAJ_MODE]") + "".join(list_transformed_steps_added) + task_instruction_postfix
         
-        concated_text = task_instruction + "".join(list_transformed_steps_added) + task_instruction_postfix
         dict_output = list_step_transform[-1]
         
         # final output result: dict_keys(['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'eagle_content', 'embodiment_id'])
