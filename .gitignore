@@ -127,3 +127,5 @@ demo_data/so101-table-cleanup/
 # checkpoint
 checkpoint/*
 rollouts/*
+
+*.slurm

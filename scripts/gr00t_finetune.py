@@ -89,6 +89,9 @@ class ArgsConfig:
     tune_diffusion_model: bool = True
     """Whether to fine-tune the diffusion model."""
 
+    init_mode: bool = False
+    """Whether to load model from pretrained model or self-model."""
+
     resume: bool = False
     """Whether to resume from a checkpoint."""
 
@@ -206,6 +209,7 @@ def main(config: ArgsConfig):
         tune_visual=config.tune_visual,  # backbone's vision tower
         tune_projector=config.tune_projector,  # action head's projector
         tune_diffusion_model=config.tune_diffusion_model,  # action head's DiT
+        init_mode=config.init_mode,
     )
 
     # Update action_horizon to match data config
