@@ -656,6 +656,9 @@ class LeRobotSingleDataset(Dataset):
         dict_output = list_step_transform[-1]
         
         # final output result: dict_keys(['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'eagle_content', 'embodiment_id'])
+        # TODO: test what happened if only add a few tokens at first
+        concated_text = concated_text.replace('[ACTIONS]', '').replace('[PAD_A]', '')
+
         dict_output['eagle_content']['image_inputs'] = agg_images
         dict_output['eagle_content']['text_list'] = [concated_text]
         dict_output['state'] = list_transformed_state

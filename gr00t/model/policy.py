@@ -17,7 +17,8 @@ import json
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
-
+import copy
+import pickle
 import numpy as np
 import torch
 from huggingface_hub import snapshot_download
@@ -31,6 +32,21 @@ from gr00t.model.gr00t_n1 import GR00T_N1_5
 from peft import PeftModel
 from gr00t.utils.peft import get_lora_model, get_lora_model_llmonly
 COMPUTE_DTYPE = torch.bfloat16
+
+def compare_dicts(d1, d2, atol=1e-6):
+    for k in d1.keys():
+        v1, v2 = d1[k], d2[k]
+        try:
+            if torch.is_tensor(v1) and torch.is_tensor(v2):
+                if v1.shape != v2.shape:
+                    print(f"[{k}] shape mismatch: {v1.shape} vs {v2.shape}")
+                elif not torch.allclose(v1, v2, atol=atol, equal_nan=True):
+                    diff = (v1 - v2).abs().max().item()
+                    print(f"[{k}] tensor differs (max abs diff={diff})")
+            elif v1 != v2:
+                print(f"[{k}] value mismatch: {v1} vs {v2}")
+        except Exception as e:
+            print(f"[{k}] error comparing: {e}")
 
 
 class BasePolicy(ABC):
@@ -144,7 +160,7 @@ class Gr00tPolicy(BasePolicy):
         """
         return self._modality_transform.unapply(action)
 
-    def get_action(self, observations: Dict[str, Any], past_key_values=None, mode: str='baseline') -> Dict[str, Any]:
+    def get_action(self, observations: Dict[str, Any], img_count: int=1, past_key_values=None, mode: str='baseline') -> Dict[str, Any]:
         """
         Make a prediction with the model.
         Args:
@@ -178,7 +194,6 @@ class Gr00tPolicy(BasePolicy):
 
         # Apply transforms
         normalized_input = self.apply_transforms(observations)
-
         normalized_action, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode)
         unnormalized_action = self._get_unnormalized_action(normalized_action, )
 
@@ -238,11 +253,12 @@ class Gr00tPolicy(BasePolicy):
         return True
 
     def _load_model(self, model_path):
-        model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=COMPUTE_DTYPE)
+        model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=COMPUTE_DTYPE, 
+        init_mode=False,)
 
         model.eval()  # Set model to eval mode
         model.to(device=self.device)  # type: ignore
- 
+
         # Update action_horizon to match modality config
         # Get the expected action horizon from the modality config
         expected_action_horizon = len(self._modality_config["action"].delta_indices)

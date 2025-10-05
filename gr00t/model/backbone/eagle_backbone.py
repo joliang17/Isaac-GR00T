@@ -239,6 +239,12 @@ class EagleBackbone(nn.Module):
         # valid_label_ids = shift_labels[shift_labels != -100]
         # decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids, skip_special_tokens=False)
         # decoded_label = self.eagle_tokenizer.batch_decode(valid_label_ids, skip_special_tokens=False)
+
+        # x1 = list(zip(decoded_texts, decoded_label))
+        # print([item for item in x1 if item[0] != item[1]])
+        # print([item for item in x1 if item[0] == item[1]])
+        # print(''.join(decoded_label))
+        # print(''.join(decoded_texts))
         # import pdb;pdb.set_trace()
 
         vocab_size = shift_logits.size(-1)
@@ -264,6 +270,7 @@ class EagleBackbone(nn.Module):
             return shift_logits.new_zeros(())
 
         loss = (per_token_loss * weights).sum() / total_weight
+
         return loss
         
 
@@ -479,7 +486,8 @@ class EagleBackbone(nn.Module):
             }
         )
 
-    def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None):
+    @torch.no_grad()
+    def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, special_token_only=False):
         """Greedy token generation for the language backbone.
 
         Args:
@@ -522,57 +530,78 @@ class EagleBackbone(nn.Module):
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
         cache = past_key_values
 
-        with torch.no_grad():
-            for _ in range(max_token):
-                logits, route_pos, _, _, cache = self.forward_eagle(
-                    vl_input, past_key_values=cache
-                )
+        if special_token_only:
+            # Allowed tokens (e.g., tools and actions; add others if needed)
+            allowed_ids = torch.tensor(
+                [self.tools_id, self.actions_id, self.skills_end], 
+                device=input_ids.device, dtype=torch.long
+            )
 
-                if logits.size(0) != batch_size:
-                    raise RuntimeError("Batch size changed during generation")
+        for _ in range(max_token):
+            logits, route_pos, _, _, cache = self.forward_eagle(
+                vl_input, past_key_values=cache
+            )
 
-                if route_pos.dtype != torch.long:
-                    route_pos = route_pos.to(torch.long)
-                route_pos = route_pos.clamp(min=0)
+            if logits.size(0) != batch_size:
+                raise RuntimeError("Batch size changed during generation")
 
-                batch_indices = torch.arange(batch_size, device=device)
-                next_token_logits = logits[batch_indices, route_pos, :]
+            if route_pos.dtype != torch.long:
+                route_pos = route_pos.to(torch.long)
+            route_pos = route_pos.clamp(min=0)
+
+            batch_indices = torch.arange(batch_size, device=device)
+            next_token_logits = logits[batch_indices, route_pos, :]
+
+            if special_token_only:
+                # Build a -inf mask over the full vocab, then open only allowed ids
+                neg_inf = torch.finfo(next_token_logits.dtype).min  # safe -inf for current dtype
+                mask = torch.full_like(next_token_logits, neg_inf)
+                mask.scatter_(dim=-1, index=allowed_ids.unsqueeze(0).expand(next_token_logits.size(0), -1), value=0)
+
+                masked_logits = next_token_logits + mask  # now only allowed ids are selectable
+
+                # Choose the token (greedy or temperature sampling)
+                temperature = getattr(self.args, "route_temperature", 0.0) if hasattr(self, "args") else 0.0
+                if temperature and temperature > 0.0:
+                    probs = torch.softmax(masked_logits / temperature, dim=-1)
+                    next_token_raw = torch.multinomial(probs, num_samples=1).squeeze(-1)
+                else:
+                    next_token_raw = masked_logits.argmax(dim=-1)
+            else:
                 next_token_raw = next_token_logits.argmax(dim=-1)
 
-                prev_finished = finished.clone()
-                recorded_token = torch.where(
-                    prev_finished,
-                    torch.full_like(next_token_raw, self.endtools_id),
-                    next_token_raw,
-                )
-                generated_tokens.append(recorded_token)
+            prev_finished = finished.clone()
+            recorded_token = torch.where(
+                prev_finished,
+                torch.full_like(next_token_raw, self.endtools_id),
+                next_token_raw,
+            )
+            generated_tokens.append(recorded_token)
 
-                finished = prev_finished | (next_token_raw == self.endtools_id)
+            finished = prev_finished | (next_token_raw == self.endtools_id)
 
-                tokens_to_append = torch.where(
-                    prev_finished.unsqueeze(1),
-                    torch.full_like(next_token_raw.unsqueeze(1), self.pad_id),
-                    next_token_raw.unsqueeze(1),
-                )
-                mask_to_append = torch.where(
-                    prev_finished.unsqueeze(1),
-                    torch.zeros_like(tokens_to_append, dtype=attention_mask.dtype),
-                    torch.ones_like(tokens_to_append, dtype=attention_mask.dtype),
-                )
+            tokens_to_append = torch.where(
+                prev_finished.unsqueeze(1),
+                torch.full_like(next_token_raw.unsqueeze(1), self.pad_id),
+                next_token_raw.unsqueeze(1),
+            )
+            mask_to_append = torch.where(
+                prev_finished.unsqueeze(1),
+                torch.zeros_like(tokens_to_append, dtype=attention_mask.dtype),
+                torch.ones_like(tokens_to_append, dtype=attention_mask.dtype),
+            )
 
-                input_ids = torch.cat([input_ids, tokens_to_append], dim=1)
-                attention_mask = torch.cat([attention_mask, mask_to_append], dim=1)
+            input_ids = torch.cat([input_ids, tokens_to_append], dim=1)
+            attention_mask = torch.cat([attention_mask, mask_to_append], dim=1)
 
-                vl_input["eagle_input_ids"] = input_ids
-                vl_input["eagle_attention_mask"] = attention_mask
+            vl_input["eagle_input_ids"] = input_ids
+            vl_input["eagle_attention_mask"] = attention_mask
 
-                if max_token == 1 or finished.all():
-                    break
+            if max_token == 1 or finished.all():
+                break
 
         # Recompute backbone features so downstream heads consume the updated prompt.
-        with torch.no_grad():
-            backbone_outputs = self.forward(vl_input, past_key_values=cache)
-
+        backbone_outputs = self.forward(vl_input, past_key_values=cache)
         backbone_outputs["past_key_values"] = cache
 
         if not generated_tokens:
