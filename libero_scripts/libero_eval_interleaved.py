@@ -30,6 +30,7 @@ os.environ["HF_HOME"] = CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
 os.environ["HF_MODULES_CACHE"] = CACHE_DIR
 os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
+
 import pprint
 from dataclasses import dataclass
 import argparse
@@ -192,6 +193,8 @@ def eval_libero(cfg) -> None:
             inside_tools = False
             task_instruction = ""
             current_tool_instruction = ""
+            traj_img_count = 0
+            tool_img_count = 0
             while t < max_steps + cfg.num_steps_wait:
                 try:
                     # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
@@ -207,19 +210,20 @@ def eval_libero(cfg) -> None:
                     # # Save preprocessed image for replay video
                     top_view.append(img)
                     wrist_view.append(wrist_img)
+                    # import pdb;pdb.set_trace()
 
                     if not inside_tools:
                         # on trajectory level
                         if task_instruction == '':
                             task_instruction = task.language
-                            cur_instr = task_instruction
+                            cur_instr = '[TRAJ_MODE]' + task_instruction
                         else:
                             cur_instr = ""
 
-                        import pdb;pdb.set_trace()
+                        traj_img_count += 1
                         # task instruction is already included in past_key_values_traj
                         obs_dict = process_observation(obs, cur_instr, headless=args.headless)
-                        action_chunk, tools_output, past_key_values_traj = gr00t_policy.get_action(obs_dict, past_key_values=past_key_values_traj, mode='interleaved')
+                        action_chunk, tools_output, past_key_values_traj = gr00t_policy.get_action(obs_dict, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved')
 
                         if tools_output != '':
                             # generated skill instructions
@@ -227,7 +231,7 @@ def eval_libero(cfg) -> None:
                             inside_tools = True
                             past_key_values_tools = None
                             # for step t, regenerate the action with the new instructions
-                            obs_dict_tools = process_observation(obs, tools_output, headless=args.headless)
+                            obs_dict_tools = process_observation(obs, '[SKILL_MODE]' + tools_output, headless=args.headless)
                             action_chunk, _, past_key_values_tools = gr00t_policy.get_action(obs_dict, past_key_values=past_key_values_tools, mode='interleaved')
 
                         # generate action_tokens for execution
@@ -267,6 +271,7 @@ def eval_libero(cfg) -> None:
 
             # Save a replay video of the episode
             save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, )
+            import pdb;pdb.set_trace()
 
             # Log current results
             print(f"Success: {done}")
@@ -310,7 +315,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_trials_per_task", type=int, default=5)
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--headless", type=bool, default=True)
-    parser.add_argument("--model_path", type=str, default="/fs/nexus-scratch/yliang17/Research/VLA/GR00T/gr00t_model/checkpoint-10000")
+    parser.add_argument("--model_path", type=str, default="/fs/nexus-scratch/yliang17/Research/VLA/GR00T/checkpoint/groot_libero_traj/checkpoint-6000")
     parser.add_argument("--embodiment_tag", type=str, default="new_embodiment")
     parser.add_argument("--data_config", type=str, default="libero_traj_arms")
     parser.add_argument("--denoising_steps", type=int, default=8)

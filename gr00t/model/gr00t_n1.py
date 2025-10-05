@@ -185,6 +185,7 @@ class GR00T_N1_5(PreTrainedModel):
         action_head_outputs["loss"] = ah_loss + transcript_lm_loss
         return action_head_outputs
 
+    @torch.no_grad()
     def get_action(
         self,
         inputs: dict,
@@ -219,7 +220,7 @@ class GR00T_N1_5(PreTrainedModel):
         else:
             # self.backbone.eagle_tokenizer.decode(backbone_inputs['eagle_input_ids'][0])
             generated_ids, backbone_outputs = self.backbone.generate(
-                backbone_inputs, max_token=1, past_key_values=past_key_values
+                backbone_inputs, max_token=1, past_key_values=past_key_values, special_token_only=True
             )
             past_key_values = backbone_outputs.get('past_key_values', None)
 
