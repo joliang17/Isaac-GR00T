@@ -84,13 +84,10 @@ class DualBrainTrainer(transformers.Trainer):
         loss = outputs["loss"]
 
         # Suppose model also returns other losses
-        action_head_loss = outputs.get("action_head_loss", None)
-        transcript_lm_loss = outputs.get("transcript_lm_loss", None)
-        if action_head_loss is not None:
-            wandb.log({"action_head_loss": action_head_loss.item()})
-        if transcript_lm_loss is not None:
-            wandb.log({"transcript_lm_loss": transcript_lm_loss.item()})
-        
+        for key, value in outputs.items():
+            if '_loss' in key:
+                wandb.log({key: value.item()})
+
         return (loss, outputs) if return_outputs else loss
 
     def create_optimizer(self):
@@ -147,6 +144,14 @@ class DualBrainTrainer(transformers.Trainer):
 
             if hasattr(self.model, "merge_and_unload"):
                 merged = self.model.merge_and_unload()
+                import pdb;pdb.set_trace()
+                p1 = merged.backbone.special_token_embeddings.weight
+                p2 = merged.backbone.special_token_lm_head.weight
+                p3 = merged.backbone.eagle_model.language_model.lm_head.special_head.weight
+                p4 = merged.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
+                print("tied?", p1.untyped_storage().data_ptr() == p2.untyped_storage().data_ptr())
+                print("tied?", p1.untyped_storage().data_ptr() == p3.untyped_storage().data_ptr())
+                print("tied?", p1.untyped_storage().data_ptr() == p4.untyped_storage().data_ptr())
                 merged.save_pretrained(output_dir, safe_serialization=True)
             else:
                 self.model.save_pretrained(output_dir, safe_serialization=True, state_dict=state_dict)
