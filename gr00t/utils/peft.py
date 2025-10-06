@@ -15,7 +15,6 @@ def _wrap_forward(model):
 
         backbone_inputs, action_inputs = model.prepare_input(inputs)
         backbone_outputs = model.backbone(backbone_inputs)
-        transcript_lm_loss = backbone_outputs.get("transcript_lm_loss", torch.tensor(0.0, device=model.device))
         
         if 'action' in inputs:
             action_head_outputs = model.action_head(backbone_outputs, action_inputs)
@@ -28,8 +27,8 @@ def _wrap_forward(model):
 
         ah_loss = action_head_outputs["loss"]
         action_head_outputs["action_head_loss"] = ah_loss
-        action_head_outputs["transcript_lm_loss"] = transcript_lm_loss
-        action_head_outputs["loss"] = ah_loss + transcript_lm_loss
+        action_head_outputs.update({k: v for k, v in backbone_outputs.items() if "loss" in k})
+        action_head_outputs["loss"] = ah_loss + action_head_outputs['transcript_lm_loss']
         return action_head_outputs
 
     model.forward = _forward_improved
@@ -59,8 +58,9 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, action_head_
     modules_to_save = []
     # Support either top-level or nested action_head
     # TODO:
-    for candidate in ["action_head", "backbone.action_head", 'backbone.eagle_model.language_model.model.embed_tokens']:
-    # for candidate in ["action_head", "backbone.action_head", ]:
+    # for candidate in ["action_head", "backbone.action_head", 'backbone.eagle_model.language_model.model.embed_tokens']:
+    # for candidate in ["action_head", "backbone.action_head", 'backbone.eagle_model.language_model.model.embed_tokens.special_embedding']:
+    for candidate in ['backbone.eagle_model.language_model.model.embed_tokens.special_embedding']:
         # only add if it exists
         try:
             _ = dict(model.named_modules())[candidate]
