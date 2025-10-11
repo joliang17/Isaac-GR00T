@@ -88,6 +88,67 @@ class GR00T_N1_5(PreTrainedModel):
         self.action_dim = config.action_dim
         self.compute_dtype = config.compute_dtype
 
+    # def tie_weights(self):
+    #     """
+    #     Called automatically after from_pretrained() and before save_pretrained().
+    #     Re-establish all custom weight-sharing relationships, including LoRA-wrapped modules.
+    #     """
+    #     # --- optional: skip the default HF tie to avoid overwriting custom heads ---
+    #     super().tie_weights()   # comment out unless you want LM <-> embeddings re-tied
+
+        # # TODO: write a tie function for model 
+        # emb = model.backbone.special_token_embeddings                     # nn.Embedding
+        # lm_head = model.backbone.special_token_lm_head                     # nn.Linear
+        # head = model.backbone.eagle_model.language_model.lm_head.special_head  # ModulesToSaveWrapper or Linear
+        # inner_emb = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding  # nn.Embedding
+
+        # base_head = model.backbone.eagle_model.language_model.lm_head.base_head  # ModulesToSaveWrapper or Linear
+        # base_emb = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding  # nn.Embedding
+
+        # # Base shared parameter
+        # shared = emb.weight
+
+        # def _register_shared(module, name="weight"):
+        #     if hasattr(module, "original_module") or hasattr(module, "modules_to_save"):
+        #         # handle ModulesToSaveWrapper (tie both contained linears)
+        #         if hasattr(module, "original_module"):
+        #             _register_shared(module.original_module, name)
+        #         if hasattr(module, "modules_to_save"):
+        #             for m in module.modules_to_save.values():
+        #                 _register_shared(m, name)
+        #         return
+        #     if name in getattr(module, "_parameters", {}):
+        #         with torch.no_grad():
+        #             del module._parameters[name]
+        #             module.register_parameter(name, shared)
+
+        # # Tie everywhere
+        # _register_shared(lm_head)
+        # _register_shared(head)
+        # _register_shared(inner_emb)
+
+        # base_head = model.backbone.eagle_model.language_model.lm_head.base_head  # ModulesToSaveWrapper or Linear
+        # base_emb = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding  # nn.Embedding
+        # shared = base_emb.weight
+        # _register_shared(base_head)
+
+        # # Sanity checks
+        # p1 = emb.weight
+        # p2 = lm_head.weight if hasattr(lm_head, "weight") else None
+        # p3 = head.original_module.weight if hasattr(head, "original_module") else head.weight
+        # p4 = inner_emb.weight
+        # # print("Same storage?", p1.data_ptr() == p2.data_ptr() == p3.data_ptr() == p4.data_ptr())
+
+        # p5 = base_head.original_module.weight if hasattr(base_head, "original_module") else base_head.weight
+        # p6 = base_emb.weight
+        # # print("base emb: Same storage?", p5.data_ptr() == p6.data_ptr())
+
+    # in your model class
+    @property
+    def _tied_weights_keys(self):
+        # Tell HF these share storage on purpose
+        return ['backbone.special_token_lm_head.weight', 'backbone.special_token_embeddings.weight', 'backbone.eagle_model.language_model.lm_head.special_head.weight', 'backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight', 'backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight', 'backbone.eagle_model.language_model.lm_head.base_head.weight', 'backbone.eagle_model.language_model.model.embed_tokens.weight', 'backbone.eagle_model.language_model.lm_head.weight', ]
+
     def validate_inputs(self, inputs):
         # NOTE -- this should be handled internally by the model
         # however, doing that will likely be breaking changes -- so we'll need to do it after the deadline
@@ -167,7 +228,6 @@ class GR00T_N1_5(PreTrainedModel):
         
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         backbone_outputs = self.backbone(backbone_inputs)
-        transcript_lm_loss = backbone_outputs.get("transcript_lm_loss", torch.tensor(0.0, device=self.device))
 
         if 'action' in inputs:
             action_head_outputs = model.action_head(backbone_outputs, action_inputs)
@@ -181,8 +241,8 @@ class GR00T_N1_5(PreTrainedModel):
         # Merge route/tool losses into the output and total loss.
         ah_loss = action_head_outputs["loss"]
         action_head_outputs["action_head_loss"] = ah_loss
-        action_head_outputs["transcript_lm_loss"] = transcript_lm_loss
-        action_head_outputs["loss"] = ah_loss + transcript_lm_loss
+        action_head_outputs.update({k: v for k, v in backbone_outputs.items() if "loss" in k})
+        action_head_outputs["loss"] = ah_loss + action_head_outputs['transcript_lm_loss']
         return action_head_outputs
 
     @torch.no_grad()
@@ -232,11 +292,12 @@ class GR00T_N1_5(PreTrainedModel):
                 token_id = int(generated_ids)
             else:
                 raise RuntimeError('Backbone.generate returned an unexpected token payload.')
-            
+                        
             if token_id == self.backbone.actions_id:
                 # Step 2a: use the action head when the route token is [ACTIONS]
                 action_head_outputs = self.action_head.get_action(backbone_outputs, action_inputs)
                 action_head_outputs['action_head_skipped'] = False
+                # import pdb;pdb.set_trace()
                 
             elif token_id == self.backbone.tools_id:
                 # Step 2b: keep generating tool tokens until we observe [EOT]
