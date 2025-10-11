@@ -24,6 +24,135 @@ import re
 
 import gr00t
 
+
+class SpecialTokenEmbeddingWrapper(nn.Module):
+    def __init__(self, base_embedding: nn.Embedding, special_embedding: nn.Embedding, special_id_lookup: torch.Tensor):
+        super().__init__()
+        self.base_embedding = base_embedding
+        self.special_embedding = special_embedding
+        self.register_buffer("special_id_lookup", special_id_lookup.clone(), persistent=False)
+        self.weight = self.base_embedding.weight
+        self.embedding_dim = self.base_embedding.embedding_dim
+        self.num_embeddings = self.special_id_lookup.numel()
+        self.padding_idx = self.base_embedding.padding_idx
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        if self.special_id_lookup.numel() == 0:
+            return self.base_embedding(input_ids)
+
+        special_indices = self.special_id_lookup[input_ids]
+        special_mask = special_indices >= 0
+
+        if special_mask.any():
+            base_input = input_ids.clone()
+            base_input = base_input.masked_fill(special_mask, 0)
+            embeddings = self.base_embedding(base_input)
+            embeddings = embeddings.clone()
+            embeddings[special_mask] = self.special_embedding(special_indices[special_mask]).to(dtype=embeddings.dtype)
+        else:
+            embeddings = self.base_embedding(input_ids)
+
+        return embeddings
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):  
+        legacy_key = prefix + "weight"
+        base_key = prefix + "base_embedding.weight"
+        if legacy_key in state_dict and base_key not in state_dict:
+            weight = state_dict.pop(legacy_key)
+            if isinstance(weight, torch.Tensor) and weight.dtype != self.base_embedding.weight.dtype:
+                weight = weight.to(self.base_embedding.weight.dtype)
+            state_dict[base_key] = weight
+
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
+        self.weight = getattr(self.base_embedding, "weight", None)
+
+
+class SpecialTokenLMHeadWrapper(nn.Module):
+    def __init__(
+        self,
+        base_head: nn.Module,
+        special_head: nn.Linear,
+        special_token_ids: torch.Tensor,
+        total_vocab_size: int,
+    ):
+        super().__init__()
+        self.base_head = base_head
+        self.special_head = special_head
+        self.register_buffer("special_token_ids", special_token_ids.clone(), persistent=False)
+        self.total_vocab_size = total_vocab_size
+        self.out_features = total_vocab_size
+        self.in_features = getattr(base_head, "in_features", special_head.in_features)
+        self.weight = getattr(self.base_head, "weight", None)
+        self.bias = getattr(self.base_head, "bias", None)
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        for suffix in ("weight", "bias"):
+            legacy_key = prefix + suffix
+            base_attr = getattr(self.base_head, suffix, None)
+            if base_attr is None:
+                continue
+            base_key = prefix + f"base_head.{suffix}"
+            if legacy_key in state_dict and base_key not in state_dict:
+                tensor = state_dict.pop(legacy_key)
+                if isinstance(tensor, torch.Tensor) and tensor.dtype != base_attr.dtype:
+                    tensor = tensor.to(base_attr.dtype)
+                state_dict[base_key] = tensor
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
+        self.weight = getattr(self.base_head, "weight", None)
+        self.bias = getattr(self.base_head, "bias", None)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        base_logits = self.base_head(hidden_states)
+        if self.special_token_ids.numel() == 0:
+            return base_logits
+
+        logits_shape = hidden_states.shape[:-1] + (self.total_vocab_size,)
+        logits = base_logits.new_zeros(logits_shape)
+        logits[..., : base_logits.size(-1)] = base_logits
+        special_logits = self.special_head(hidden_states)
+        if special_logits.dtype != logits.dtype:
+            special_logits = special_logits.to(logits.dtype)
+
+        ######################################################
+        # # version1: concat special token's logits at the end of logits
+        # logits_flat = logits.view(-1, self.total_vocab_size)
+        # special_flat = special_logits.view(-1, special_logits.size(-1))
+        # index = self.special_token_ids.unsqueeze(0).expand_as(special_flat)
+        # logits_flat.scatter_(1, index, special_flat)
+        # logits = logits_flat.view(logits_shape)
+        ######################################################
+        # version2: seperate logits from original lm head and new lm head
+        # if not special token, logits is still base_logits. if special token, logits from special_logits
+        # if decode logits to text, use argmax from each logit to decode text
+        # logits shape: [B, S, V1 + V2]
+        logits[..., self.special_token_ids] = special_logits
+
+        return logits
+
+
+
 DEFAULT_EAGLE_PATH = os.path.join(
     os.path.dirname(gr00t.__file__), "model", "backbone", "eagle2_hg_model"
 )
@@ -71,6 +200,7 @@ class EagleBackbone(nn.Module):
             tune_visual: whether to tune the visual model (default: False)
         """
         super().__init__()
+        self.init_mode = init_mode
         assert not reproject_vision, "Reproject vision is not implemented here, set to False"
 
         config = AutoConfig.from_pretrained(DEFAULT_EAGLE_PATH, trust_remote_code=True)
@@ -82,7 +212,8 @@ class EagleBackbone(nn.Module):
         )
         self.eagle_tokenizer = self.eagle_processor.tokenizer
 
-        specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
+        # specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
+        specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
         # Filter out ones already present
         existing = set(self.eagle_tokenizer.all_special_tokens)
         to_add = [t for t in specials["additional_special_tokens"] if t not in existing]
@@ -93,22 +224,42 @@ class EagleBackbone(nn.Module):
 
         self.eagle_tokenizer.add_special_tokens(specials)
         self.eagle_processor.tokenizer = self.eagle_tokenizer
-        
-        # ADDED: only for evaluation
-        if not init_mode:
-            old_vocab = self.eagle_model.get_input_embeddings().num_embeddings
-            new_vocab = len(self.eagle_tokenizer)
-            if new_vocab > old_vocab:
-                self.eagle_model.resize_token_embeddings(new_vocab, mean_resizing=False)
-                print(f"Resized Eagle2 VLM's embeddings: {old_vocab} -> {new_vocab} (added {new_vocab - old_vocab} tokens)")
+
+        base_embeddings = self.eagle_model.get_input_embeddings()
+        base_vocab_size = base_embeddings.num_embeddings
+
+        new_special_token_ids: list[int] = []
+        for token in to_add:
+            token_id = self.eagle_tokenizer.convert_tokens_to_ids(token)
+            if token_id is not None and token_id >= base_vocab_size:
+                new_special_token_ids.append(token_id)
+
+        if new_special_token_ids:
+            embed_dim = base_embeddings.embedding_dim
+            base_weight = base_embeddings.weight.detach().float()
+            special_ids_tensor = torch.tensor(new_special_token_ids, dtype=torch.long)
+            self.register_buffer("special_token_ids", special_ids_tensor, persistent=False)
+
+            self.special_token_embeddings = nn.Embedding(len(new_special_token_ids), embed_dim)
+            self.special_token_lm_head = nn.Linear(embed_dim, len(new_special_token_ids), bias=False)
+            self.special_token_lm_head.weight = self.special_token_embeddings.weight
+        else:
+            self.register_buffer("special_token_ids", torch.empty(0, dtype=torch.long), persistent=False)
+            self.special_token_embeddings = None
+            self.special_token_lm_head = None
+
+        self._apply_special_token_modules()
 
         # Cache special token ids (single-token by construction)
         self.actions_id = self.eagle_tokenizer.convert_tokens_to_ids("[ACTIONS]")
         self.tools_id = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS]")
-        self.endtools_id = self.eagle_tokenizer.convert_tokens_to_ids("[EOT]")
-        self.pad_action = self.eagle_tokenizer.convert_tokens_to_ids("[PAD_A]")
         self.skills_end = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS_END]")
-        self.pad_id = self.eagle_tokenizer.convert_tokens_to_ids("<|endoftext|>")
+        # self.endtools_id = self.eagle_tokenizer.convert_tokens_to_ids("[EOT]")
+        # self.pad_action = self.eagle_tokenizer.convert_tokens_to_ids("[PAD_A]")
+        
+        self.pad_id = self.eagle_tokenizer.convert_tokens_to_ids(self.eagle_tokenizer.pad_token)
+        self.end_id = self.eagle_tokenizer.convert_tokens_to_ids(self.eagle_tokenizer.eos_token)
+
         self.img_id = self.eagle_tokenizer.convert_tokens_to_ids("<img>")
         maybe_image_tokens = ["<IMG_CONTEXT>", "<img>", "</img>", ]  # include what your tokenizer actually uses
         img_ids = []
@@ -119,7 +270,8 @@ class EagleBackbone(nn.Module):
         self.img_ids = torch.tensor(img_ids)
 
         self.special_token_loss_weight = special_token_loss_weight
-        loss_token_ids = [self.actions_id, self.tools_id, self.endtools_id, self.pad_action, self.skills_end]
+        # loss_token_ids = [self.actions_id, self.tools_id, self.endtools_id, self.pad_action, self.skills_end]
+        loss_token_ids = [self.actions_id, self.tools_id, self.skills_end]
         loss_token_ids = [tid for tid in dict.fromkeys(loss_token_ids) if tid is not None and tid >= 0]
         self.special_loss_ids = (
             torch.tensor(loss_token_ids, dtype=torch.long)
@@ -143,7 +295,6 @@ class EagleBackbone(nn.Module):
         if self.eagle_tokenizer.pad_token_id is None:
             self.eagle_tokenizer.pad_token = self.eagle_tokenizer.eos_token
 
-
     def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool):
         self.tune_llm = tune_llm
         self.tune_visual = tune_visual
@@ -163,6 +314,93 @@ class EagleBackbone(nn.Module):
                     print(f"Backbone trainable parameter: {name}")
         if not any(p.requires_grad for p in self.parameters()):
             print("Warning: No backbone trainable parameters found.")
+
+    # def tie_weights(self):
+    #     """Tie base model weights and ensure special-token layers share parameters."""
+    #     super().tie_weights()
+    #     # self._tie_special_token_weights()
+
+    # def post_init(self):
+    #     super().post_init()
+    #     self.tie_weights()
+
+    def _tie_special_token_weights(self) -> None:
+        if getattr(self, "special_token_embeddings", None) is None:
+            return
+        if getattr(self, "special_token_lm_head", None) is None:
+            return
+
+        embed_weight = self.special_token_embeddings.weight
+        if self.special_token_lm_head.weight is not embed_weight:
+            self.special_token_lm_head.weight = embed_weight
+
+        language_model = getattr(self.eagle_model, "language_model", None)
+        # embedding
+        model_q3 = getattr(language_model, "model", None) if language_model else None
+        embed_tokens = getattr(model_q3, "embed_tokens", None) if model_q3 else None
+        special_embedding = getattr(embed_tokens, "special_embedding", None) if embed_tokens else None
+        if special_embedding is not None and special_embedding.weight is not embed_weight:
+            special_embedding.weight = embed_weight
+
+        input_emb = self.eagle_model.get_input_embeddings()
+        if isinstance(input_emb, SpecialTokenEmbeddingWrapper):
+            wrapper_emb = getattr(input_emb, "special_embedding", None)
+            if wrapper_emb is not None and wrapper_emb.weight is not embed_weight:
+                wrapper_emb.weight = embed_weight
+
+        # head 
+        lm_head = getattr(language_model, "lm_head", None) if language_model else None
+        special_head = getattr(lm_head, "special_head", None) if lm_head else None
+        if special_head is not None and special_head.weight is not embed_weight:
+            special_head.weight = embed_weight
+
+        output_head = self.eagle_model.get_output_embeddings()
+        if isinstance(output_head, SpecialTokenLMHeadWrapper):
+            wrapper_head = getattr(output_head, "special_head", None)
+            if wrapper_head is not None and wrapper_head.weight is not embed_weight:
+                wrapper_head.weight = embed_weight
+        return 
+
+    def _apply_special_token_modules(self) -> None:
+        if getattr(self, "special_token_embeddings", None) is None or getattr(self, "special_token_lm_head", None) is None:
+            self.eagle_model.config.vocab_size = len(self.eagle_tokenizer)
+            return
+
+        if self.special_token_ids.numel() == 0:
+            self.eagle_model.config.vocab_size = len(self.eagle_tokenizer)
+            return
+
+        base_embedding = self.eagle_model.get_input_embeddings()
+        if isinstance(base_embedding, SpecialTokenEmbeddingWrapper):
+            base_embedding = base_embedding.base_embedding
+
+        base_head = self.eagle_model.get_output_embeddings()
+        if isinstance(base_head, SpecialTokenLMHeadWrapper):
+            base_head = base_head.base_head
+
+        total_vocab_size = len(self.eagle_tokenizer)
+        special_lookup = torch.full((total_vocab_size,), -1, dtype=torch.long)
+        for idx, token_id in enumerate(self.special_token_ids.tolist()):
+            special_lookup[token_id] = idx
+
+        if getattr(self, '_buffers', None) is not None and 'special_token_lookup' in self._buffers:
+            buffer = self._buffers['special_token_lookup']
+            buffer.resize_(special_lookup.shape)
+            buffer.copy_(special_lookup)
+        else:
+            self.register_buffer('special_token_lookup', special_lookup, persistent=False)
+
+        embedding_wrapper = SpecialTokenEmbeddingWrapper(base_embedding, self.special_token_embeddings, special_lookup)
+        lm_head_wrapper = SpecialTokenLMHeadWrapper(base_head, self.special_token_lm_head, self.special_token_ids, total_vocab_size)
+
+        self.eagle_model.set_input_embeddings(embedding_wrapper)
+        self.eagle_model.set_output_embeddings(lm_head_wrapper)
+        self.eagle_model.config.vocab_size = total_vocab_size
+
+        # self._tie_special_token_weights()
+        # eagle_model = getattr(self, 'eagle_model', None)
+        # if eagle_model is not None and hasattr(eagle_model, 'tie_weights'):
+        #     eagle_model.tie_weights()
 
     def set_frozen_modules_to_eval_mode(self):
         """
@@ -191,7 +429,6 @@ class EagleBackbone(nn.Module):
         eagle_input.pop('llm_labels')
         eagle_output = self.eagle_model(**eagle_input, past_key_values=past_key_values, output_hidden_states=True, return_dict=True, use_cache=True)
         past_key_values = eagle_output.past_key_values
-
         eagle_features = eagle_output.hidden_states[self.select_layer]
         eagle_features = self.eagle_linear(eagle_features)
         eagle_logits = eagle_output.logits
@@ -228,50 +465,120 @@ class EagleBackbone(nn.Module):
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
 
-        #####################################
+        vocab_size = shift_logits.size(-1)
+        valid_mask = shift_labels != -100
+        num_special = self.special_token_ids.numel()
+        special_loss = None
+        base_loss = None
+        if num_special == 0:
+            loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
+            per_token_loss = loss_fct(shift_logits.view(-1, vocab_size), shift_labels.view(-1))
+            per_token_loss = per_token_loss.view_as(shift_labels)
+        else:
+            special_ids = self.special_token_ids.to(shift_labels.device)
+            special_mask = torch.isin(shift_labels, special_ids) & valid_mask
+            base_mask = valid_mask & ~special_mask
+            per_token_loss = shift_logits.new_zeros(shift_labels.shape, dtype=shift_logits.dtype)
+
+            if base_mask.any():
+                base_vocab_size = vocab_size - num_special
+                base_logits = shift_logits[..., :base_vocab_size]
+                base_loss = F.cross_entropy(base_logits[base_mask], shift_labels[base_mask], reduction="none")
+                per_token_loss[base_mask] = base_loss.to(dtype=per_token_loss.dtype)
+
+            if special_mask.any():
+                special_logits = shift_logits.index_select(-1, special_ids)
+                lookup = getattr(self, "special_token_lookup", None)
+                if lookup is None or lookup.numel() != vocab_size:
+                    lookup = shift_labels.new_full((vocab_size,), -1, dtype=torch.long)
+                    lookup[special_ids] = torch.arange(num_special, device=shift_labels.device)
+                else:
+                    if lookup.device != shift_labels.device:
+                        lookup = lookup.to(device=shift_labels.device)
+                target_positions = lookup[shift_labels[special_mask]].to(dtype=torch.long)
+                special_loss = F.cross_entropy(special_logits[special_mask], target_positions, reduction="none")
+                per_token_loss[special_mask] = special_loss.to(dtype=per_token_loss.dtype)
+
+                # pred_ids = base_logits.argmax(dim=-1)
+                # valid_pred_ids = pred_ids[shift_labels != -100]
+                # valid_label_ids = shift_labels[shift_labels != -100]
+                # decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
+                # print(''.join(decoded_texts))
+                # decoded_texts_label = self.eagle_tokenizer.batch_decode(valid_label_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
+                # print(''.join(decoded_texts_label))
+
+                # # build inverse lookup (small id → normal vocab id)
+                # inverse_lookup = torch.full((num_special,), -1, dtype=torch.long, device=lookup.device)
+                # inverse_lookup[torch.arange(num_special)] = special_ids
+                # pred_sp_ids = special_logits[special_mask].argmax(dim=-1)
+                # pred_sp_ids = inverse_lookup[pred_sp_ids]
+                # decoded_pred = self.eagle_tokenizer.batch_decode(pred_sp_ids, skip_special_tokens=False)
+                # print(''.join(decoded_pred))
+                # decoded_label = self.eagle_tokenizer.batch_decode(shift_labels[special_mask], skip_special_tokens=False)
+                # print(''.join(decoded_label))
+
+                # print(special_logits[special_mask])
+                # print(special_loss)
+                # p_dict = dict(self.eagle_model.named_parameters())
+                # print('requires_grad:', p_dict['language_model.model.embed_tokens.special_embedding.original_module.weight'].requires_grad)
+                # print(self.eagle_model.language_model.model.embed_tokens.special_embedding.weight)
+                # import pdb;pdb.set_trace()
+        # ######################################
+        # # version1: 
+        # loss = per_token_loss.mean()
+
+        ######################################
+        # loss avg per type
+        if base_loss is not None:
+            base_loss_avg = base_loss.mean()
+        else:
+            base_loss_avg = torch.tensor(0.0, device=shift_labels.device)
+
+        if special_loss is not None:
+            special_loss_avg = special_loss.mean()
+        else:
+            special_loss_avg = torch.tensor(0.0, device=shift_labels.device)
+
+        loss = special_loss_avg + base_loss_avg
+        # loss = special_loss_avg
+        ####################################
         # # DEBUG:
-        # unique_ids = torch.unique(eagle_input['input_ids'][torch.where(labels == -100)])
-        # ignore_tokens = self.eagle_tokenizer.decode(unique_ids)
+        # # unique_ids = torch.unique(eagle_input['input_ids'][torch.where(labels == -100)])
+        # # ignore_tokens = self.eagle_tokenizer.decode(unique_ids)
 
         # # shift_logits shape: [batch, seq_len, vocab_size]
-        # pred_ids = shift_logits.argmax(dim=-1)
+        # if num_special == 0:
+        #     pred_ids = shift_logits.argmax(dim=-1)
+        # else:
+        #     base_vocab_size = vocab_size - num_special
+        #     logits_shape = shift_logits.shape[:-1]
+        #     if base_vocab_size > 0:
+        #         base_logits_full = shift_logits[..., :base_vocab_size]
+        #         base_scores, base_pred_ids = base_logits_full.max(dim=-1)
+        #     else:
+        #         min_value = torch.finfo(shift_logits.dtype).min
+        #         base_scores = shift_logits.new_full(logits_shape, min_value)
+        #         base_pred_ids = shift_labels.new_zeros(logits_shape, dtype=torch.long)
+        #     special_ids = self.special_token_ids.to(shift_logits.device)
+        #     special_logits_full = shift_logits.index_select(-1, special_ids)
+        #     special_scores, special_indices = special_logits_full.max(dim=-1)
+        #     special_pred_ids = special_ids[special_indices]
+        #     use_special = special_scores > base_scores
+        #     pred_ids = torch.where(use_special, special_pred_ids, base_pred_ids)
         # valid_pred_ids = pred_ids[shift_labels != -100]
-        # valid_label_ids = shift_labels[shift_labels != -100]
         # decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids, skip_special_tokens=False)
+        # print(''.join(decoded_texts))
+        # valid_label_ids = shift_labels[shift_labels != -100]
         # decoded_label = self.eagle_tokenizer.batch_decode(valid_label_ids, skip_special_tokens=False)
+        # print(''.join(decoded_label).replace('<|endoftext|>', ''))
+        # decoded_special = self.eagle_tokenizer.batch_decode(shift_labels[special_mask], skip_special_tokens=False)
+        # print(''.join(decoded_special).replace('<|endoftext|>', ''))
 
         # x1 = list(zip(decoded_texts, decoded_label))
         # print([item for item in x1 if item[0] != item[1]])
         # print([item for item in x1 if item[0] == item[1]])
-        # print(''.join(decoded_label))
-        # print(''.join(decoded_texts))
-        # import pdb;pdb.set_trace()
 
-        vocab_size = shift_logits.size(-1)
-        loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
-        per_token_loss = loss_fct(shift_logits.view(-1, vocab_size), shift_labels.view(-1))
-        per_token_loss = per_token_loss.view_as(shift_labels)
-
-        valid_mask = shift_labels != -100
-        if self.special_loss_ids.numel() > 0:
-            special_ids = self.special_loss_ids.to(shift_labels.device)
-            special_mask = torch.isin(shift_labels, special_ids) & valid_mask
-        else:
-            special_mask = torch.zeros_like(valid_mask)
-
-        weights = torch.ones_like(per_token_loss)
-        weights = weights.masked_fill(~valid_mask, 0.0)
-        if self.special_loss_ids.numel() > 0:
-            special_weight = torch.full_like(per_token_loss, self.special_token_loss_weight)
-            weights = torch.where(special_mask, special_weight, weights)
-
-        total_weight = weights.sum()
-        if total_weight.item() == 0:
-            return shift_logits.new_zeros(())
-
-        loss = (per_token_loss * weights).sum() / total_weight
-
-        return loss
+        return loss, base_loss_avg, special_loss_avg
         
 
     def split_by_img_id(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
@@ -302,10 +609,9 @@ class EagleBackbone(nn.Module):
         device = input_ids.device
 
         # Token ids
-        img_id      = self.eagle_tokenizer.convert_tokens_to_ids("<img>")
+        img_id      = self.img_id
         actions_id  = self.actions_id
         tools_id    = self.tools_id
-        pad_a_id    = self.pad_action
 
         segments: list[torch.Tensor] = []
         segments_mask: list[torch.Tensor] = []
@@ -354,19 +660,13 @@ class EagleBackbone(nn.Module):
                 tol_first = first_pos(tol_rel)
 
                 # Keep only if [ACTIONS] appears before [TOOLS] (or [TOOLS] absent)
+                # self.eagle_tokenizer.decode(window_ids)
                 if act_first is None:
                     continue
                 if tol_first is not None and tol_first < act_first:
                     continue
-
-                # Optional: trim the end to the first [PAD_A] after [ACTIONS]
-                pad_rel = (window_ids[act_first:] == pad_a_id).nonzero(as_tuple=False)
-                if pad_rel.numel() > 0:
-                    # Absolute index of PAD_A; use half-open slice [start:end) (exclude PAD_A)
-                    end_exclusive = start_pos + act_first + pad_rel[0, 0].item()
-                else:
-                    # If no PAD_A found before next image, keep full boundary (inclusive -> exclusive)
-                    end_exclusive = end_boundary + 1
+                
+                end_exclusive = end_boundary + 1
 
                 if end_exclusive <= start_pos:
                     continue
@@ -422,15 +722,9 @@ class EagleBackbone(nn.Module):
             # normal input
             # directly return logits and embd
             transcript_lm_loss = torch.tensor(0.0, device=eagle_logits.device)
-
-            out = {
-                "transcript_lm_loss": transcript_lm_loss, 
-                "eagle_embeds": eagle_embeds,
-                "eagle_mask":   eagle_mask,
-                "eagle_embeds_multi": None,
-                "eagle_mask_multi": None,
-                "past_key_values": past_key_values
-            }
+            base_loss_avg = torch.tensor(0.0, device=eagle_logits.device)
+            special_loss_avg = torch.tensor(0.0, device=eagle_logits.device)
+            embeds_tensor, masks_tensor = None, None
 
         else:
             #########################
@@ -439,16 +733,18 @@ class EagleBackbone(nn.Module):
             embeds_tensor, masks_tensor = self.flatten_actions(list_eagle_emb, list_eagle_mask)
 
             # 3) Compute generated loss
-            transcript_lm_loss = self._transcript_lm_loss(vl_input)
+            transcript_lm_loss, base_loss_avg, special_loss_avg = self._transcript_lm_loss(vl_input)
 
-            out = {
-                "transcript_lm_loss": transcript_lm_loss,
-                "eagle_embeds": eagle_embeds,
-                "eagle_mask":   eagle_mask,
-                "eagle_embeds_multi": embeds_tensor,
-                "eagle_mask_multi": masks_tensor,
-                "past_key_values": past_key_values
-            }
+        out = {
+            "transcript_lm_loss": transcript_lm_loss,
+            "text_token_loss": base_loss_avg, 
+            "special_token_loss": special_loss_avg, 
+            "eagle_embeds": eagle_embeds,
+            "eagle_mask":   eagle_mask,
+            "eagle_embeds_multi": embeds_tensor,
+            "eagle_mask_multi": masks_tensor,
+            "past_key_values": past_key_values
+        }
 
         return out
 
@@ -480,9 +776,10 @@ class EagleBackbone(nn.Module):
                 "backbone_attention_mask_multi": eagle_mask_multi, # [A, Lmax]
 
                 "transcript_lm_loss":      out["transcript_lm_loss"],
-                # (Optional) expose original batch size if downstream wants it
+                "text_token_loss":         out["text_token_loss"],
+                "special_token_loss":      out["special_token_loss"],
                 "orig_batch_size":         out["eagle_embeds"].size(0),
-                "past_key_values": past_key_values
+                "past_key_values":         past_key_values
             }
         )
 
@@ -529,8 +826,9 @@ class EagleBackbone(nn.Module):
         generated_tokens: list[torch.Tensor] = []
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
         cache = past_key_values
+        num_special = self.special_token_ids.numel()
 
-        if special_token_only:
+        if num_special > 0 and special_token_only:
             # Allowed tokens (e.g., tools and actions; add others if needed)
             allowed_ids = torch.tensor(
                 [self.tools_id, self.actions_id, self.skills_end], 
@@ -541,6 +839,8 @@ class EagleBackbone(nn.Module):
             logits, route_pos, _, _, cache = self.forward_eagle(
                 vl_input, past_key_values=cache
             )
+            vocab_size = logits.size(-1)
+            base_vocab_size = vocab_size - num_special
 
             if logits.size(0) != batch_size:
                 raise RuntimeError("Batch size changed during generation")
@@ -552,33 +852,51 @@ class EagleBackbone(nn.Module):
             batch_indices = torch.arange(batch_size, device=device)
             next_token_logits = logits[batch_indices, route_pos, :]
 
-            if special_token_only:
+            if num_special > 0 and special_token_only:
+
                 # Build a -inf mask over the full vocab, then open only allowed ids
                 neg_inf = torch.finfo(next_token_logits.dtype).min  # safe -inf for current dtype
                 mask = torch.full_like(next_token_logits, neg_inf)
                 mask.scatter_(dim=-1, index=allowed_ids.unsqueeze(0).expand(next_token_logits.size(0), -1), value=0)
-
                 masked_logits = next_token_logits + mask  # now only allowed ids are selectable
+
+                special_ids = self.special_token_ids.to(next_token_logits.device)
+                special_logits = masked_logits.index_select(-1, special_ids)
 
                 # Choose the token (greedy or temperature sampling)
                 temperature = getattr(self.args, "route_temperature", 0.0) if hasattr(self, "args") else 0.0
                 if temperature and temperature > 0.0:
-                    probs = torch.softmax(masked_logits / temperature, dim=-1)
-                    next_token_raw = torch.multinomial(probs, num_samples=1).squeeze(-1)
+                    probs = torch.softmax(special_logits / temperature, dim=-1)
+                    next_token_raw_sp = torch.multinomial(probs, num_samples=1).squeeze(-1)
                 else:
-                    next_token_raw = masked_logits.argmax(dim=-1)
+                    next_token_raw_sp = special_logits.argmax(dim=-1)
+                
+                # ADDED: map the  next_token_raw to the original token id
+                # original setup
+                lookup = getattr(self, "special_token_lookup", None)
+                if lookup is None or lookup.numel() != vocab_size:
+                    lookup = next_token_logits.new_full((vocab_size,), -1, dtype=torch.long)
+                    lookup[special_ids] = torch.arange(num_special, device=next_token_logits.device)
+                    
+                # build inverse lookup (small id → normal vocab id)
+                inverse_lookup = torch.full((num_special,), -1, dtype=torch.long, device=lookup.device)
+                inverse_lookup[torch.arange(num_special)] = special_ids
+                next_token_raw = inverse_lookup[next_token_raw_sp]
+
             else:
-                next_token_raw = next_token_logits.argmax(dim=-1)
+                # generate special tokens from base logits
+                base_logits = next_token_logits[..., :base_vocab_size]
+                next_token_raw = base_logits.argmax(dim=-1)
 
             prev_finished = finished.clone()
             recorded_token = torch.where(
                 prev_finished,
-                torch.full_like(next_token_raw, self.endtools_id),
+                torch.full_like(next_token_raw, self.end_id),
                 next_token_raw,
             )
             generated_tokens.append(recorded_token)
 
-            finished = prev_finished | (next_token_raw == self.endtools_id)
+            finished = prev_finished | (next_token_raw == self.end_id)
 
             tokens_to_append = torch.where(
                 prev_finished.unsqueeze(1),
