@@ -34,8 +34,91 @@ def _wrap_forward(model):
     model.forward = _forward_improved
     return model
 
+def tie_all_special_weights(model):
+    """
+    Tie all special-token weight parameters so they share storage.
+    Works with PEFT-wrapped models (ModulesToSaveWrapper etc.).
+    """
 
-def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, action_head_only=True):
+    def _register_shared(module, name="weight"):
+        if hasattr(module, "original_module") or hasattr(module, "modules_to_save"):
+            # handle ModulesToSaveWrapper (tie both contained linears)
+            if hasattr(module, "original_module"):
+                _register_shared(module.original_module, name)
+            if hasattr(module, "modules_to_save"):
+                for m in module.modules_to_save.values():
+                    _register_shared(m, name)
+            return
+        if name in getattr(module, "_parameters", {}):
+            with torch.no_grad():
+                del module._parameters[name]
+                module.register_parameter(name, shared)
+    
+    # Grab the four sites
+    emb = model.backbone.special_token_embeddings                     # nn.Embedding
+    lm_head = model.backbone.special_token_lm_head                     # nn.Linear
+    head = model.backbone.eagle_model.language_model.lm_head.special_head  # ModulesToSaveWrapper or Linear
+    inner_emb = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding  # nn.Embedding
+
+    base_head = model.backbone.eagle_model.language_model.lm_head.base_head  # ModulesToSaveWrapper or Linear
+    base_emb = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding  # nn.Embedding
+    import pdb;pdb.set_trace()
+
+    # Base shared parameter
+    shared = emb.weight
+
+    _register_shared(lm_head)
+    _register_shared(head)
+    _register_shared(inner_emb)
+    
+    #####################
+    # eval load
+    # shared = head.weight
+    # _register_shared(emb)
+    # _register_shared(lm_head)
+    # _register_shared(inner_emb)
+
+    base_head = model.backbone.eagle_model.language_model.lm_head.base_head  # ModulesToSaveWrapper or Linear
+    base_emb = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding  # nn.Embedding
+    shared = base_emb.weight
+    _register_shared(base_head)
+
+    import pdb;pdb.set_trace()
+    # Sanity checks
+    p1 = emb.weight
+    p2 = lm_head.weight if hasattr(lm_head, "weight") else None
+    p3 = head.original_module.weight if hasattr(head, "original_module") else head.weight
+    p4 = inner_emb.weight
+    # print("Same storage?", p1.data_ptr() == p2.data_ptr() == p3.data_ptr() == p4.data_ptr())
+
+    p5 = base_head.original_module.weight if hasattr(base_head, "original_module") else base_head.weight
+    p6 = base_emb.weight
+    # print("base emb: Same storage?", p5.data_ptr() == p6.data_ptr())
+
+
+def enable_special_training(model):
+    wsp = model.backbone.special_token_embeddings.weight
+    wsp.requires_grad_(True)
+    special_lm = model.backbone.special_token_lm_head.weight
+    special_lm.requires_grad_(True)
+    lm_head = model.backbone.eagle_model.language_model.lm_head.special_head
+    (lm_head.original_module if hasattr(lm_head, "original_module") else lm_head).weight.requires_grad_(True)
+    special = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding
+    (special.original_module if hasattr(special, "original_module") else special).weight.requires_grad_(True)
+
+
+def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action_head=True):
+    def find_saved_module(list_candidate):
+        modules_to_save = []
+        for candidate in list_candidate:
+            # only add if it exists
+            try:
+                _ = dict(model.named_modules())[candidate]
+                modules_to_save.append(candidate)
+            except KeyError:
+                pass
+        return modules_to_save
+
     target_modules = []
 
     # Inspect model structure to find the correct paths
@@ -54,35 +137,27 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, action_head_
             if any(x in name for x in ["q_proj", "v_proj", "to_q", "to_v", "k_proj", "to_k"]):
                 target_modules.append(name)
 
-    # IMPORTANT: declare action_head as a module to save (full FT)
-    modules_to_save = []
-    # Support either top-level or nested action_head
+    # ADDED:
+    if train_action_head:
+        list_candidate = ["action_head", "backbone.action_head", 'backbone.eagle_model.language_model.model.embed_tokens.special_embedding', "backbone.special_token_embeddings", ]
+    else:
+        list_candidate = ['backbone.eagle_model.language_model.model.embed_tokens.special_embedding', 'backbone.eagle_model.language_model.lm_head.special_head', "backbone.special_token_embeddings", "backbone.special_token_lm_head"]
+
+    modules_to_save = find_saved_module(list_candidate)
+    
+    lora_config = LoraConfig(r=rank, lora_alpha=lora_alpha, target_modules=target_modules, lora_dropout=lora_dropout, bias="none", task_type="CAUSAL_LM", modules_to_save=modules_to_save, )
+
+    model_lora = get_peft_model(model, lora_config)
+    model_lora.print_trainable_parameters()
+    model_lora = _wrap_forward(model_lora)
+
     # TODO:
-    # for candidate in ["action_head", "backbone.action_head", 'backbone.eagle_model.language_model.model.embed_tokens']:
-    # for candidate in ["action_head", "backbone.action_head", 'backbone.eagle_model.language_model.model.embed_tokens.special_embedding']:
-    for candidate in ['backbone.eagle_model.language_model.model.embed_tokens.special_embedding']:
-        # only add if it exists
-        try:
-            _ = dict(model.named_modules())[candidate]
-            modules_to_save.append(candidate)
-        except KeyError:
-            pass
+    # tie weight
+    tie_all_special_weights(model_lora)
+    enable_special_training(model_lora)
+    _ = list_trainable_parameter_names(model_lora)
 
-    lora_config = LoraConfig(
-        r=rank,
-        lora_alpha=lora_alpha,
-        target_modules=target_modules,
-        lora_dropout=lora_dropout,
-        bias="none",
-        task_type="CAUSAL_LM",
-        modules_to_save=modules_to_save,
-    )
-
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
-    model = _wrap_forward(model)
-    list_trainable_parameter_names(model)
-    return model
+    return model_lora
 
 
 def _freeze_module(module: torch.nn.Module, except_trainable: bool = False):

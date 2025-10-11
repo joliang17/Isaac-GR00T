@@ -32,6 +32,11 @@ from transformers.trainer import (
     get_parameter_names,
     is_sagemaker_mp_enabled,
 )
+from transformers import AutoConfig, AutoModel, AutoTokenizer, AutoProcessor
+from tempfile import TemporaryDirectory
+from peft import PeftModel
+from gr00t.model.gr00t_n1 import GR00T_N1_5
+from gr00t.utils.peft import tie_all_special_weights, enable_special_training
 
 
 class BaseSampler(Sampler):
@@ -141,18 +146,56 @@ class DualBrainTrainer(transformers.Trainer):
         if self.args.should_save:
             tokenizer = self.model.backbone.eagle_tokenizer
             tokenizer.save_pretrained(output_dir)
-
             if hasattr(self.model, "merge_and_unload"):
-                merged = self.model.merge_and_unload()
-                import pdb;pdb.set_trace()
-                p1 = merged.backbone.special_token_embeddings.weight
-                p2 = merged.backbone.special_token_lm_head.weight
-                p3 = merged.backbone.eagle_model.language_model.lm_head.special_head.weight
-                p4 = merged.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
-                print("tied?", p1.untyped_storage().data_ptr() == p2.untyped_storage().data_ptr())
-                print("tied?", p1.untyped_storage().data_ptr() == p3.untyped_storage().data_ptr())
-                print("tied?", p1.untyped_storage().data_ptr() == p4.untyped_storage().data_ptr())
-                merged.save_pretrained(output_dir, safe_serialization=True)
+                with TemporaryDirectory() as tmp:
+                    self.model.save_pretrained(tmp)   
+                    
+                    merged = self.model.merge_and_unload()
+                    merged.backbone.eagle_model.language_model.model.embed_tokens.weight = merged.backbone.eagle_model.language_model.lm_head.base_head.weight
+                    merged.backbone.eagle_model.language_model.lm_head.weight = merged.backbone.eagle_model.language_model.lm_head.base_head.weight
+                    # merged.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
+                    # merged.backbone.special_token_embeddings.weight
+                    # saved_keys = merged.state_dict().keys()
+                    # saved_keys = [item for item in saved_keys if 'action_head' not in item and 'layers' not in item and 'vision' not in item]
+                    # print(*saved_keys, sep='\n')
+                    # merged.config.architectures = ["GR00T_N1_5"]   
+                    merged.save_pretrained(output_dir, safe_serialization=True)
+
+                    # loaded = GR00T_N1_5.from_pretrained(output_dir, trust_remote_code=True)
+                    # loaded_keys = loaded.state_dict().keys()
+                    # loaded_keys = [item for item in loaded_keys if 'action_head' not in item and 'layers' not in item and 'vision' not in item]
+                    # # print(*loaded_keys, sep='\n')
+
+                    # # TODO: current always some keys that have different values before and after save & load. fixed any bug to make the value of saved_keys all equals to loaded_keys
+                    # diff_keys = [k for k in saved_keys if not torch.equal(merged.state_dict()[k].cpu(), loaded.state_dict()[k])]
+                    # print(*diff_keys, sep='\n')
+                    # import pdb;pdb.set_trace()
+
+
+                    # ADDED: rebuild the PEFT-wrapped model so gradients stay intact
+                    restored = PeftModel.from_pretrained(merged, tmp, is_trainable=True)
+                    tie_all_special_weights(restored) 
+                    enable_special_training(restored)
+                    restored.to(self.model.device)
+                    restored.train()
+                    self.model = restored
+
+
+                    # import pdb;pdb.set_trace()
+
+                    # p1 = self.model.backbone.special_token_embeddings.weight
+                    # p2 = self.model.backbone.special_token_lm_head.weight
+                    # p3 = self.model.backbone.eagle_model.language_model.lm_head.special_head.weight
+                    # p4 = self.model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
+                    # p5 = self.model.backbone.eagle_model.language_model.lm_head.base_head.weight
+                    # p6 = self.model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
+                    # print("tied?", p1.untyped_storage().data_ptr() == p2.untyped_storage().data_ptr())
+                    # print("tied?", p1.untyped_storage().data_ptr() == p3.untyped_storage().data_ptr())
+                    # print("tied?", p1.untyped_storage().data_ptr() == p4.untyped_storage().data_ptr())
+                    # print("tied?", p5.untyped_storage().data_ptr() == p6.untyped_storage().data_ptr())
+
+                    # p4 = self.model.backbone.eagle_model.language_model.model.embed_tokens.weight
+                    # p5 = self.model.backbone.eagle_model.language_model.lm_head.weight
             else:
                 self.model.save_pretrained(output_dir, safe_serialization=True, state_dict=state_dict)
             

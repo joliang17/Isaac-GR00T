@@ -120,6 +120,9 @@ class ArgsConfig:
     lora_llm_model: bool = False
     """Whether to use the LLM model for LORA. If False, only the action head will be trained."""
 
+    train_action_head: bool = False
+    """Whether to train action head"""
+
     dataloader_num_workers: int = 8
     """Number of workers for data loading."""
 
@@ -247,25 +250,21 @@ def main(config: ArgsConfig):
             tune_projector=config.tune_projector, tune_diffusion_model=config.tune_diffusion_model
         )
 
-    # If special tokens is added, resize model embedding
-    old_vocab = model.backbone.eagle_model.get_input_embeddings().num_embeddings
-    new_vocab = len(model.backbone.eagle_tokenizer)
-    if new_vocab > old_vocab:
-        model.backbone.eagle_model.resize_token_embeddings(new_vocab)
-        print(f"Resized Eagle2 VLM's embeddings: {old_vocab} -> {new_vocab} (added {new_vocab - old_vocab} tokens)")
+    # ADDED: reload special embed after pretrained
+    model_emb = model.backbone.eagle_model.language_model.model.embed_tokens
+    if getattr(model_emb, "special_embedding", None) and config.base_model_path == "nvidia/GR00T-N1.5-3B":
+        # --- Re-init special token embeddings ---
+        with torch.no_grad():
+            base_weight = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
 
-        # Unfreeze ONLY embedding weight and mask gradients to new rows ---
-        emb = model.backbone.eagle_model.get_input_embeddings()        # nn.Embedding
-        emb.weight.requires_grad = True
-
-        start = old_vocab  # first new row index
-        # mask: 0 for old rows, 1 for new rows (broadcast on hidden dim)
-        def grad_mask(grad, start=start):
-            mask = torch.zeros(grad.size(0), device=grad.device, dtype=grad.dtype)
-            mask[start:] = 1
-            return grad * mask.unsqueeze(1)
-        emb.weight.register_hook(grad_mask)
-        print(f"Training only new token embeddings: rows [{start}:{new_vocab})")
+            if base_weight.is_meta or not torch.isfinite(base_weight.detach().float()).all():
+                # fallback if meta or uninitialized
+                model.backbone.special_token_embeddings.weight.data.normal_(0.0, 0.02)
+            else:
+                # compute mean in fp32 for stability
+                mean_vec = base_weight.detach().to(torch.float32).mean(dim=0, keepdim=True)
+                mean_vec = mean_vec.to(model.backbone.special_token_embeddings.weight.device, dtype=model.backbone.special_token_embeddings.weight.dtype)
+                model.backbone.special_token_embeddings.weight.copy_(mean_vec.repeat(model.backbone.special_token_embeddings.num_embeddings, 1))
 
     # Set the model's compute_dtype to bfloat16
     model.compute_dtype = "bfloat16"
@@ -278,7 +277,7 @@ def main(config: ArgsConfig):
             rank=config.lora_rank,
             lora_alpha=config.lora_alpha,
             lora_dropout=config.lora_dropout,
-            action_head_only=not config.lora_full_model,
+            train_action_head=True if 'traj_video_both' in config.dataset_path[0] else False,
         )
             
     # 2.1 modify training args
@@ -316,7 +315,29 @@ def main(config: ArgsConfig):
         ddp_find_unused_parameters=False,
         ddp_bucket_cap_mb=100,
         torch_compile_mode=None,
+        max_grad_norm=1.0,
     )
+
+    zero_params = [n for n,p in model.named_parameters() if p.numel()>0 and torch.count_nonzero(p)==0]
+    zero_params1 = [item for item in zero_params if 'lora' not in item]
+    print(zero_params1)
+    # import pdb;pdb.set_trace()
+    if False:
+        model.backbone.eagle_model.language_model.model.embed_tokens.weight = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
+        model.backbone.eagle_model.language_model.lm_head.weight = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
+        model.backbone.eagle_model.language_model.lm_head.base_head.weight = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
+        embed = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding
+        head = model.backbone.eagle_model.language_model.lm_head.special_head
+
+
+        model.backbone.eagle_model.language_model.model.embed_tokens.weight
+        model.backbone.eagle_model.language_model.lm_head.weight
+
+        model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
+        model.backbone.eagle_model.language_model.lm_head.base_head.weight
+
+        model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
+        model.backbone.eagle_model.language_model.lm_head.special_head.weight
 
     # 2.2 run experiment
     experiment = TrainRunner(

@@ -633,10 +633,12 @@ class LeRobotSingleDataset(Dataset):
         task_instruction_postfix = "<|im_end|>\n<|im_start|>assistant\n"
         task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix, '')
         list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
-        # [TOOLS]instruction[EOT] or [ACTIONS][PAD_A]
+        # version1: [TOOLS]instruction[EOT] or [ACTIONS][PAD_A]
+        # version2: [TOOLS]instruction<|im_end|> or [ACTIONS]
         list_transformed_steps_added = [
             item
-            + ("[EOT]" if "[TOOLS]" in item else "[PAD_A]" if "[ACTIONS]" in item else "")
+            # + ("[EOT]" if "[TOOLS]" in item else "[PAD_A]" if "[ACTIONS]" in item else "")
+            + ("<|im_end|>" if "[TOOLS]" in item else "")
             + (f"<image-{i+2}>" if i < len(list_transformed_steps) - 1 else "")
             for i, item in enumerate(list_transformed_steps)
         ]
@@ -656,8 +658,7 @@ class LeRobotSingleDataset(Dataset):
         dict_output = list_step_transform[-1]
         
         # final output result: dict_keys(['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'eagle_content', 'embodiment_id'])
-        # TODO: test what happened if only add a few tokens at first
-        concated_text = concated_text.replace('[ACTIONS]', '').replace('[PAD_A]', '')
+        # concated_text = concated_text.replace('[ACTIONS]', '').replace('[PAD_A]', '')
 
         dict_output['eagle_content']['image_inputs'] = agg_images
         dict_output['eagle_content']['text_list'] = [concated_text]

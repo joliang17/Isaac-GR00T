@@ -253,12 +253,11 @@ class Gr00tPolicy(BasePolicy):
         return True
 
     def _load_model(self, model_path):
-        model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=COMPUTE_DTYPE, 
-        init_mode=False,)
+        model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=torch.float32, init_mode=True,)
 
         model.eval()  # Set model to eval mode
         model.to(device=self.device)  # type: ignore
-
+        import pdb;pdb.set_trace()
         # Update action_horizon to match modality config
         # Get the expected action horizon from the modality config
         expected_action_horizon = len(self._modality_config["action"].delta_indices)
