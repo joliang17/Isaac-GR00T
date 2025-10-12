@@ -29,7 +29,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from typing import Sequence
-
+import re
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, ValidationError
@@ -646,7 +646,7 @@ class LeRobotSingleDataset(Dataset):
         list_transformed_state_mask = [list_step_transform[i]['state_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
         list_transformed_action = [list_step_transform[i]['action'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
         list_transformed_action_mask = [list_step_transform[i]['action_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
-        if '[Skill-mode]' in task_instruction:
+        if 'Skill-mode' in task_instruction:
             # only [ACTIONS]
             # <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>skillinstruction<image-2>[ACTIONS][PAD_A]<image-2>[ACTIONS][PAD_A]..[TOOLS_END]<|im_end|>\n<|im_start|>assistant\n
             concated_text = task_instruction.replace('Skill-mode: ', "[SKILL_MODE]") + "".join(list_transformed_steps_added) + task_instruction_postfix
@@ -659,6 +659,12 @@ class LeRobotSingleDataset(Dataset):
         
         # final output result: dict_keys(['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'eagle_content', 'embodiment_id'])
         # concated_text = concated_text.replace('[ACTIONS]', '').replace('[PAD_A]', '')
+
+        # remove all occurrences like SCENE1, ]SCENE2, SCENE3, etc.
+        new_text = re.sub(r'\bSCENE\d+\b\s*', '', concated_text)
+        # new_text = re.sub(r'\s+', ' ', new_text).strip()
+        if new_text != concated_text:
+            concated_text = new_text
 
         dict_output['eagle_content']['image_inputs'] = agg_images
         dict_output['eagle_content']['text_list'] = [concated_text]

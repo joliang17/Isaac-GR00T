@@ -312,16 +312,25 @@ class FlowmatchingActionHead(nn.Module):
         if num_action > 0:
             embodiment_id = embodiment_id[:1].repeat(num_action)
 
+        valid_mask = action_input.eagle_state_length > 0
         # Embed state.
         if len(action_input.state.shape) < 3:
             state_input = action_input.state.unsqueeze(1)
         else:
             state_input = action_input.state
 
-        state_features = self.state_encoder(state_input, embodiment_id)
-
         # Embed noised action trajectory.
         actions = action_input.action
+        action_mask = action_input.action_mask
+
+        # Filter tensors by valid_mask
+        state_input = state_input[valid_mask]
+        actions = actions[valid_mask]
+        action_mask = action_mask[valid_mask]
+        embodiment_id = embodiment_id[valid_mask] if embodiment_id is not None else None
+
+        state_features = self.state_encoder(state_input, embodiment_id)
+
         noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
         t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
         t = t[:, None, None]  # shape (B,1,1) for broadcast
@@ -354,7 +363,6 @@ class FlowmatchingActionHead(nn.Module):
         pred_actions = pred[:, -actions.shape[1] :]
 
         # Slice out only the action portion of pred and target.
-        action_mask = action_input.action_mask
         loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
         loss = loss.sum() / action_mask.sum()
         output_dict = {

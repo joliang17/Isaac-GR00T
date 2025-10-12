@@ -12,14 +12,6 @@ def _wrap_forward(model):
         return action_head_outputs
     
     def _forward_improved(inputs):
-
-        # p1 = model.backbone.eagle_model.language_model.lm_head.special_head.weight
-        # p2 = model.backbone.eagle_model.language_model.lm_head.special_head.original_module.weight
-        # p3 = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
-        # p4 = model.backbone.special_token_lm_head.weight
-        # p5 = model.backbone.special_token_embeddings.weight
-        # print("base emb: Same storage?", p1.data_ptr() == p3.data_ptr() == p4.data_ptr() == p5.data_ptr())
-
         backbone_inputs, action_inputs = model.prepare_input(inputs)
         backbone_outputs = model.backbone(backbone_inputs)
         
@@ -117,11 +109,10 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action
                 target_modules.append(name)
 
     # ADDED:
+    modules_to_save = []
     if train_action_head:
         modules_to_save = find_saved_module(["action_head", "backbone.action_head", ])
-    else:
-        # modules_to_save = ['backbone.eagle_model.language_model.model.embed_tokens.special_embedding', 'backbone.eagle_model.language_model.lm_head.special_head', "backbone.special_token_embeddings", "backbone.special_token_lm_head"]
-        modules_to_save = ['backbone.eagle_model.language_model.model.embed_tokens.special_embedding', 'backbone.eagle_model.language_model.lm_head.special_head',]
+    modules_to_save.extend(['backbone.eagle_model.language_model.model.embed_tokens.special_embedding', 'backbone.eagle_model.language_model.lm_head.special_head',])
     
     lora_config = LoraConfig(r=rank, lora_alpha=lora_alpha, target_modules=target_modules, lora_dropout=lora_dropout, bias="none", task_type="CAUSAL_LM", modules_to_save=modules_to_save, )
 
@@ -132,7 +123,6 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action
     # tie weight
     tie_all_special_weights(model_lora)
     _ = list_trainable_parameter_names(model_lora)
-
     return model_lora
 
 

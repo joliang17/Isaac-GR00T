@@ -386,7 +386,7 @@ class EagleBackbone(nn.Module):
         eagle_input = {
             k.removeprefix(eagle_prefix): v
             for k, v in vl_input.items()
-            if k.startswith(eagle_prefix) and k != 'eagle_num_images'
+            if k.startswith(eagle_prefix) and k != 'eagle_num_images' and 'length' not in k
         }
         del eagle_input["image_sizes"]
 
@@ -415,7 +415,7 @@ class EagleBackbone(nn.Module):
         eagle_input = {
             k.removeprefix("eagle_"): v
             for k, v in vl_input.items()
-            if k.startswith("eagle_") and k != "eagle_num_images"
+            if k.startswith("eagle_") and k != "eagle_num_images" and 'length' not in k
         }
         eagle_input.pop("image_sizes", None)  # if present
         labels = eagle_input.pop("llm_labels")
@@ -483,6 +483,7 @@ class EagleBackbone(nn.Module):
 
                 # print(special_logits[special_mask])
                 # print(special_loss)
+                # import pdb;pdb.set_trace()
 
                 # p1 = self.eagle_model.language_model.lm_head.special_head.weight
                 # p2 = self.eagle_model.language_model.lm_head.special_head.original_module.weight
