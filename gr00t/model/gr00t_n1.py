@@ -15,7 +15,7 @@
 
 from dataclasses import dataclass, field
 from typing import Tuple
-
+import itertools
 import numpy as np
 import torch
 import tree
@@ -87,67 +87,47 @@ class GR00T_N1_5(PreTrainedModel):
         self.action_horizon = config.action_horizon
         self.action_dim = config.action_dim
         self.compute_dtype = config.compute_dtype
+        self.tie_weights()
 
-    # def tie_weights(self):
-    #     """
-    #     Called automatically after from_pretrained() and before save_pretrained().
-    #     Re-establish all custom weight-sharing relationships, including LoRA-wrapped modules.
-    #     """
-    #     # --- optional: skip the default HF tie to avoid overwriting custom heads ---
-    #     super().tie_weights()   # comment out unless you want LM <-> embeddings re-tied
 
-        # # TODO: write a tie function for model 
-        # emb = model.backbone.special_token_embeddings                     # nn.Embedding
-        # lm_head = model.backbone.special_token_lm_head                     # nn.Linear
-        # head = model.backbone.eagle_model.language_model.lm_head.special_head  # ModulesToSaveWrapper or Linear
-        # inner_emb = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding  # nn.Embedding
+    def tie_weights(self):
+        """
+        Tie the weights of the special token embeddings and the LM heads.
+        """
+        # This is the source weight tensor for the special tokens
+        shared_special_weight = self.backbone.special_token_embeddings.weight
+        self.backbone.special_token_lm_head.weight = shared_special_weight
+        self.backbone.eagle_model.language_model.lm_head.special_head.weight = shared_special_weight
+        self.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight = shared_special_weight
 
-        # base_head = model.backbone.eagle_model.language_model.lm_head.base_head  # ModulesToSaveWrapper or Linear
-        # base_emb = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding  # nn.Embedding
+        # Tie the base embeddings and heads
+        # This is a standard practice in many transformer models
+        base_emb_weight = self.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
+        self.backbone.eagle_model.language_model.lm_head.base_head.weight = base_emb_weight
+        self.backbone.eagle_model.language_model.lm_head.weight = base_emb_weight
+        self.backbone.eagle_model.language_model.model.embed_tokens.weight = base_emb_weight
 
-        # # Base shared parameter
-        # shared = emb.weight
-
-        # def _register_shared(module, name="weight"):
-        #     if hasattr(module, "original_module") or hasattr(module, "modules_to_save"):
-        #         # handle ModulesToSaveWrapper (tie both contained linears)
-        #         if hasattr(module, "original_module"):
-        #             _register_shared(module.original_module, name)
-        #         if hasattr(module, "modules_to_save"):
-        #             for m in module.modules_to_save.values():
-        #                 _register_shared(m, name)
-        #         return
-        #     if name in getattr(module, "_parameters", {}):
-        #         with torch.no_grad():
-        #             del module._parameters[name]
-        #             module.register_parameter(name, shared)
-
-        # # Tie everywhere
-        # _register_shared(lm_head)
-        # _register_shared(head)
-        # _register_shared(inner_emb)
-
-        # base_head = model.backbone.eagle_model.language_model.lm_head.base_head  # ModulesToSaveWrapper or Linear
-        # base_emb = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding  # nn.Embedding
-        # shared = base_emb.weight
-        # _register_shared(base_head)
-
-        # # Sanity checks
-        # p1 = emb.weight
-        # p2 = lm_head.weight if hasattr(lm_head, "weight") else None
-        # p3 = head.original_module.weight if hasattr(head, "original_module") else head.weight
-        # p4 = inner_emb.weight
-        # # print("Same storage?", p1.data_ptr() == p2.data_ptr() == p3.data_ptr() == p4.data_ptr())
-
-        # p5 = base_head.original_module.weight if hasattr(base_head, "original_module") else base_head.weight
-        # p6 = base_emb.weight
-        # # print("base emb: Same storage?", p5.data_ptr() == p6.data_ptr())
-
-    # in your model class
     @property
     def _tied_weights_keys(self):
-        # Tell HF these share storage on purpose
-        return ['backbone.special_token_lm_head.weight', 'backbone.special_token_embeddings.weight', 'backbone.eagle_model.language_model.lm_head.special_head.weight', 'backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight', 'backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight', 'backbone.eagle_model.language_model.lm_head.base_head.weight', 'backbone.eagle_model.language_model.model.embed_tokens.weight', 'backbone.eagle_model.language_model.lm_head.weight', ]
+        # Group 1: The new special embeddings and their corresponding heads
+        special_tied_group = [
+            # 'backbone.special_token_embeddings.weight',
+            'backbone.special_token_lm_head.weight',
+            'backbone.eagle_model.language_model.lm_head.special_head.weight',
+            'backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight',
+        ]
+
+        # Group 2: The base model's embeddings and heads
+        base_tied_group = [
+            'backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight',
+            'backbone.eagle_model.language_model.lm_head.base_head.weight',
+            'backbone.eagle_model.language_model.model.embed_tokens.weight',
+            'backbone.eagle_model.language_model.lm_head.weight',
+        ]
+        # Flatten the list of lists into a single list of strings
+        all_tied_keys = list(itertools.chain.from_iterable([special_tied_group, base_tied_group]))
+        
+        return all_tied_keys
 
     def validate_inputs(self, inputs):
         # NOTE -- this should be handled internally by the model

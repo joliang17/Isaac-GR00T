@@ -137,6 +137,17 @@ class DualBrainTrainer(transformers.Trainer):
         return self.optimizer
 
     def save_model(self, output_dir: Optional[str], _internal_call: bool):
+        def rm_old_ckpt(out_dir, num_limit=3):
+            ckpts = sorted(
+                glob.glob(os.path.join(os.path.dirname(out_dir), "checkpoint-*")),
+                key=os.path.getmtime
+            )
+            if len(ckpts) > num_limit:
+                for ckpt in ckpts[:-num_limit]:  # delete all but last 3
+                    print(f"Removing old checkpoint {ckpt}")
+                    os.system(f"rm -rf {ckpt}")
+            return 
+
         ## save tuned model separately
         if self.is_deepspeed_enabled:
             state_dict = self.accelerator.get_state_dict(self.deepspeed)
@@ -146,68 +157,22 @@ class DualBrainTrainer(transformers.Trainer):
         if self.args.should_save:
             tokenizer = self.model.backbone.eagle_tokenizer
             tokenizer.save_pretrained(output_dir)
-            if hasattr(self.model, "merge_and_unload"):
-                with TemporaryDirectory() as tmp:
-                    self.model.save_pretrained(tmp)   
-                    
-                    merged = self.model.merge_and_unload()
-                    merged.backbone.eagle_model.language_model.model.embed_tokens.weight = merged.backbone.eagle_model.language_model.lm_head.base_head.weight
-                    merged.backbone.eagle_model.language_model.lm_head.weight = merged.backbone.eagle_model.language_model.lm_head.base_head.weight
-                    # merged.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
-                    # merged.backbone.special_token_embeddings.weight
-                    # saved_keys = merged.state_dict().keys()
-                    # saved_keys = [item for item in saved_keys if 'action_head' not in item and 'layers' not in item and 'vision' not in item]
-                    # print(*saved_keys, sep='\n')
-                    # merged.config.architectures = ["GR00T_N1_5"]   
-                    merged.save_pretrained(output_dir, safe_serialization=True)
+            # save adapter
+            self.model.save_pretrained(output_dir, safe_serialization=True, state_dict=state_dict)
+            rm_old_ckpt(output_dir, num_limit=3)
 
-                    # loaded = GR00T_N1_5.from_pretrained(output_dir, trust_remote_code=True)
-                    # loaded_keys = loaded.state_dict().keys()
-                    # loaded_keys = [item for item in loaded_keys if 'action_head' not in item and 'layers' not in item and 'vision' not in item]
-                    # # print(*loaded_keys, sep='\n')
-
-                    # # TODO: current always some keys that have different values before and after save & load. fixed any bug to make the value of saved_keys all equals to loaded_keys
-                    # diff_keys = [k for k in saved_keys if not torch.equal(merged.state_dict()[k].cpu(), loaded.state_dict()[k])]
-                    # print(*diff_keys, sep='\n')
-                    # import pdb;pdb.set_trace()
-
-
-                    # ADDED: rebuild the PEFT-wrapped model so gradients stay intact
-                    restored = PeftModel.from_pretrained(merged, tmp, is_trainable=True)
-                    tie_all_special_weights(restored) 
-                    enable_special_training(restored)
-                    restored.to(self.model.device)
-                    restored.train()
-                    self.model = restored
-
-
-                    # import pdb;pdb.set_trace()
-
-                    # p1 = self.model.backbone.special_token_embeddings.weight
-                    # p2 = self.model.backbone.special_token_lm_head.weight
-                    # p3 = self.model.backbone.eagle_model.language_model.lm_head.special_head.weight
-                    # p4 = self.model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
-                    # p5 = self.model.backbone.eagle_model.language_model.lm_head.base_head.weight
-                    # p6 = self.model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
-                    # print("tied?", p1.untyped_storage().data_ptr() == p2.untyped_storage().data_ptr())
-                    # print("tied?", p1.untyped_storage().data_ptr() == p3.untyped_storage().data_ptr())
-                    # print("tied?", p1.untyped_storage().data_ptr() == p4.untyped_storage().data_ptr())
-                    # print("tied?", p5.untyped_storage().data_ptr() == p6.untyped_storage().data_ptr())
-
-                    # p4 = self.model.backbone.eagle_model.language_model.model.embed_tokens.weight
-                    # p5 = self.model.backbone.eagle_model.language_model.lm_head.weight
-            else:
-                self.model.save_pretrained(output_dir, safe_serialization=True, state_dict=state_dict)
-            
-            # ADDED: Keep only last 3 checkpoints
-            ckpts = sorted(
-                glob.glob(os.path.join(os.path.dirname(output_dir), "checkpoint-*")),
-                key=os.path.getmtime
-            )
-            if len(ckpts) > 3:
-                for ckpt in ckpts[:-3]:  # delete all but last 3
-                    print(f"Removing old checkpoint {ckpt}")
-                    os.system(f"rm -rf {ckpt}")
+            # save normal ckpt
+            # 1. Load a fresh instance of your base model
+            base_model = GR00T_N1_5.from_pretrained("nvidia/GR00T-N1.5-3B")
+            inference_model = PeftModel.from_pretrained(base_model, output_dir)
+            merged_model = inference_model.merge_and_unload()
+            # 2. Save the final, merged model
+            output_dir_merged = output_dir.split('/')
+            output_dir_merged[-2] += '_merged'
+            output_dir_merged = '/'.join(output_dir_merged)
+            merged_model.save_pretrained(output_dir_merged)
+            print(f"Saving merged checkpoint {output_dir_merged}")
+            rm_old_ckpt(output_dir_merged, num_limit=3)
             return 
 
     def train(
