@@ -117,16 +117,26 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 # values have different length for all samples
                 seqs = []
                 lengths = []
-                for s in values:
-                    if len(s) == 0:
-                        # create an empty (0, feature_dim) tensor
-                        # feature_dim inferred from first non-empty item
-                        feature_dim = next((v[0].shape[-1] for v in values if len(v) > 0), 0)
-                        seqs.append(torch.zeros((0, feature_dim)))
+                # infer per-segment shape and dtype from the first non-empty sample
+                first_non_empty = next((v for v in values if len(v) > 0), None)
+                if first_non_empty is not None:
+                    seg_len, feat_dim = first_non_empty[0].shape
+                    np_dtype = first_non_empty[0].dtype
+                else:
+                    # all empty; fall back to zeros
+                    seg_len, feat_dim = 0, 0
+                    np_dtype = np.float32
+
+                for val in values:
+                    if len(val) == 0:
+                        # (0, 16, 32) empty sequence for this sample
+                        t = torch.zeros((0, seg_len, feat_dim), dtype=torch.from_numpy(np.empty((), dtype=np_dtype)).dtype)
+                        seqs.append(t)
                         lengths.append(0)
                     else:
-                        arr = np.concatenate(s, axis=0)
-                        t = torch.from_numpy(arr)
+                        # stack segments -> (Ti, 16, 32)
+                        arr = np.stack(val, axis=0)  # NOT concatenate
+                        t = torch.from_numpy(arr)    # shape (Ti, 16, 32)
                         seqs.append(t)
                         lengths.append(t.size(0))
                         
