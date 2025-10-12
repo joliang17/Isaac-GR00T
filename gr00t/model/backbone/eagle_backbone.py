@@ -716,7 +716,7 @@ class EagleBackbone(nn.Module):
         )
 
     @torch.no_grad()
-    def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, special_token_only=False):
+    def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, special_token_only=False, inside_tool=False):
         """Greedy token generation for the language backbone.
 
         Args:
@@ -761,11 +761,18 @@ class EagleBackbone(nn.Module):
         num_special = self.special_token_ids.numel()
 
         if num_special > 0 and special_token_only:
-            # Allowed tokens (e.g., tools and actions; add others if needed)
-            allowed_ids = torch.tensor(
-                [self.tools_id, self.actions_id, self.skills_end], 
-                device=input_ids.device, dtype=torch.long
-            )
+            if not inside_tool:
+                # Allowed tokens (e.g., tools and actions; add others if needed)
+                allowed_ids = torch.tensor(
+                    [self.tools_id, self.actions_id, self.skills_end], 
+                    device=input_ids.device, dtype=torch.long
+                )
+            else:
+                allowed_ids = torch.tensor(
+                    [self.actions_id, self.skills_end], 
+                    device=input_ids.device, dtype=torch.long
+                )
+
 
         for _ in range(max_token):
             logits, route_pos, _, _, cache = self.forward_eagle(

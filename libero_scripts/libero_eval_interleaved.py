@@ -124,6 +124,8 @@ def convert_to_libero_action(
     
 
 def eval_libero(cfg) -> None:
+    call_baseline = cfg.call_baseline 
+    
     # Initialize LIBERO task suite
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[cfg.task_suite_name]()
@@ -151,11 +153,11 @@ def eval_libero(cfg) -> None:
 
         # gr00t_policy = GR00TPolicy(host="localhost", port=cfg.port, headless=cfg.headless)
         gr00t_policy = Gr00tPolicy(
-            model_path=args.model_path,
+            model_path=cfg.model_path,
             modality_config=modality_config,
             modality_transform=modality_transform,
-            embodiment_tag=args.embodiment_tag,
-            denoising_steps=args.denoising_steps,
+            embodiment_tag=cfg.embodiment_tag,
+            denoising_steps=cfg.denoising_steps,
             device="cuda" if torch.cuda.is_available() else "cpu",
         )
 
@@ -210,7 +212,6 @@ def eval_libero(cfg) -> None:
                     # # Save preprocessed image for replay video
                     top_view.append(img)
                     wrist_view.append(wrist_img)
-                    # import pdb;pdb.set_trace()
 
                     if not inside_tools:
                         # on trajectory level
@@ -222,8 +223,8 @@ def eval_libero(cfg) -> None:
 
                         traj_img_count += 1
                         # task instruction is already included in past_key_values_traj
-                        obs_dict = process_observation(obs, cur_instr, headless=args.headless)
-                        action_chunk, tools_output, past_key_values_traj = gr00t_policy.get_action(obs_dict, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved')
+                        obs_dict = process_observation(obs, cur_instr, headless=cfg.headless)
+                        action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved')
 
                         if tools_output != '':
                             # generated skill instructions
@@ -231,18 +232,26 @@ def eval_libero(cfg) -> None:
                             inside_tools = True
                             past_key_values_tools = None
                             # for step t, regenerate the action with the new instructions
-                            obs_dict_tools = process_observation(obs, '[SKILL_MODE]' + tools_output, headless=args.headless)
-                            action_chunk, _, past_key_values_tools = gr00t_policy.get_action(obs_dict, past_key_values=past_key_values_tools, mode='interleaved')
+                            obs_dict_tools = process_observation(obs, '[SKILL_MODE]' + tools_output, headless=cfg.headless)
+                            action_chunk, tool_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict_tools, past_key_values=past_key_values_tools, mode='interleaved', call_baseline=call_baseline, inside_tool=True)
+                            if call_baseline:
+                                call_action = action_chunk_bs
+                            else:
+                                call_action = action_chunk
 
                         # generate action_tokens for execution
                         action = convert_to_libero_action(action_chunk, action_keys)
 
                     else:
                         # inside tools
-
                         # skill instruction is already included in past_key_values_traj
-                        obs_dict = process_observation(obs, '', headless=args.headless)
-                        action_chunk, tools_output, past_key_values_tools = gr00t_policy.get_action(obs_dict, past_key_values=past_key_values_tools, mode='interleaved')
+                        obs_dict = process_observation(obs, '', headless=cfg.headless)
+                        action_chunk, tools_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict, past_key_values=past_key_values_tools, mode='interleaved', inside_tool=True, call_baseline=call_baseline, )
+                        if call_baseline:
+                            call_action = action_chunk_bs
+                        else:
+                            call_action = action_chunk
+
                         if tools_output == '[TOOLS_END]':
                             # skill finished, no action is needed at the current step
                             inside_tools = False
@@ -258,6 +267,8 @@ def eval_libero(cfg) -> None:
                         total_successes += 1
                         break
                     t += 1
+                    # if t % 10 == 0:
+                    print(f"current t: {t}")
 
                 except Exception as e:
                     traceback.print_exc()
@@ -315,10 +326,10 @@ if __name__ == "__main__":
     parser.add_argument("--num_trials_per_task", type=int, default=5)
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--headless", type=bool, default=True)
+    parser.add_argument("--call_baseline", action="store_true", help="Enable baseline mode")
     parser.add_argument("--model_path", type=str, default="/fs/nexus-scratch/yliang17/Research/VLA/GR00T/checkpoint/groot_libero_traj/checkpoint-6000")
     parser.add_argument("--embodiment_tag", type=str, default="new_embodiment")
     parser.add_argument("--data_config", type=str, default="libero_traj_arms")
     parser.add_argument("--denoising_steps", type=int, default=8)
     args = parser.parse_args()
-
     eval_libero(args)
