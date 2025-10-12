@@ -222,7 +222,8 @@ class GR00T_N1_5(PreTrainedModel):
         self,
         inputs: dict,
         past_key_values=None,
-        mode: str='baseline'
+        mode: str='baseline',
+        inside_tool: bool=False,
     ) -> BatchFeature:
         def create_empty_actions(backbone_inputs):
             token_device = backbone_inputs['eagle_input_ids'].device if 'eagle_input_ids' in backbone_inputs else self.device
@@ -252,7 +253,7 @@ class GR00T_N1_5(PreTrainedModel):
         else:
             # self.backbone.eagle_tokenizer.decode(backbone_inputs['eagle_input_ids'][0])
             generated_ids, backbone_outputs = self.backbone.generate(
-                backbone_inputs, max_token=1, past_key_values=past_key_values, special_token_only=True
+                backbone_inputs, max_token=1, past_key_values=past_key_values, special_token_only=True, inside_tool=inside_tool, 
             )
             past_key_values = backbone_outputs.get('past_key_values', None)
 
@@ -292,7 +293,7 @@ class GR00T_N1_5(PreTrainedModel):
 
                     if next_token is None:
                         break
-                    if next_token == self.backbone.endtools_id:
+                    if next_token == self.backbone.end_id:
                         reached_end = True
                         break
 
@@ -301,7 +302,7 @@ class GR00T_N1_5(PreTrainedModel):
 
                 decode_tokens = [self.backbone.tools_id] + tools_tokens
                 if reached_end:
-                    decode_tokens.append(self.backbone.endtools_id)
+                    decode_tokens.append(self.backbone.end_id)
 
                 tools_output = self.backbone.eagle_tokenizer.decode(
                     decode_tokens, skip_special_tokens=True
@@ -322,7 +323,7 @@ class GR00T_N1_5(PreTrainedModel):
                 raise ValueError(f'Unexpected route token id: {token_id}, text token: {decode_text}')
 
         self.validate_data(action_head_outputs, backbone_outputs, is_training=False)
-        return action_head_outputs, tools_output, past_key_values
+        return action_head_outputs, backbone_outputs, tools_output, past_key_values
 
     def formulate_input_traj(self, inputs):
         """
