@@ -94,12 +94,6 @@ class GR00T_N1_5(PreTrainedModel):
         """
         Tie the weights of the special token embeddings and the LM heads.
         """
-        # This is the source weight tensor for the special tokens
-        shared_special_weight = self.backbone.special_token_embeddings.weight
-        self.backbone.special_token_lm_head.weight = shared_special_weight
-        self.backbone.eagle_model.language_model.lm_head.special_head.weight = shared_special_weight
-        self.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight = shared_special_weight
-
         # Tie the base embeddings and heads
         # This is a standard practice in many transformer models
         base_emb_weight = self.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
@@ -111,8 +105,6 @@ class GR00T_N1_5(PreTrainedModel):
     def _tied_weights_keys(self):
         # Group 1: The new special embeddings and their corresponding heads
         special_tied_group = [
-            # 'backbone.special_token_embeddings.weight',
-            'backbone.special_token_lm_head.weight',
             'backbone.eagle_model.language_model.lm_head.special_head.weight',
             'backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight',
         ]

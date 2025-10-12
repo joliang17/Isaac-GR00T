@@ -13,6 +13,13 @@ def _wrap_forward(model):
     
     def _forward_improved(inputs):
 
+        # p1 = model.backbone.eagle_model.language_model.lm_head.special_head.weight
+        # p2 = model.backbone.eagle_model.language_model.lm_head.special_head.original_module.weight
+        # p3 = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
+        # p4 = model.backbone.special_token_lm_head.weight
+        # p5 = model.backbone.special_token_embeddings.weight
+        # print("base emb: Same storage?", p1.data_ptr() == p3.data_ptr() == p4.data_ptr() == p5.data_ptr())
+
         backbone_inputs, action_inputs = model.prepare_input(inputs)
         backbone_outputs = model.backbone(backbone_inputs)
         
@@ -55,46 +62,28 @@ def tie_all_special_weights(model):
                 module.register_parameter(name, shared)
     
     # Grab the four sites
-    emb = model.backbone.special_token_embeddings                     # nn.Embedding
-    lm_head = model.backbone.special_token_lm_head                     # nn.Linear
-    head = model.backbone.eagle_model.language_model.lm_head.special_head  # ModulesToSaveWrapper or Linear
-    inner_emb = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding  # nn.Embedding
+    special_emb = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding  # nn.Embedding
+    special_head = model.backbone.eagle_model.language_model.lm_head.special_head  # ModulesToSaveWrapper or Linear
 
     base_head = model.backbone.eagle_model.language_model.lm_head.base_head  # ModulesToSaveWrapper or Linear
     base_emb = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding  # nn.Embedding
-    # Base shared parameter
-    shared = emb.weight
-    # _register_shared(lm_head)
-    # _register_shared(head)
-    _register_shared(inner_emb)
     
-    #####################
-    # eval load
-    # shared = head.weight
-    # _register_shared(emb)
-    # _register_shared(lm_head)
-    # _register_shared(inner_emb)
-
+    shared = special_emb.weight
+    _register_shared(special_head)
+    
     # Sanity checks
-    p1 = emb.weight
-    p2 = lm_head.weight if hasattr(lm_head, "weight") else None
-    p3 = head.original_module.weight if hasattr(head, "original_module") else head.weight
-    p4 = inner_emb.weight
-    print("Same storage?", p1.data_ptr() == p2.data_ptr() == p3.data_ptr() == p4.data_ptr())
+    p1 = special_head.weight
+    p2 = special_emb.weight
+    print("special emb: Same storage?", p1.data_ptr() == p2.data_ptr())
 
-    p5 = base_head.original_module.weight if hasattr(base_head, "original_module") else base_head.weight
-    p6 = base_emb.weight
-    print("base emb: Same storage?", p5.data_ptr() == p6.data_ptr())
+    p3 = base_head.weight
+    p4 = base_emb.weight
+    print("base emb: Same storage?", p3.data_ptr() == p4.data_ptr())
+
 
 def enable_special_training(model):
-    wsp = model.backbone.special_token_embeddings.weight
-    wsp.requires_grad_(True)
-    special_lm = model.backbone.special_token_lm_head.weight
-    special_lm.requires_grad_(True)
-    lm_head = model.backbone.eagle_model.language_model.lm_head.special_head
-    (lm_head.original_module if hasattr(lm_head, "original_module") else lm_head).weight.requires_grad_(True)
-    special = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding
-    (special.original_module if hasattr(special, "original_module") else special).weight.requires_grad_(True)
+    lm_head = model.backbone.eagle_model.language_model.lm_head.special_head.weight.requires_grad_(True)
+    special = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight.requires_grad_(True)
 
 
 def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action_head=True):
@@ -129,11 +118,10 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action
 
     # ADDED:
     if train_action_head:
-        list_candidate = ["action_head", "backbone.action_head", 'backbone.eagle_model.language_model.model.embed_tokens.special_embedding', "backbone.special_token_embeddings", ]
+        modules_to_save = find_saved_module(["action_head", "backbone.action_head", ])
     else:
-        list_candidate = ['backbone.eagle_model.language_model.model.embed_tokens.special_embedding', 'backbone.eagle_model.language_model.lm_head.special_head', "backbone.special_token_embeddings", "backbone.special_token_lm_head"]
-
-    modules_to_save = find_saved_module(list_candidate)
+        # modules_to_save = ['backbone.eagle_model.language_model.model.embed_tokens.special_embedding', 'backbone.eagle_model.language_model.lm_head.special_head', "backbone.special_token_embeddings", "backbone.special_token_lm_head"]
+        modules_to_save = ['backbone.eagle_model.language_model.model.embed_tokens.special_embedding', 'backbone.eagle_model.language_model.lm_head.special_head',]
     
     lora_config = LoraConfig(r=rank, lora_alpha=lora_alpha, target_modules=target_modules, lora_dropout=lora_dropout, bias="none", task_type="CAUSAL_LM", modules_to_save=modules_to_save, )
 
@@ -143,7 +131,6 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action
 
     # tie weight
     tie_all_special_weights(model_lora)
-    enable_special_training(model_lora)
     _ = list_trainable_parameter_names(model_lora)
 
     return model_lora

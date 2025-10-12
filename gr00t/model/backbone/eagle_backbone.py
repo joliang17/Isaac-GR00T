@@ -50,14 +50,23 @@ def _index_batch_dict(bdict, mask_1d):
     return out, take
 
 
-
-class SpecialTokenEmbeddingWrapper(nn.Module):
-    def __init__(self, base_embedding: nn.Embedding, special_embedding: nn.Embedding, special_id_lookup: torch.Tensor):
+class HybridEmbedding(nn.Module):
+    """
+    An embedding module that uses a frozen base embedding table and a new,
+    trainable special embedding table.
+    """
+    def __init__(self, base_embedding: nn.Embedding, num_special_tokens: int, special_id_lookup: torch.Tensor):
         super().__init__()
+        self.embedding_dim = base_embedding.embedding_dim
+        
+        # Keep a reference to the original, and freeze it
         self.base_embedding = base_embedding
-        self.special_embedding = special_embedding
+        self.base_embedding.requires_grad_(False)
+        
+        # Create a new, trainable embedding layer for special tokens
+        self.special_embedding = nn.Embedding(num_special_tokens, self.embedding_dim)
+
         self.register_buffer("special_id_lookup", special_id_lookup.clone(), persistent=False)
-        self.weight = self.base_embedding.weight
         self.embedding_dim = self.base_embedding.embedding_dim
         self.num_embeddings = self.special_id_lookup.numel()
         self.padding_idx = self.base_embedding.padding_idx
@@ -69,6 +78,10 @@ class SpecialTokenEmbeddingWrapper(nn.Module):
         special_indices = self.special_id_lookup[input_ids]
         special_mask = special_indices >= 0
 
+        base_vocab_size = self.base_embedding.num_embeddings
+        base_mask = input_ids < base_vocab_size
+        special_mask = ~base_mask
+
         if special_mask.any():
             base_input = input_ids.clone()
             base_input = base_input.masked_fill(special_mask, 0)
@@ -77,7 +90,7 @@ class SpecialTokenEmbeddingWrapper(nn.Module):
             embeddings[special_mask] = self.special_embedding(special_indices[special_mask]).to(dtype=embeddings.dtype)
         else:
             embeddings = self.base_embedding(input_ids)
-
+            
         return embeddings
 
     def _load_from_state_dict(
@@ -89,38 +102,65 @@ class SpecialTokenEmbeddingWrapper(nn.Module):
         missing_keys,
         unexpected_keys,
         error_msgs,
-    ):  
-        legacy_key = prefix + "weight"
-        base_key = prefix + "base_embedding.weight"
-        if legacy_key in state_dict and base_key not in state_dict:
-            weight = state_dict.pop(legacy_key)
-            if isinstance(weight, torch.Tensor) and weight.dtype != self.base_embedding.weight.dtype:
-                weight = weight.to(self.base_embedding.weight.dtype)
-            state_dict[base_key] = weight
-
+    ):
+        """
+        Custom loader to handle loading weights from a standard, non-hybrid GR00T checkpoint.
+        """
+        # Define the key for the flat weight tensor in the original GR00T checkpoint
+        flat_weight_key = prefix + 'weight'
+        
+        # Define the key for the base embedding in our new hybrid structure
+        base_embedding_key = prefix + 'base_embedding.weight'
+        
+        # If the old flat key exists in the checkpoint, remap it to the new key
+        if flat_weight_key in state_dict and base_embedding_key not in state_dict:
+            # Get the weight tensor from the checkpoint
+            flat_weight = state_dict.pop(flat_weight_key)
+            
+            # Place it back into the state_dict with the new, correct key
+            state_dict[base_embedding_key] = flat_weight
+            
+        # Let the default PyTorch loader handle the rest with the corrected state_dict
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
         )
-        self.weight = getattr(self.base_embedding, "weight", None)
 
 
-class SpecialTokenLMHeadWrapper(nn.Module):
-    def __init__(
-        self,
-        base_head: nn.Module,
-        special_head: nn.Linear,
-        special_token_ids: torch.Tensor,
-        total_vocab_size: int,
-    ):
+class HybridLMHead(nn.Module):
+    """
+    An LM head that uses a frozen base head and a new, trainable special head.
+    """
+    def __init__(self, base_head: nn.Linear, num_special_tokens: int, special_token_ids: torch.Tensor, total_vocab_size: int,):
         super().__init__()
+        self.in_features = base_head.in_features
+        self.out_features = total_vocab_size
+        
+        # Keep a reference to the original, and freeze it
         self.base_head = base_head
-        self.special_head = special_head
+        self.base_head.requires_grad_(False)
+        
+        # Create a new, trainable LM head for special tokens
+        self.special_head = nn.Linear(self.in_features, num_special_tokens, bias=False)
+
         self.register_buffer("special_token_ids", special_token_ids.clone(), persistent=False)
         self.total_vocab_size = total_vocab_size
-        self.out_features = total_vocab_size
-        self.in_features = getattr(base_head, "in_features", special_head.in_features)
-        self.weight = getattr(self.base_head, "weight", None)
-        self.bias = getattr(self.base_head, "bias", None)
+
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        base_logits = self.base_head(hidden_states)
+        if self.special_token_ids.numel() == 0:
+            return base_logits
+        
+        logits_shape = hidden_states.shape[:-1] + (self.total_vocab_size,)
+        logits = base_logits.new_zeros(logits_shape)
+        logits[..., : base_logits.size(-1)] = base_logits
+        special_logits = self.special_head(hidden_states)
+        if special_logits.dtype != logits.dtype:
+            special_logits = special_logits.to(logits.dtype)
+        
+        logits[..., self.special_token_ids] = special_logits
+        # Combine them into a single output tensor
+        return logits
 
     def _load_from_state_dict(
         self,
@@ -132,51 +172,29 @@ class SpecialTokenLMHeadWrapper(nn.Module):
         unexpected_keys,
         error_msgs,
     ):
+        """
+        Custom loader to handle loading weights from a standard, non-hybrid GR00T checkpoint.
+        """
+        # We need to remap both 'weight' and 'bias' if they exist.
         for suffix in ("weight", "bias"):
-            legacy_key = prefix + suffix
-            base_attr = getattr(self.base_head, suffix, None)
-            if base_attr is None:
-                continue
-            base_key = prefix + f"base_head.{suffix}"
-            if legacy_key in state_dict and base_key not in state_dict:
-                tensor = state_dict.pop(legacy_key)
-                if isinstance(tensor, torch.Tensor) and tensor.dtype != base_attr.dtype:
-                    tensor = tensor.to(base_attr.dtype)
-                state_dict[base_key] = tensor
+            # Define the key for the flat tensor in the original checkpoint (e.g., '...lm_head.weight')
+            flat_key = prefix + suffix
+            
+            # Define the key for the base head in our new hybrid structure (e.g., '...lm_head.base_head.weight')
+            nested_key = prefix + f"base_head.{suffix}"
+            
+            # If the old flat key exists in the checkpoint, remap it to the new key
+            if flat_key in state_dict and nested_key not in state_dict:
+                # Get the tensor from the checkpoint
+                flat_tensor = state_dict.pop(flat_key)
+                
+                # Place it back into the state_dict with the new, correct key
+                state_dict[nested_key] = flat_tensor
+        
+        # Let the default PyTorch loader handle the rest with the corrected state_dict
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
         )
-        self.weight = getattr(self.base_head, "weight", None)
-        self.bias = getattr(self.base_head, "bias", None)
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        base_logits = self.base_head(hidden_states)
-        if self.special_token_ids.numel() == 0:
-            return base_logits
-
-        logits_shape = hidden_states.shape[:-1] + (self.total_vocab_size,)
-        logits = base_logits.new_zeros(logits_shape)
-        logits[..., : base_logits.size(-1)] = base_logits
-        special_logits = self.special_head(hidden_states)
-        if special_logits.dtype != logits.dtype:
-            special_logits = special_logits.to(logits.dtype)
-
-        ######################################################
-        # # version1: concat special token's logits at the end of logits
-        # logits_flat = logits.view(-1, self.total_vocab_size)
-        # special_flat = special_logits.view(-1, special_logits.size(-1))
-        # index = self.special_token_ids.unsqueeze(0).expand_as(special_flat)
-        # logits_flat.scatter_(1, index, special_flat)
-        # logits = logits_flat.view(logits_shape)
-        ######################################################
-        # version2: seperate logits from original lm head and new lm head
-        # if not special token, logits is still base_logits. if special token, logits from special_logits
-        # if decode logits to text, use argmax from each logit to decode text
-        # logits shape: [B, S, V1 + V2]
-        logits[..., self.special_token_ids] = special_logits
-
-        return logits
-
 
 
 class EagleBackbone(nn.Module):
@@ -224,6 +242,7 @@ class EagleBackbone(nn.Module):
 
         self.eagle_tokenizer.add_special_tokens(specials)
         self.eagle_processor.tokenizer = self.eagle_tokenizer
+        total_vocab_size = len(self.eagle_tokenizer)
 
         base_embeddings = self.eagle_model.get_input_embeddings()
         base_vocab_size = base_embeddings.num_embeddings
@@ -235,20 +254,31 @@ class EagleBackbone(nn.Module):
                 new_special_token_ids.append(token_id)
 
         if new_special_token_ids:
-            embed_dim = base_embeddings.embedding_dim
-            base_weight = base_embeddings.weight.detach().float()
             special_ids_tensor = torch.tensor(new_special_token_ids, dtype=torch.long)
             self.register_buffer("special_token_ids", special_ids_tensor, persistent=False)
 
-            self.special_token_embeddings = nn.Embedding(len(new_special_token_ids), embed_dim)
-            self.special_token_lm_head = nn.Linear(embed_dim, len(new_special_token_ids), bias=False)
-            self.special_token_lm_head.weight = self.special_token_embeddings.weight
+            special_lookup = torch.full((total_vocab_size,), -1, dtype=torch.long)
+            for idx, token_id in enumerate(self.special_token_ids.tolist()):
+                special_lookup[token_id] = idx
+
+            # 1. Get the original, pre-trained layers
+            base_embedding = self.eagle_model.get_input_embeddings()
+            base_lm_head = self.eagle_model.get_output_embeddings()
+
+            # 2. Create your new hybrid layers
+            hybrid_embedding = HybridEmbedding(base_embedding, num_added, special_lookup)
+            hybrid_lm_head = HybridLMHead(base_lm_head, num_added, self.special_token_ids, total_vocab_size)
+
+            # 3. Replace the model's original layers with the new ones
+            self.eagle_model.set_input_embeddings(hybrid_embedding)
+            self.eagle_model.set_output_embeddings(hybrid_lm_head)
+
+            # 4. Tie the new special head to the new special embedding
+            self.tie_special_weights()
+
         else:
             self.register_buffer("special_token_ids", torch.empty(0, dtype=torch.long), persistent=False)
-            self.special_token_embeddings = None
-            self.special_token_lm_head = None
-
-        self._apply_special_token_modules()
+            
 
         # Cache special token ids (single-token by construction)
         self.actions_id = self.eagle_tokenizer.convert_tokens_to_ids("[ACTIONS]")
@@ -268,7 +298,6 @@ class EagleBackbone(nn.Module):
         self.img_ids = torch.tensor(img_ids)
 
         self.special_token_loss_weight = special_token_loss_weight
-        # loss_token_ids = [self.actions_id, self.tools_id, self.endtools_id, self.pad_action, self.skills_end]
         loss_token_ids = [self.actions_id, self.tools_id, self.skills_end]
         loss_token_ids = [tid for tid in dict.fromkeys(loss_token_ids) if tid is not None and tid >= 0]
         self.special_loss_ids = (
@@ -293,6 +322,29 @@ class EagleBackbone(nn.Module):
         if self.eagle_tokenizer.pad_token_id is None:
             self.eagle_tokenizer.pad_token = self.eagle_tokenizer.eos_token
 
+
+    def initialize_new_token_weights(self):
+        """ Initializes the special embedding part with the mean of the base weights. """
+        hybrid_embedding = self.eagle_model.get_input_embeddings()
+        base_weights = hybrid_embedding.base_embedding.weight
+        special_layer_to_init = hybrid_embedding.special_embedding
+
+        with torch.no_grad():
+            mean_vec = base_weights.detach().to(torch.float32).mean(dim=0)
+            target_weight = special_layer_to_init.weight
+            mean_vec = mean_vec.to(dtype=target_weight.dtype, device=target_weight.device)
+            target_weight.copy_(mean_vec.repeat(target_weight.size(0), 1))
+        print("Initialized new special token embeddings with the mean vector.")
+
+
+    def tie_special_weights(self):
+        """ Ties the new special LM head to the new special embedding. """
+        hybrid_embedding = self.eagle_model.get_input_embeddings()
+        hybrid_lm_head = self.eagle_model.get_output_embeddings()
+        hybrid_lm_head.special_head.weight = hybrid_embedding.special_embedding.weight
+        print("Tied special LM head to special embeddings.")
+
+
     def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool):
         self.tune_llm = tune_llm
         self.tune_visual = tune_visual
@@ -312,43 +364,6 @@ class EagleBackbone(nn.Module):
                     print(f"Backbone trainable parameter: {name}")
         if not any(p.requires_grad for p in self.parameters()):
             print("Warning: No backbone trainable parameters found.")
-
-
-    def _apply_special_token_modules(self) -> None:
-        if getattr(self, "special_token_embeddings", None) is None or getattr(self, "special_token_lm_head", None) is None:
-            self.eagle_model.config.vocab_size = len(self.eagle_tokenizer)
-            return
-
-        if self.special_token_ids.numel() == 0:
-            self.eagle_model.config.vocab_size = len(self.eagle_tokenizer)
-            return
-
-        base_embedding = self.eagle_model.get_input_embeddings()
-        if isinstance(base_embedding, SpecialTokenEmbeddingWrapper):
-            base_embedding = base_embedding.base_embedding
-
-        base_head = self.eagle_model.get_output_embeddings()
-        if isinstance(base_head, SpecialTokenLMHeadWrapper):
-            base_head = base_head.base_head
-
-        total_vocab_size = len(self.eagle_tokenizer)
-        special_lookup = torch.full((total_vocab_size,), -1, dtype=torch.long)
-        for idx, token_id in enumerate(self.special_token_ids.tolist()):
-            special_lookup[token_id] = idx
-
-        if getattr(self, '_buffers', None) is not None and 'special_token_lookup' in self._buffers:
-            buffer = self._buffers['special_token_lookup']
-            buffer.resize_(special_lookup.shape)
-            buffer.copy_(special_lookup)
-        else:
-            self.register_buffer('special_token_lookup', special_lookup, persistent=False)
-
-        embedding_wrapper = SpecialTokenEmbeddingWrapper(base_embedding, self.special_token_embeddings, special_lookup)
-        lm_head_wrapper = SpecialTokenLMHeadWrapper(base_head, self.special_token_lm_head, self.special_token_ids, total_vocab_size)
-
-        self.eagle_model.set_input_embeddings(embedding_wrapper)
-        self.eagle_model.set_output_embeddings(lm_head_wrapper)
-        self.eagle_model.config.vocab_size = total_vocab_size
 
 
     def set_frozen_modules_to_eval_mode(self):
@@ -468,6 +483,12 @@ class EagleBackbone(nn.Module):
 
                 # print(special_logits[special_mask])
                 # print(special_loss)
+
+                # p1 = self.eagle_model.language_model.lm_head.special_head.weight
+                # p2 = self.eagle_model.language_model.lm_head.special_head.original_module.weight
+                # p3 = self.eagle_model.language_model.model.embed_tokens.special_embedding.weight
+                # print("base emb: Same storage?", p1.data_ptr() == p2.data_ptr() == p3.data_ptr())
+
                 # import pdb;pdb.set_trace()
 
         # ######################################
@@ -487,44 +508,7 @@ class EagleBackbone(nn.Module):
             special_loss_avg = torch.tensor(0.0, device=shift_labels.device)
 
         loss = special_loss_avg + base_loss_avg
-        # loss = special_loss_avg
-        ####################################
-        # # DEBUG:
-        # # unique_ids = torch.unique(eagle_input['input_ids'][torch.where(labels == -100)])
-        # # ignore_tokens = self.eagle_tokenizer.decode(unique_ids)
-
-        # # shift_logits shape: [batch, seq_len, vocab_size]
-        # if num_special == 0:
-        #     pred_ids = shift_logits.argmax(dim=-1)
-        # else:
-        #     base_vocab_size = vocab_size - num_special
-        #     logits_shape = shift_logits.shape[:-1]
-        #     if base_vocab_size > 0:
-        #         base_logits_full = shift_logits[..., :base_vocab_size]
-        #         base_scores, base_pred_ids = base_logits_full.max(dim=-1)
-        #     else:
-        #         min_value = torch.finfo(shift_logits.dtype).min
-        #         base_scores = shift_logits.new_full(logits_shape, min_value)
-        #         base_pred_ids = shift_labels.new_zeros(logits_shape, dtype=torch.long)
-        #     special_ids = self.special_token_ids.to(shift_logits.device)
-        #     special_logits_full = shift_logits.index_select(-1, special_ids)
-        #     special_scores, special_indices = special_logits_full.max(dim=-1)
-        #     special_pred_ids = special_ids[special_indices]
-        #     use_special = special_scores > base_scores
-        #     pred_ids = torch.where(use_special, special_pred_ids, base_pred_ids)
-        # valid_pred_ids = pred_ids[shift_labels != -100]
-        # decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids, skip_special_tokens=False)
-        # print(''.join(decoded_texts))
-        # valid_label_ids = shift_labels[shift_labels != -100]
-        # decoded_label = self.eagle_tokenizer.batch_decode(valid_label_ids, skip_special_tokens=False)
-        # print(''.join(decoded_label).replace('<|endoftext|>', ''))
-        # decoded_special = self.eagle_tokenizer.batch_decode(shift_labels[special_mask], skip_special_tokens=False)
-        # print(''.join(decoded_special).replace('<|endoftext|>', ''))
-
-        # x1 = list(zip(decoded_texts, decoded_label))
-        # print([item for item in x1 if item[0] != item[1]])
-        # print([item for item in x1 if item[0] == item[1]])
-
+        
         return loss, base_loss_avg, special_loss_avg
         
 

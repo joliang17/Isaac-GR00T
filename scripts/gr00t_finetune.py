@@ -251,21 +251,21 @@ def main(config: ArgsConfig):
         )
 
     # ADDED: reload special embed after pretrained
+    # TODO:
     model_emb = model.backbone.eagle_model.language_model.model.embed_tokens
     if getattr(model_emb, "special_embedding", None) and config.base_model_path == "nvidia/GR00T-N1.5-3B":
         # --- Re-init special token embeddings ---
         with torch.no_grad():
             base_weight = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
+            special_layer_to_init = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
+            special_head_to_init = model.backbone.eagle_model.language_model.lm_head.special_head.weight
 
-            if base_weight.is_meta or not torch.isfinite(base_weight.detach().float()).all():
-                # fallback if meta or uninitialized
-                model.backbone.special_token_embeddings.weight.data.normal_(0.0, 0.02)
-            else:
-                # compute mean in fp32 for stability
-                mean_vec = base_weight.detach().to(torch.float32).mean(dim=0, keepdim=True)
-                mean_vec = mean_vec.to(model.backbone.special_token_embeddings.weight.device, dtype=model.backbone.special_token_embeddings.weight.dtype)
-                model.backbone.special_token_embeddings.weight.copy_(mean_vec.repeat(model.backbone.special_token_embeddings.num_embeddings, 1))
-        model.tie_weights()
+            # compute mean in fp32 for stability
+            mean_vec = base_weight.detach().to(torch.float32).mean(dim=0, keepdim=True)
+            mean_vec = mean_vec.to(special_layer_to_init.device, dtype=special_layer_to_init.dtype)
+            num_embeddings = special_layer_to_init.shape[0]
+            special_layer_to_init.copy_(mean_vec.repeat(num_embeddings, 1))
+            special_head_to_init.copy_(mean_vec.repeat(num_embeddings, 1))
 
     # Set the model's compute_dtype to bfloat16
     model.compute_dtype = "bfloat16"
