@@ -30,7 +30,7 @@ from gr00t.data.schema import DatasetMetadata
 from gr00t.data.transform.base import ComposedModalityTransform
 from gr00t.model.gr00t_n1 import GR00T_N1_5
 from peft import PeftModel
-from gr00t.utils.peft import get_lora_model, get_lora_model_llmonly
+from gr00t.utils.peft import get_lora_model, get_lora_model_llmonly, tie_all_special_weights
 COMPUTE_DTYPE = torch.bfloat16
 
 def compare_dicts(d1, d2, atol=1e-6):
@@ -123,8 +123,10 @@ class Gr00tPolicy(BasePolicy):
 
         # Load model
         self._load_model(model_path)
-        # Load transforms
-        self._load_metadata(self.model_path / "experiment_cfg")
+
+        # ADDED: Load transforms
+        self._load_metadata(Path("/fs/nexus-projects/wilddiffusion/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
+        # self._load_metadata(self.model_path / "experiment_cfg")
         # Load horizons
         self._load_horizons()
 
@@ -160,7 +162,7 @@ class Gr00tPolicy(BasePolicy):
         """
         return self._modality_transform.unapply(action)
 
-    def get_action(self, observations: Dict[str, Any], img_count: int=1, past_key_values=None, mode: str='baseline') -> Dict[str, Any]:
+    def get_action(self, observations: Dict[str, Any], img_count: int=1, past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False) -> Dict[str, Any]:
         """
         Make a prediction with the model.
         Args:
@@ -192,22 +194,35 @@ class Gr00tPolicy(BasePolicy):
             if not isinstance(v, np.ndarray):
                 observations[k] = np.array(v)
 
+        observations_bs = observations.copy()
         # Apply transforms
         normalized_input = self.apply_transforms(observations)
-        normalized_action, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode)
+        normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False, inside_tool=inside_tool)
         unnormalized_action = self._get_unnormalized_action(normalized_action, )
-
         if not is_batch:
             unnormalized_action = squeeze_dict_values(unnormalized_action)
-        return unnormalized_action, tools_output, past_key_values
 
-    def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline') -> torch.Tensor:
+        unnormalized_action_bs = None
+        if call_baseline:
+            observations_bs['annotation.human.action.task_description'] = np.array([observations_bs['annotation.human.action.task_description'].item().replace('[TRAJ_MODE]', '').replace('[SKILL_MODE]', '')])
+            normalized_input_bs = self.apply_transforms(observations_bs)
+
+            normalized_action_bs, _, _, _ = self._get_action_from_normalized_input(normalized_input_bs, past_key_values=None, mode="baseline", call_baseline=True)
+            unnormalized_action_bs = self._get_unnormalized_action(normalized_action_bs, )
+            if not is_batch:
+                unnormalized_action_bs = squeeze_dict_values(unnormalized_action_bs)
+        return unnormalized_action, tools_output, past_key_values, unnormalized_action_bs
+
+    def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False) -> torch.Tensor:
         # Set up autocast context if needed
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=COMPUTE_DTYPE):
-            model_pred, tools_output, past_key_values = self.model.get_action(normalized_input, past_key_values=past_key_values, mode=mode)
+            if call_baseline:
+                model_pred, backbone_outputs, tools_output, past_key_values = self.base_model.get_action(normalized_input, mode='baseline')
+            else:
+                model_pred, backbone_outputs, tools_output, past_key_values = self.model.get_action(normalized_input, past_key_values=past_key_values, mode=mode, inside_tool=inside_tool)
 
         normalized_action = model_pred["action_pred"].float()
-        return normalized_action, tools_output, past_key_values
+        return normalized_action, backbone_outputs, tools_output, past_key_values
 
     def _get_unnormalized_action(self, normalized_action: torch.Tensor) -> Dict[str, Any]:
         return self.unapply_transforms({"action": normalized_action.cpu()})
@@ -253,43 +268,57 @@ class Gr00tPolicy(BasePolicy):
         return True
 
     def _load_model(self, model_path):
-        model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=torch.float32, init_mode=True,)
+        def check_horizon(cur_model):
 
+            # Update action_horizon to match modality config
+            # Get the expected action horizon from the modality config
+            expected_action_horizon = len(self._modality_config["action"].delta_indices)
+            if expected_action_horizon != cur_model.action_head.config.action_horizon:
+                print(
+                    f"Policy: Recreating action head with action_horizon {expected_action_horizon} (was {cur_model.action_head.config.action_horizon})"
+                )
+
+                # Update the action head config
+                new_action_head_config = cur_model.action_head.config
+                new_action_head_config.action_horizon = expected_action_horizon
+
+                # Import the FlowmatchingActionHead class
+                from gr00t.model.action_head.flow_matching_action_head import (
+                    FlowmatchingActionHead,
+                )
+
+                # Create new action head with updated config
+                new_action_head = FlowmatchingActionHead(new_action_head_config)
+
+                # Copy the weights from the old action head to the new one
+                new_action_head.load_state_dict(cur_model.action_head.state_dict(), strict=False)
+
+                # Replace the action head
+                cur_model.action_head = new_action_head
+
+                # Update model config AND the action_head_cfg dictionary that gets saved
+                cur_model.config.action_horizon = expected_action_horizon
+                cur_model.action_horizon = expected_action_horizon
+                cur_model.config.action_head_cfg["action_horizon"] = expected_action_horizon
+            return cur_model
+
+        # my trained model
+        print(f"load my trained model: {model_path}")
+        model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=COMPUTE_DTYPE, init_mode=False,)
         model.eval()  # Set model to eval mode
         model.to(device=self.device)  # type: ignore
-        import pdb;pdb.set_trace()
-        # Update action_horizon to match modality config
-        # Get the expected action horizon from the modality config
-        expected_action_horizon = len(self._modality_config["action"].delta_indices)
-        if expected_action_horizon != model.action_head.config.action_horizon:
-            print(
-                f"Policy: Recreating action head with action_horizon {expected_action_horizon} (was {model.action_head.config.action_horizon})"
-            )
 
-            # Update the action head config
-            new_action_head_config = model.action_head.config
-            new_action_head_config.action_horizon = expected_action_horizon
-
-            # Import the FlowmatchingActionHead class
-            from gr00t.model.action_head.flow_matching_action_head import (
-                FlowmatchingActionHead,
-            )
-
-            # Create new action head with updated config
-            new_action_head = FlowmatchingActionHead(new_action_head_config)
-
-            # Copy the weights from the old action head to the new one
-            new_action_head.load_state_dict(model.action_head.state_dict(), strict=False)
-
-            # Replace the action head
-            model.action_head = new_action_head
-
-            # Update model config AND the action_head_cfg dictionary that gets saved
-            model.config.action_horizon = expected_action_horizon
-            model.action_horizon = expected_action_horizon
-            model.config.action_head_cfg["action_horizon"] = expected_action_horizon
-
+        model = check_horizon(model)
         self.model = model
+
+        if model_path != "youliangtan/gr00t-n1.5-libero-long-posttrain": 
+            # load baseline model
+            print(f"load libero baseline model")
+            base_model = GR00T_N1_5.from_pretrained("youliangtan/gr00t-n1.5-libero-long-posttrain", torch_dtype=COMPUTE_DTYPE, init_mode=False,)
+            base_model.eval()  # Set model to eval mode
+            base_model.to(device=self.device)  # type: ignore
+            base_model = check_horizon(base_model)
+        self.base_model = base_model
 
     def _load_metadata(self, exp_cfg_dir: Path):
         """Load the transforms for the model."""
