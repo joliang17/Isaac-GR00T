@@ -24,6 +24,32 @@ import re
 
 import gr00t
 
+DEFAULT_EAGLE_PATH = os.path.join(
+    os.path.dirname(gr00t.__file__), "model", "backbone", "eagle2_hg_model"
+)
+
+
+@staticmethod
+def _index_batch_dict(bdict, mask_1d):
+    """Index a dict of tensors by a boolean mask on the batch dim if shape[0]==B."""
+    if mask_1d is None:
+        return bdict
+    take = mask_1d.nonzero(as_tuple=False).squeeze(-1)
+    out = {}
+    B = None
+    # try to infer B from a common key
+    for v in bdict.values():
+        if isinstance(v, torch.Tensor) and v.dim() > 0:
+            B = v.size(0)
+            break
+    for k, v in bdict.items():
+        if isinstance(v, torch.Tensor) and v.dim() > 0 and v.size(0) == B:
+            out[k] = v.index_select(0, take)
+        else:
+            out[k] = v
+    return out, take
+
+
 
 class SpecialTokenEmbeddingWrapper(nn.Module):
     def __init__(self, base_embedding: nn.Embedding, special_embedding: nn.Embedding, special_id_lookup: torch.Tensor):
@@ -153,32 +179,6 @@ class SpecialTokenLMHeadWrapper(nn.Module):
 
 
 
-DEFAULT_EAGLE_PATH = os.path.join(
-    os.path.dirname(gr00t.__file__), "model", "backbone", "eagle2_hg_model"
-)
-
-
-@staticmethod
-def _index_batch_dict(bdict, mask_1d):
-    """Index a dict of tensors by a boolean mask on the batch dim if shape[0]==B."""
-    if mask_1d is None:
-        return bdict
-    take = mask_1d.nonzero(as_tuple=False).squeeze(-1)
-    out = {}
-    B = None
-    # try to infer B from a common key
-    for v in bdict.values():
-        if isinstance(v, torch.Tensor) and v.dim() > 0:
-            B = v.size(0)
-            break
-    for k, v in bdict.items():
-        if isinstance(v, torch.Tensor) and v.dim() > 0 and v.size(0) == B:
-            out[k] = v.index_select(0, take)
-        else:
-            out[k] = v
-    return out, take
-
-
 class EagleBackbone(nn.Module):
 
     def __init__(
@@ -254,8 +254,6 @@ class EagleBackbone(nn.Module):
         self.actions_id = self.eagle_tokenizer.convert_tokens_to_ids("[ACTIONS]")
         self.tools_id = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS]")
         self.skills_end = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS_END]")
-        # self.endtools_id = self.eagle_tokenizer.convert_tokens_to_ids("[EOT]")
-        # self.pad_action = self.eagle_tokenizer.convert_tokens_to_ids("[PAD_A]")
         
         self.pad_id = self.eagle_tokenizer.convert_tokens_to_ids(self.eagle_tokenizer.pad_token)
         self.end_id = self.eagle_tokenizer.convert_tokens_to_ids(self.eagle_tokenizer.eos_token)
@@ -315,51 +313,6 @@ class EagleBackbone(nn.Module):
         if not any(p.requires_grad for p in self.parameters()):
             print("Warning: No backbone trainable parameters found.")
 
-    # def tie_weights(self):
-    #     """Tie base model weights and ensure special-token layers share parameters."""
-    #     super().tie_weights()
-    #     # self._tie_special_token_weights()
-
-    # def post_init(self):
-    #     super().post_init()
-    #     self.tie_weights()
-
-    def _tie_special_token_weights(self) -> None:
-        if getattr(self, "special_token_embeddings", None) is None:
-            return
-        if getattr(self, "special_token_lm_head", None) is None:
-            return
-
-        embed_weight = self.special_token_embeddings.weight
-        if self.special_token_lm_head.weight is not embed_weight:
-            self.special_token_lm_head.weight = embed_weight
-
-        language_model = getattr(self.eagle_model, "language_model", None)
-        # embedding
-        model_q3 = getattr(language_model, "model", None) if language_model else None
-        embed_tokens = getattr(model_q3, "embed_tokens", None) if model_q3 else None
-        special_embedding = getattr(embed_tokens, "special_embedding", None) if embed_tokens else None
-        if special_embedding is not None and special_embedding.weight is not embed_weight:
-            special_embedding.weight = embed_weight
-
-        input_emb = self.eagle_model.get_input_embeddings()
-        if isinstance(input_emb, SpecialTokenEmbeddingWrapper):
-            wrapper_emb = getattr(input_emb, "special_embedding", None)
-            if wrapper_emb is not None and wrapper_emb.weight is not embed_weight:
-                wrapper_emb.weight = embed_weight
-
-        # head 
-        lm_head = getattr(language_model, "lm_head", None) if language_model else None
-        special_head = getattr(lm_head, "special_head", None) if lm_head else None
-        if special_head is not None and special_head.weight is not embed_weight:
-            special_head.weight = embed_weight
-
-        output_head = self.eagle_model.get_output_embeddings()
-        if isinstance(output_head, SpecialTokenLMHeadWrapper):
-            wrapper_head = getattr(output_head, "special_head", None)
-            if wrapper_head is not None and wrapper_head.weight is not embed_weight:
-                wrapper_head.weight = embed_weight
-        return 
 
     def _apply_special_token_modules(self) -> None:
         if getattr(self, "special_token_embeddings", None) is None or getattr(self, "special_token_lm_head", None) is None:
@@ -397,10 +350,6 @@ class EagleBackbone(nn.Module):
         self.eagle_model.set_output_embeddings(lm_head_wrapper)
         self.eagle_model.config.vocab_size = total_vocab_size
 
-        # self._tie_special_token_weights()
-        # eagle_model = getattr(self, 'eagle_model', None)
-        # if eagle_model is not None and hasattr(eagle_model, 'tie_weights'):
-        #     eagle_model.tie_weights()
 
     def set_frozen_modules_to_eval_mode(self):
         """
@@ -519,10 +468,8 @@ class EagleBackbone(nn.Module):
 
                 # print(special_logits[special_mask])
                 # print(special_loss)
-                # p_dict = dict(self.eagle_model.named_parameters())
-                # print('requires_grad:', p_dict['language_model.model.embed_tokens.special_embedding.original_module.weight'].requires_grad)
-                # print(self.eagle_model.language_model.model.embed_tokens.special_embedding.weight)
                 # import pdb;pdb.set_trace()
+
         # ######################################
         # # version1: 
         # loss = per_token_loss.mean()

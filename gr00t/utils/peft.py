@@ -62,13 +62,10 @@ def tie_all_special_weights(model):
 
     base_head = model.backbone.eagle_model.language_model.lm_head.base_head  # ModulesToSaveWrapper or Linear
     base_emb = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding  # nn.Embedding
-    import pdb;pdb.set_trace()
-
     # Base shared parameter
     shared = emb.weight
-
-    _register_shared(lm_head)
-    _register_shared(head)
+    # _register_shared(lm_head)
+    # _register_shared(head)
     _register_shared(inner_emb)
     
     #####################
@@ -78,23 +75,16 @@ def tie_all_special_weights(model):
     # _register_shared(lm_head)
     # _register_shared(inner_emb)
 
-    base_head = model.backbone.eagle_model.language_model.lm_head.base_head  # ModulesToSaveWrapper or Linear
-    base_emb = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding  # nn.Embedding
-    shared = base_emb.weight
-    _register_shared(base_head)
-
-    import pdb;pdb.set_trace()
     # Sanity checks
     p1 = emb.weight
     p2 = lm_head.weight if hasattr(lm_head, "weight") else None
     p3 = head.original_module.weight if hasattr(head, "original_module") else head.weight
     p4 = inner_emb.weight
-    # print("Same storage?", p1.data_ptr() == p2.data_ptr() == p3.data_ptr() == p4.data_ptr())
+    print("Same storage?", p1.data_ptr() == p2.data_ptr() == p3.data_ptr() == p4.data_ptr())
 
     p5 = base_head.original_module.weight if hasattr(base_head, "original_module") else base_head.weight
     p6 = base_emb.weight
-    # print("base emb: Same storage?", p5.data_ptr() == p6.data_ptr())
-
+    print("base emb: Same storage?", p5.data_ptr() == p6.data_ptr())
 
 def enable_special_training(model):
     wsp = model.backbone.special_token_embeddings.weight
@@ -151,7 +141,6 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action
     model_lora.print_trainable_parameters()
     model_lora = _wrap_forward(model_lora)
 
-    # TODO:
     # tie weight
     tie_all_special_weights(model_lora)
     enable_special_training(model_lora)

@@ -265,6 +265,7 @@ def main(config: ArgsConfig):
                 mean_vec = base_weight.detach().to(torch.float32).mean(dim=0, keepdim=True)
                 mean_vec = mean_vec.to(model.backbone.special_token_embeddings.weight.device, dtype=model.backbone.special_token_embeddings.weight.dtype)
                 model.backbone.special_token_embeddings.weight.copy_(mean_vec.repeat(model.backbone.special_token_embeddings.num_embeddings, 1))
+        model.tie_weights()
 
     # Set the model's compute_dtype to bfloat16
     model.compute_dtype = "bfloat16"
@@ -317,19 +318,10 @@ def main(config: ArgsConfig):
         torch_compile_mode=None,
         max_grad_norm=1.0,
     )
-
-    zero_params = [n for n,p in model.named_parameters() if p.numel()>0 and torch.count_nonzero(p)==0]
-    zero_params1 = [item for item in zero_params if 'lora' not in item]
-    print(zero_params1)
-    # import pdb;pdb.set_trace()
+    # zero_params = [n for n,p in model.named_parameters() if p.numel()>0 and torch.count_nonzero(p)==0]
+    # zero_params1 = [item for item in zero_params if 'lora' not in item]
+    # print(zero_params1)
     if False:
-        model.backbone.eagle_model.language_model.model.embed_tokens.weight = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
-        model.backbone.eagle_model.language_model.lm_head.weight = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
-        model.backbone.eagle_model.language_model.lm_head.base_head.weight = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
-        embed = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding
-        head = model.backbone.eagle_model.language_model.lm_head.special_head
-
-
         model.backbone.eagle_model.language_model.model.embed_tokens.weight
         model.backbone.eagle_model.language_model.lm_head.weight
 
@@ -338,6 +330,8 @@ def main(config: ArgsConfig):
 
         model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
         model.backbone.eagle_model.language_model.lm_head.special_head.weight
+        model.backbone.special_token_embeddings.weight
+        model.backbone.special_token_lm_head.weight
 
     # 2.2 run experiment
     experiment = TrainRunner(
