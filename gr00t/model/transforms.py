@@ -107,21 +107,45 @@ def collate(features: List[dict], eagle_processor) -> dict:
             # Concat in existing batch dimension.
             batch[key] = torch.cat(values)
         else:
+            # key in state / state_mask / action / action_mask
             try:
                 uniq_len = len(set([len(item) for item in values]))
             except: 
                 uniq_len = 1
 
             if uniq_len != 1:
-                seqs = [torch.from_numpy(np.concatenate(s, axis=0)) for s in values]
-                padded = torch.nn.utils.rnn.pad_sequence(seqs, batch_first=True, padding_value=0.0)
-                lengths = torch.tensor([s.size(0) for s in seqs])
-                batch[key] = padded
-                batch[key + '_length'] = lengths
+                # values have different length for all samples
+                seqs = []
+                lengths = []
+                for s in values:
+                    if len(s) == 0:
+                        # create an empty (0, feature_dim) tensor
+                        # feature_dim inferred from first non-empty item
+                        feature_dim = next((v[0].shape[-1] for v in values if len(v) > 0), 0)
+                        seqs.append(torch.zeros((0, feature_dim)))
+                        lengths.append(0)
+                    else:
+                        arr = np.concatenate(s, axis=0)
+                        t = torch.from_numpy(arr)
+                        seqs.append(t)
+                        lengths.append(t.size(0))
+                        
+                # pad to max length (will handle 0-length safely)
+                if len(seqs) > 0:
+                    padded = torch.nn.utils.rnn.pad_sequence(seqs, batch_first=True, padding_value=0.0)
+                    batch[key] = padded
+                    batch['eagle_' + key + '_length'] = torch.tensor(lengths, dtype=torch.long)
+                else:
+                    batch[key] = torch.empty(0)
+                    batch['eagle_' + key + '_length'] = torch.empty(0, dtype=torch.long)
+                
             else:
+                # values have the same length for all samples
                 # state, state_mask, action and action_mask.
                 # Stack to form the batch dimension.
                 batch[key] = torch.from_numpy(np.stack(values))
+                if key in ('state', 'action', 'state_mask', 'action_mask'):
+                    batch['eagle_' + key + '_length'] = torch.tensor([len(item) for item in values], dtype=torch.long)
 
     return batch
 

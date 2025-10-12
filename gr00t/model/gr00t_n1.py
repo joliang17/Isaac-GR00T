@@ -370,7 +370,7 @@ class GR00T_N1_5(PreTrainedModel):
         suffix = "_length"
         list_base = []
         for key, value in inputs.items():
-            if not isinstance(key, str) or not key.endswith(suffix):
+            if not isinstance(key, str) or not key.endswith(suffix) or 'action' in key or 'state' in key:
                 continue
             base = key[: -len(suffix)]
             if base not in inputs:
@@ -402,7 +402,8 @@ class GR00T_N1_5(PreTrainedModel):
             list_keys = ['state', 'state_mask', 'action', 'action_mask', ]
             for key in list_keys:
                 if inputs[key].numel() != 0:
-                    inputs[key] = inputs[key].reshape(-1, inputs[key].size(2), inputs[key].size(3))
+                    if len(inputs[key].shape) > 3:
+                        inputs[key] = inputs[key].reshape(-1, inputs[key].size(2), inputs[key].size(3))
                 else:
                     del inputs[key]
         return out, inputs, list_base
@@ -411,6 +412,7 @@ class GR00T_N1_5(PreTrainedModel):
         # if there is no step information (single instruction input)
         input_keys = inputs.keys()
         step_input = [item for item in input_keys if 'step' in item]
+
         if len(step_input) > 0:
             original, inputs, list_base = self.formulate_input_traj(inputs)
 
