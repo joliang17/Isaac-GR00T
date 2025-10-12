@@ -30,7 +30,6 @@ from gr00t.data.schema import DatasetMetadata
 from gr00t.data.transform.base import ComposedModalityTransform
 from gr00t.model.gr00t_n1 import GR00T_N1_5
 from peft import PeftModel
-from gr00t.utils.peft import get_lora_model, get_lora_model_llmonly, tie_all_special_weights
 COMPUTE_DTYPE = torch.bfloat16
 
 def compare_dicts(d1, d2, atol=1e-6):
