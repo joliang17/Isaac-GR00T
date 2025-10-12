@@ -99,6 +99,9 @@ class ArgsConfig:
     learning_rate: float = 1e-4
     """Learning rate for training."""
 
+    grad_norm: float = 1.0
+    """Learning rate for training."""
+
     weight_decay: float = 1e-5
     """Weight decay for AdamW optimizer."""
 
@@ -251,7 +254,6 @@ def main(config: ArgsConfig):
         )
 
     # ADDED: reload special embed after pretrained
-    # TODO:
     model_emb = model.backbone.eagle_model.language_model.model.embed_tokens
     if getattr(model_emb, "special_embedding", None) and config.base_model_path == "nvidia/GR00T-N1.5-3B":
         # --- Re-init special token embeddings ---
@@ -316,7 +318,7 @@ def main(config: ArgsConfig):
         ddp_find_unused_parameters=False,
         ddp_bucket_cap_mb=100,
         torch_compile_mode=None,
-        max_grad_norm=1.0,
+        max_grad_norm=config.grad_norm
     )
     # zero_params = [n for n,p in model.named_parameters() if p.numel()>0 and torch.count_nonzero(p)==0]
     # zero_params1 = [item for item in zero_params if 'lora' not in item]
