@@ -215,7 +215,7 @@ def main(config: ArgsConfig):
         tune_visual=config.tune_visual,  # backbone's vision tower
         tune_projector=config.tune_projector,  # action head's projector
         tune_diffusion_model=config.tune_diffusion_model,  # action head's DiT
-        init_mode=config.init_mode,
+        init_mode=config.init_mode
     )
 
     # Update action_horizon to match data config
@@ -274,6 +274,10 @@ def main(config: ArgsConfig):
     model.config.compute_dtype = "bfloat16"
 
     if config.lora_rank > 0:
+        train_action_head = False
+        if 'traj_video_both' in config.dataset_path[0] and 'skip_action' not in config.run_name:
+            train_action_head = True
+            
         # normal lora training (only for action_head / full model)
         model = get_lora_model(
             model,

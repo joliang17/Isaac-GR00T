@@ -311,8 +311,9 @@ class FlowmatchingActionHead(nn.Module):
         embodiment_id = action_input.embodiment_id
         if num_action > 0:
             embodiment_id = embodiment_id[:1].repeat(num_action)
+        
+        unique_vals = torch.unique(action_input.eagle_action_length)
 
-        valid_mask = action_input.eagle_state_length > 0
         # Embed state.
         if len(action_input.state.shape) < 3:
             state_input = action_input.state.unsqueeze(1)
@@ -323,11 +324,16 @@ class FlowmatchingActionHead(nn.Module):
         actions = action_input.action
         action_mask = action_input.action_mask
 
-        # Filter tensors by valid_mask
-        state_input = state_input[valid_mask]
-        actions = actions[valid_mask]
-        action_mask = action_mask[valid_mask]
-        embodiment_id = embodiment_id[valid_mask] if embodiment_id is not None else None
+        padding_value = 0.0
+        is_padding_value = (actions == padding_value)
+        padding_mask = ~is_padding_value.all(dim=2).all(dim=1)
+
+        if not padding_mask.all():
+            # Filter tensors by padding_mask
+            state_input = state_input[padding_mask]
+            actions = actions[padding_mask]
+            action_mask = action_mask[padding_mask]
+            embodiment_id = embodiment_id[padding_mask] if embodiment_id is not None else None
 
         state_features = self.state_encoder(state_input, embodiment_id)
 
