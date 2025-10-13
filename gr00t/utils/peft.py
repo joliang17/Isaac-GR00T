@@ -73,12 +73,7 @@ def tie_all_special_weights(model):
     print("base emb: Same storage?", p3.data_ptr() == p4.data_ptr())
 
 
-def enable_special_training(model):
-    lm_head = model.backbone.eagle_model.language_model.lm_head.special_head.weight.requires_grad_(True)
-    special = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight.requires_grad_(True)
-
-
-def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action_head=True):
+def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action_head=True, freeze_embeddings=False):
     def find_saved_module(list_candidate):
         modules_to_save = []
         for candidate in list_candidate:
@@ -112,7 +107,9 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action
     modules_to_save = []
     if train_action_head:
         modules_to_save = find_saved_module(["action_head", "backbone.action_head", ])
-    modules_to_save.extend(['backbone.eagle_model.language_model.model.embed_tokens.special_embedding', 'backbone.eagle_model.language_model.lm_head.special_head',])
+    
+    if not freeze_embeddings:
+        modules_to_save.extend(['backbone.eagle_model.language_model.model.embed_tokens.special_embedding', 'backbone.eagle_model.language_model.lm_head.special_head',])
     
     lora_config = LoraConfig(r=rank, lora_alpha=lora_alpha, target_modules=target_modules, lora_dropout=lora_dropout, bias="none", task_type="CAUSAL_LM", modules_to_save=modules_to_save, )
 

@@ -86,6 +86,7 @@ class Gr00tPolicy(BasePolicy):
         modality_transform: ComposedModalityTransform,
         denoising_steps: Optional[int] = None,
         device: Union[int, str] = "cuda" if torch.cuda.is_available() else "cpu",
+        call_baseline: bool=False,
     ):
         """
         Initialize the Gr00tPolicy.
@@ -113,6 +114,7 @@ class Gr00tPolicy(BasePolicy):
         self._modality_transform.eval()  # set this to eval mode
         self.model_path = Path(model_path)
         self.device = device
+        self.call_baseline = call_baseline
 
         # Convert string embodiment tag to EmbodimentTag enum if needed
         if isinstance(embodiment_tag, str):
@@ -310,14 +312,14 @@ class Gr00tPolicy(BasePolicy):
         model = check_horizon(model)
         self.model = model
 
-        if model_path != "youliangtan/gr00t-n1.5-libero-long-posttrain": 
+        if model_path != "youliangtan/gr00t-n1.5-libero-long-posttrain" and self.call_baseline: 
             # load baseline model
             print(f"load libero baseline model")
             base_model = GR00T_N1_5.from_pretrained("youliangtan/gr00t-n1.5-libero-long-posttrain", torch_dtype=COMPUTE_DTYPE, init_mode=False,)
             base_model.eval()  # Set model to eval mode
             base_model.to(device=self.device)  # type: ignore
             base_model = check_horizon(base_model)
-        self.base_model = base_model
+            self.base_model = base_model
 
     def _load_metadata(self, exp_cfg_dir: Path):
         """Load the transforms for the model."""

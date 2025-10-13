@@ -159,6 +159,7 @@ def eval_libero(cfg) -> None:
             embodiment_tag=cfg.embodiment_tag,
             denoising_steps=cfg.denoising_steps,
             device="cuda" if torch.cuda.is_available() else "cpu",
+            call_baseline=call_baseline,
         )
 
         # Start episodes
@@ -184,7 +185,7 @@ def eval_libero(cfg) -> None:
             elif cfg.task_suite_name == "libero_goal":
                 max_steps = 600  # longest training demo has 270 steps
             elif cfg.task_suite_name == "libero_10":
-                max_steps = 1000  # longest training demo has 505 steps
+                max_steps = 500  # longest training demo has 505 steps
             elif cfg.task_suite_name == "libero_90":
                 max_steps = 400  # longest training demo has 373 steps
 
@@ -225,15 +226,15 @@ def eval_libero(cfg) -> None:
                         # task instruction is already included in past_key_values_traj
                         obs_dict = process_observation(obs, cur_instr, headless=cfg.headless)
                         action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved')
-
                         if tools_output != '':
+                            print(f"Call Tools: {tools_output}")
                             # generated skill instructions
                             # start a new inference session, generate actions to achieve the tools, until finish
                             inside_tools = True
                             past_key_values_tools = None
                             # for step t, regenerate the action with the new instructions
                             obs_dict_tools = process_observation(obs, '[SKILL_MODE]' + tools_output, headless=cfg.headless)
-                            action_chunk, tool_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict_tools, past_key_values=past_key_values_tools, mode='interleaved', call_baseline=call_baseline, inside_tool=True)
+                            action_chunk, invalid_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict_tools, past_key_values=past_key_values_tools, mode='interleaved', call_baseline=call_baseline, inside_tool=True)
                             if call_baseline:
                                 call_action = action_chunk_bs
                             else:
@@ -241,7 +242,6 @@ def eval_libero(cfg) -> None:
 
                         # generate action_tokens for execution
                         action = convert_to_libero_action(action_chunk, action_keys)
-
                     else:
                         # inside tools
                         # skill instruction is already included in past_key_values_traj
@@ -255,6 +255,7 @@ def eval_libero(cfg) -> None:
                         if tools_output == '[TOOLS_END]':
                             # skill finished, no action is needed at the current step
                             inside_tools = False
+                            print(f"Tool ended! Back to trajectory")
                             continue
                         else:
                             # action tokens are generated
@@ -282,7 +283,6 @@ def eval_libero(cfg) -> None:
 
             # Save a replay video of the episode
             save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, )
-            import pdb;pdb.set_trace()
 
             # Log current results
             print(f"Success: {done}")
