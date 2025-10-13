@@ -89,6 +89,9 @@ class ArgsConfig:
     tune_diffusion_model: bool = True
     """Whether to fine-tune the diffusion model."""
 
+    freeze_embeddings: bool = False
+    """Whether to fine-tune the diffusion model."""
+
     init_mode: bool = False
     """Whether to load model from pretrained model or self-model."""
 
@@ -284,6 +287,7 @@ def main(config: ArgsConfig):
             rank=config.lora_rank,
             lora_alpha=config.lora_alpha,
             lora_dropout=config.lora_dropout,
+            freeze_embeddings=config.freeze_embeddings, 
             train_action_head=True if 'traj_video_both' in config.dataset_path[0] else False,
         )
             
