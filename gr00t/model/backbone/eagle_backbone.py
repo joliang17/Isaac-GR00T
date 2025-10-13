@@ -481,14 +481,14 @@ class EagleBackbone(nn.Module):
                 # decoded_label = self.eagle_tokenizer.batch_decode(shift_labels[special_mask], skip_special_tokens=False)
                 # print(''.join(decoded_label))
 
-                # print(special_logits[special_mask])
-                # print(special_loss)
-                # import pdb;pdb.set_trace()
+                # # print(special_logits[special_mask])
+                # # print(special_loss)
+                # # import pdb;pdb.set_trace()
 
-                # p1 = self.eagle_model.language_model.lm_head.special_head.weight
-                # p2 = self.eagle_model.language_model.lm_head.special_head.original_module.weight
-                # p3 = self.eagle_model.language_model.model.embed_tokens.special_embedding.weight
-                # print("base emb: Same storage?", p1.data_ptr() == p2.data_ptr() == p3.data_ptr())
+                # # p1 = self.eagle_model.language_model.lm_head.special_head.weight
+                # # p2 = self.eagle_model.language_model.lm_head.special_head.original_module.weight
+                # # p3 = self.eagle_model.language_model.model.embed_tokens.special_embedding.weight
+                # # print("base emb: Same storage?", p1.data_ptr() == p2.data_ptr() == p3.data_ptr())
 
                 # import pdb;pdb.set_trace()
 

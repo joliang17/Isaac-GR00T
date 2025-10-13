@@ -36,7 +36,7 @@ from transformers import AutoConfig, AutoModel, AutoTokenizer, AutoProcessor
 from tempfile import TemporaryDirectory
 from peft import PeftModel
 from gr00t.model.gr00t_n1 import GR00T_N1_5
-from gr00t.utils.peft import tie_all_special_weights, enable_special_training
+from gr00t.utils.peft import tie_all_special_weights
 
 
 class BaseSampler(Sampler):
