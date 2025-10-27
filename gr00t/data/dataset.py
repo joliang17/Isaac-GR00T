@@ -30,6 +30,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Sequence
 import re
+import random
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, ValidationError
@@ -153,9 +154,10 @@ class LeRobotSingleDataset(Dataset):
             self.window_length = 20
         else:
             self.window_length = window_length
+        self.skill_inclusion_ratio = 0.5
 
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
-        self._trajectory_ids, self._trajectory_lengths = self._get_trajectories()
+        self._trajectory_ids, self._trajectory_lengths, self._trajectory_types = self._get_trajectories()
         self._all_steps = self._get_all_steps()
         self._modality_keys = self._get_modality_keys()
         self._delta_indices = self._get_delta_indices()
@@ -199,6 +201,13 @@ class LeRobotSingleDataset(Dataset):
         The order of the lengths is the same as the order of the trajectory IDs.
         """
         return self._trajectory_lengths
+
+    @property
+    def trajectory_types(self) -> np.ndarray:
+        """The trajectory lengths in the dataset, stored as a 1D numpy array of integers.
+        The order of the lengths is the same as the order of the trajectory IDs.
+        """
+        return self._trajectory_types
 
     @property
     def all_steps(self) -> list[tuple[int, int]]:
@@ -383,10 +392,18 @@ class LeRobotSingleDataset(Dataset):
             episode_metadata = [json.loads(line) for line in f]
         trajectory_ids = []
         trajectory_lengths = []
+        trajectory_type = []
         for episode in episode_metadata:
             trajectory_ids.append(episode["episode_index"])
             trajectory_lengths.append(episode["length"])
-        return np.array(trajectory_ids), np.array(trajectory_lengths)
+            tasks = episode["tasks"]
+            tool_task = [item for item in tasks if "[TOOLS]" in item]
+            if len(tool_task) > 0:
+                trajectory_type.append(0)
+            else:
+                trajectory_type.append(1)
+
+        return np.array(trajectory_ids), np.array(trajectory_lengths), np.array(trajectory_type)
 
     def _get_all_windows(self) -> list[list[tuple[int, int]]]:
         """
@@ -408,7 +425,8 @@ class LeRobotSingleDataset(Dataset):
             also include a final window that ends at the last step even if the stride
             would skip it (useful to cover the tail).
             - self.max_windows (int | None, default=None): if set, cap the total output windows.
-
+            - self.skill_inclusion_ratio (float, default=1.0): Ratio of "skill" trajectories
+            (ttype=1) to include. 0.0=none, 0.1=10%, 1.0=all.
         Example:
             self.trajectory_ids = [0, 1, 2]
             self.trajectory_lengths = [3, 2, 4]
@@ -437,9 +455,24 @@ class LeRobotSingleDataset(Dataset):
             if max_windows <= 0:
                 raise ValueError(f"max_windows must be positive if set, got {max_windows}")
 
+        # --- Added This Block ---
+        skill_inclusion_ratio = float(getattr(self, "skill_inclusion_ratio", 1.0))
+        if not (0.0 <= skill_inclusion_ratio <= 1.0):
+            raise ValueError(
+                f"skill_inclusion_ratio must be in [0.0, 1.0], got {skill_inclusion_ratio}"
+            )
+        # --- End Added Block ---
+
         all_windows: list[list[tuple[int, int]]] = []
 
-        for tid, T in zip(self.trajectory_ids, self.trajectory_lengths):
+        for tid, T, ttype in zip(self.trajectory_ids, self.trajectory_lengths, self.trajectory_types):
+            # --- Modified This Block ---
+            # Downsample skills based on the inclusion ratio
+            if ttype == 1:  # ttype == 1: skill
+                if random.random() > skill_inclusion_ratio:
+                    continue  # Skip this skill trajectory
+            # --- End Modified Block ---
+
             if T <= 0:
                 # skip empty trajectories
                 continue
@@ -463,17 +496,21 @@ class LeRobotSingleDataset(Dataset):
 
             # Optionally include a tail window ending at T-1 if stride skipped it
             if include_tail and (last_start % stride != 0):
-                tail_start = max(0, last_start)
-                window = [(tid, tail_start + off) for off in range(wl)]
-                all_windows.append(window)
-                if max_windows is not None and len(all_windows) >= max_windows:
-                    return all_windows
+                # Check if this tail window is different from the last one added
+                last_added_start = (start - stride) if 'start' in locals() else -1
+                if last_added_start != last_start:
+                    tail_start = max(0, last_start)
+                    window = [(tid, tail_start + off) for off in range(wl)]
+                    all_windows.append(window)
+                    if max_windows is not None and len(all_windows) >= max_windows:
+                        return all_windows
 
         if not all_windows:
             raise ValueError(
                 "No windows created. "
                 f"window_length={wl}, stride={stride}, drop_short={drop_short}, "
-                f"include_tail={include_tail}, min_traj_len={min(self.trajectory_lengths or [0])}"
+                f"include_tail={include_tail}, min_traj_len={min(self.trajectory_lengths or [0])}, "
+                f"skill_inclusion_ratio={skill_inclusion_ratio}"
             )
 
         return all_windows
