@@ -64,6 +64,8 @@ class ArgsConfig:
     window_length: int = 10
     """Batch size per GPU for training."""
 
+    skill_inclusion_ratio: float = 0.5
+
     max_steps: int = 10000
     """Maximum number of training steps."""
 
@@ -175,6 +177,7 @@ def main(config: ArgsConfig):
             embodiment_tag=embodiment_tag,  # This will override the dataset's embodiment tag to "new_embodiment"
             video_backend=config.video_backend,
             window_length=config.window_length, 
+            skill_inclusion_ratio=config.skill_inclusion_ratio,
         )
     else:
         single_datasets = []
@@ -189,6 +192,7 @@ def main(config: ArgsConfig):
                 embodiment_tag=embodiment_tag,
                 video_backend=config.video_backend,
                 window_length=config.window_length, 
+                skill_inclusion_ratio=config.skill_inclusion_ratio,
             )
             single_datasets.append(dataset)
 
