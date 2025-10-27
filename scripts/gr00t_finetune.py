@@ -77,6 +77,12 @@ class ArgsConfig:
     base_model_path: str = "nvidia/GR00T-N1.5-3B"
     """Path or HuggingFace model ID for the base model."""
 
+    tune_special_A: bool = False
+    """Whether to fine-tune the language model backbone."""
+
+    tune_special_B: bool = False
+    """Whether to fine-tune the language model backbone."""
+
     tune_llm: bool = False
     """Whether to fine-tune the language model backbone."""
 
@@ -215,6 +221,8 @@ def main(config: ArgsConfig):
     model = GR00T_N1_5.from_pretrained(
         pretrained_model_name_or_path=config.base_model_path,
         tune_llm=config.tune_llm,  # backbone's LLM
+        tune_special_A=config.tune_special_A,  # backbone's LLM
+        tune_special_B=config.tune_special_B,  # backbone's LLM
         tune_visual=config.tune_visual,  # backbone's vision tower
         tune_projector=config.tune_projector,  # action head's projector
         tune_diffusion_model=config.tune_diffusion_model,  # action head's DiT
@@ -258,19 +266,43 @@ def main(config: ArgsConfig):
 
     # ADDED: reload special embed after pretrained
     model_emb = model.backbone.eagle_model.language_model.model.embed_tokens
-    if getattr(model_emb, "special_embedding", None) and config.base_model_path == "nvidia/GR00T-N1.5-3B":
+    # MODIFIED: Get lm_head as well
+    lm_head = model.backbone.eagle_model.language_model.lm_head
+
+    import pdb;pdb.set_trace()
+    # MODIFIED: Check for either special embedding A or B
+    if (getattr(model_emb, "special_embedding_A", None) or getattr(model_emb, "special_embedding_B", None)) and config.base_model_path == "nvidia/GR00T-N1.5-3B":
+        
         # --- Re-init special token embeddings ---
         with torch.no_grad():
-            base_weight = model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
-            special_layer_to_init = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
-            special_head_to_init = model.backbone.eagle_model.language_model.lm_head.special_head.weight
+            base_weight = model_emb.base_embedding.weight
 
             # compute mean in fp32 for stability
             mean_vec = base_weight.detach().to(torch.float32).mean(dim=0, keepdim=True)
-            mean_vec = mean_vec.to(special_layer_to_init.device, dtype=special_layer_to_init.dtype)
-            num_embeddings = special_layer_to_init.shape[0]
-            special_layer_to_init.copy_(mean_vec.repeat(num_embeddings, 1))
-            special_head_to_init.copy_(mean_vec.repeat(num_embeddings, 1))
+            
+            # --- Handle Group A ---
+            if hasattr(model_emb, "special_embedding_A") and model_emb.special_embedding_A.weight.size(0) > 0:
+                special_layer_to_init_A = model_emb.special_embedding_A.weight
+                special_head_to_init_A = lm_head.special_head_A.weight
+                
+                mean_vec_A = mean_vec.to(special_layer_to_init_A.device, dtype=special_layer_to_init_A.dtype)
+                num_embeddings_A = special_layer_to_init_A.shape[0]
+                
+                special_layer_to_init_A.copy_(mean_vec_A.repeat(num_embeddings_A, 1))
+                special_head_to_init_A.copy_(mean_vec_A.repeat(num_embeddings_A, 1))
+                print(f"Re-initialized {num_embeddings_A} special tokens (Group A) with base embedding mean.")
+                
+            # --- Handle Group B ---
+            if hasattr(model_emb, "special_embedding_B") and model_emb.special_embedding_B.weight.size(0) > 0:
+                special_layer_to_init_B = model_emb.special_embedding_B.weight
+                special_head_to_init_B = lm_head.special_head_B.weight
+
+                mean_vec_B = mean_vec.to(special_layer_to_init_B.device, dtype=special_layer_to_init_B.dtype)
+                num_embeddings_B = special_layer_to_init_B.shape[0]
+
+                special_layer_to_init_B.copy_(mean_vec_B.repeat(num_embeddings_B, 1))
+                special_head_to_init_B.copy_(mean_vec_B.repeat(num_embeddings_B, 1))
+                print(f"Re-initialized {num_embeddings_B} special tokens (Group B) with base embedding mean.")
 
     # Set the model's compute_dtype to bfloat16
     model.compute_dtype = "bfloat16"
@@ -289,6 +321,8 @@ def main(config: ArgsConfig):
             lora_dropout=config.lora_dropout,
             freeze_embeddings=config.freeze_embeddings, 
             train_action_head=train_action_head,
+            tune_special_A=config.tune_special_A,
+            tune_special_B=config.tune_special_B,
         )
     else:
         _ = list_trainable_parameter_names(model)
@@ -333,17 +367,13 @@ def main(config: ArgsConfig):
     # zero_params = [n for n,p in model.named_parameters() if p.numel()>0 and torch.count_nonzero(p)==0]
     # zero_params1 = [item for item in zero_params if 'lora' not in item]
     # print(zero_params1)
+    import pdb;pdb.set_trace()
     if False:
-        model.backbone.eagle_model.language_model.model.embed_tokens.weight
-        model.backbone.eagle_model.language_model.lm_head.weight
-
         model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
         model.backbone.eagle_model.language_model.lm_head.base_head.weight
 
         model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight
         model.backbone.eagle_model.language_model.lm_head.special_head.weight
-        model.backbone.special_token_embeddings.weight
-        model.backbone.special_token_lm_head.weight
 
     # 2.2 run experiment
     experiment = TrainRunner(

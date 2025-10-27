@@ -94,30 +94,55 @@ class GR00T_N1_5(PreTrainedModel):
         """
         Tie the weights of the special token embeddings and the LM heads.
         """
-        # Tie the base embeddings and heads
+        lm = self.backbone.eagle_model.language_model
+
+        # --- Tie the base embeddings and heads ---
         # This is a standard practice in many transformer models
-        base_emb_weight = self.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
-        self.backbone.eagle_model.language_model.lm_head.base_head.weight = base_emb_weight
-        self.backbone.eagle_model.language_model.lm_head.weight = base_emb_weight
-        self.backbone.eagle_model.language_model.model.embed_tokens.weight = base_emb_weight
+        base_emb_weight = lm.model.embed_tokens.base_embedding.weight
+        lm.lm_head.base_head.weight = base_emb_weight
+        # NOTE: Removed lines for lm_head.weight and embed_tokens.weight
+        # as Hybrid* modules do not have a top-level 'weight' param.
+
+        # --- Tie Group A ---
+        try:
+            special_emb_A_weight = lm.model.embed_tokens.special_embedding_A.weight
+            lm.lm_head.special_head_A.weight = special_emb_A_weight
+        except AttributeError:
+            print("Could not tie special embedding group A (not found).")
+
+        # --- Tie Group B ---
+        try:
+            special_emb_B_weight = lm.model.embed_tokens.special_embedding_B.weight
+            lm.lm_head.special_head_B.weight = special_emb_B_weight
+        except AttributeError:
+            print("Could not tie special embedding group B (not found).")
 
     @property
     def _tied_weights_keys(self):
-        # Group 1: The new special embeddings and their corresponding heads
-        special_tied_group = [
-            'backbone.eagle_model.language_model.lm_head.special_head.weight',
-            'backbone.eagle_model.language_model.model.embed_tokens.special_embedding.weight',
+        # Group 1: The new special embeddings and their corresponding heads (Group A)
+        special_tied_group_A = [
+            'backbone.eagle_model.language_model.lm_head.special_head_A.weight',
+            'backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight',
         ]
 
-        # Group 2: The base model's embeddings and heads
+        # Group 2: The new special embeddings and their corresponding heads (Group B)
+        special_tied_group_B = [
+            'backbone.eagle_model.language_model.lm_head.special_head_B.weight',
+            'backbone.eagle_model.language_model.model.embed_tokens.special_embedding_B.weight',
+        ]
+
+        # Group 3: The base model's embeddings and heads
         base_tied_group = [
             'backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight',
             'backbone.eagle_model.language_model.lm_head.base_head.weight',
-            'backbone.eagle_model.language_model.model.embed_tokens.weight',
-            'backbone.eagle_model.language_model.lm_head.weight',
         ]
+        
         # Flatten the list of lists into a single list of strings
-        all_tied_keys = list(itertools.chain.from_iterable([special_tied_group, base_tied_group]))
+        all_tied_keys = list(itertools.chain.from_iterable([
+            special_tied_group_A, 
+            special_tied_group_B, 
+            base_tied_group
+        ]))
         
         return all_tied_keys
 
@@ -438,12 +463,16 @@ class GR00T_N1_5(PreTrainedModel):
     def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs):
         tune_visual = kwargs.pop("tune_visual", True)
         tune_llm = kwargs.pop("tune_llm", False)
+        tune_special_A = kwargs.pop("tune_special_A", True)
+        tune_special_B = kwargs.pop("tune_special_B", False)
         tune_projector = kwargs.pop("tune_projector", True)
         tune_diffusion_model = kwargs.pop("tune_diffusion_model", True)
 
         print(f"Loading pretrained dual brain from {pretrained_model_name_or_path}")
         print(f"Tune backbone vision tower: {tune_visual}")
         print(f"Tune backbone LLM: {tune_llm}")
+        print(f"Tune embedding A: {tune_special_A}")
+        print(f"Tune embedding B: {tune_special_B}")
         print(f"Tune action head projector: {tune_projector}")
         print(f"Tune action head DiT: {tune_diffusion_model}")
 
@@ -464,7 +493,7 @@ class GR00T_N1_5(PreTrainedModel):
         )
 
         pretrained_model.backbone.set_trainable_parameters(
-            tune_visual=tune_visual, tune_llm=tune_llm
+            tune_visual=tune_visual, tune_llm=tune_llm, tune_special_A=tune_special_A, tune_special_B=tune_special_B
         )
         pretrained_model.action_head.set_trainable_parameters(
             tune_projector=tune_projector, tune_diffusion_model=tune_diffusion_model
