@@ -33,6 +33,9 @@ source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 #     --data_config libero_original \
 #     --denoising_steps 8
 
+
+model_ckpt="skill_id_textonly"
+cp -r "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${model_ckpt}/experiment_cfg" "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${model_ckpt}_merged/checkpoint-10000"
 python3 libero_scripts/libero_eval_interleaved.py \
     --task_suite_name libero_10 \
     --num_steps_wait 10 \
@@ -40,4 +43,5 @@ python3 libero_scripts/libero_eval_interleaved.py \
     --embodiment_tag new_embodiment \
     --data_config libero_original \
     --denoising_steps 8 \
-    --model_path "/fs/nexus-scratch/yliang17/Research/VLA/GR00T/checkpoint/groot_libero_traj_1trace/checkpoint-8000"
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${model_ckpt}_merged/checkpoint-10000" \
+    --call_baseline

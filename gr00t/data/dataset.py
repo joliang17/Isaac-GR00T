@@ -666,6 +666,10 @@ class LeRobotSingleDataset(Dataset):
         if new_text != concated_text:
             concated_text = new_text
 
+        # add skill special token
+        if '==' in concated_text:
+            concated_text = re.sub(r"\s*==\s*(\d+)\s*==\s*", r"[SKILL_\1]", concated_text)
+
         dict_output['eagle_content']['image_inputs'] = agg_images
         dict_output['eagle_content']['text_list'] = [concated_text]
         dict_output['state'] = list_transformed_state

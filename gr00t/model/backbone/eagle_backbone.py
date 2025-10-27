@@ -231,7 +231,10 @@ class EagleBackbone(nn.Module):
         self.eagle_tokenizer = self.eagle_processor.tokenizer
 
         # specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
-        specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
+
+        list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]
+        list_special.extend([f"[SKILL_{i}]" for i in range(1, 42)])
+        specials = {"additional_special_tokens": list_special}
         # Filter out ones already present
         existing = set(self.eagle_tokenizer.all_special_tokens)
         to_add = [t for t in specials["additional_special_tokens"] if t not in existing]
@@ -480,15 +483,6 @@ class EagleBackbone(nn.Module):
                 # print(''.join(decoded_pred))
                 # decoded_label = self.eagle_tokenizer.batch_decode(shift_labels[special_mask], skip_special_tokens=False)
                 # print(''.join(decoded_label))
-
-                # # print(special_logits[special_mask])
-                # # print(special_loss)
-                # # import pdb;pdb.set_trace()
-
-                # # p1 = self.eagle_model.language_model.lm_head.special_head.weight
-                # # p2 = self.eagle_model.language_model.lm_head.special_head.original_module.weight
-                # # p3 = self.eagle_model.language_model.model.embed_tokens.special_embedding.weight
-                # # print("base emb: Same storage?", p1.data_ptr() == p2.data_ptr() == p3.data_ptr())
 
                 # import pdb;pdb.set_trace()
 

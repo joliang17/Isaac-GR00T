@@ -50,7 +50,9 @@ def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
     )
     # ADDED: add special tokens to tokenizer
     # specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
-    specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
+    list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]
+    list_special.extend([f"[SKILL_{i}]" for i in range(1, 42)])
+    specials = {"additional_special_tokens": list_special}
     eagle_processor.tokenizer.add_special_tokens(specials)
 
     eagle_processor.tokenizer.padding_side = "left"

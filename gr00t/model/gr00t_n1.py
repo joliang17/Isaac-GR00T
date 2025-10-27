@@ -202,11 +202,11 @@ class GR00T_N1_5(PreTrainedModel):
         backbone_outputs = self.backbone(backbone_inputs)
 
         if 'action' in inputs:
-            action_head_outputs = model.action_head(backbone_outputs, action_inputs)
-            model.validate_data(action_head_outputs, backbone_outputs, is_training=True)
+            action_head_outputs = self.action_head(backbone_outputs, action_inputs)
+            self.validate_data(action_head_outputs, backbone_outputs, is_training=True)
             action_head_outputs["action_head_skipped"] = False
         else:
-            output_dict = {"loss": torch.tensor(0.0, device=model.device),}
+            output_dict = {"loss": torch.tensor(0.0, device=self.action_head.device),}
             action_head_outputs = BatchFeature(data=output_dict)
             action_head_outputs["action_head_skipped"] = True
 

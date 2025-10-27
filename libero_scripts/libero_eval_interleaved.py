@@ -268,8 +268,8 @@ def eval_libero(cfg) -> None:
                         total_successes += 1
                         break
                     t += 1
-                    # if t % 10 == 0:
-                    print(f"current t: {t}")
+                    if t % 10 == 0:
+                        print(f"current t: {t}")
 
                 except Exception as e:
                     traceback.print_exc()
@@ -294,6 +294,7 @@ def eval_libero(cfg) -> None:
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
             )
             log_file.flush()
+            sys.exit(0)
 
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
