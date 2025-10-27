@@ -118,7 +118,8 @@ class LeRobotSingleDataset(Dataset):
         video_backend: str = "decord",
         video_backend_kwargs: dict | None = None,
         transforms: ComposedModalityTransform | None = None,
-        window_length: int | None = None
+        window_length: int | None = None,
+        skill_inclusion_ratio: float = 0.5, 
     ):
         """
         Initialize the dataset.
@@ -154,7 +155,7 @@ class LeRobotSingleDataset(Dataset):
             self.window_length = 20
         else:
             self.window_length = window_length
-        self.skill_inclusion_ratio = 0.5
+        self.skill_inclusion_ratio = skill_inclusion_ratio
 
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
         self._trajectory_ids, self._trajectory_lengths, self._trajectory_types = self._get_trajectories()
@@ -464,6 +465,8 @@ class LeRobotSingleDataset(Dataset):
         # --- End Added Block ---
 
         all_windows: list[list[tuple[int, int]]] = []
+        skill_cnt = 0
+        traj_cnt = 0
 
         for tid, T, ttype in zip(self.trajectory_ids, self.trajectory_lengths, self.trajectory_types):
             # --- Modified This Block ---
@@ -471,6 +474,9 @@ class LeRobotSingleDataset(Dataset):
             if ttype == 1:  # ttype == 1: skill
                 if random.random() > skill_inclusion_ratio:
                     continue  # Skip this skill trajectory
+                skill_cnt += 1
+            else:
+                traj_cnt += 1
             # --- End Modified Block ---
 
             if T <= 0:
@@ -512,7 +518,7 @@ class LeRobotSingleDataset(Dataset):
                 f"include_tail={include_tail}, min_traj_len={min(self.trajectory_lengths or [0])}, "
                 f"skill_inclusion_ratio={skill_inclusion_ratio}"
             )
-
+        print(f"skill_inclusion_ratio={skill_inclusion_ratio}, skill-level data ratio: {np.round(skill_cnt/(skill_cnt+traj_cnt), 4)}")
         return all_windows
 
     def _get_all_steps(self) -> list[tuple[int, int]]:
