@@ -37,7 +37,7 @@ from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from gr00t.experiment.runner import TrainRunner
 from gr00t.model.gr00t_n1 import GR00T_N1_5
 from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING
-from gr00t.utils.peft import get_lora_model, get_lora_model_llmonly
+from gr00t.utils.peft import get_lora_model, list_trainable_parameter_names
 
 
 @dataclass
@@ -288,8 +288,10 @@ def main(config: ArgsConfig):
             lora_alpha=config.lora_alpha,
             lora_dropout=config.lora_dropout,
             freeze_embeddings=config.freeze_embeddings, 
-            train_action_head=True if 'traj_video_both' in config.dataset_path[0] else False,
+            train_action_head=train_action_head,
         )
+    else:
+        _ = list_trainable_parameter_names(model)
             
     # 2.1 modify training args
     training_args = TrainingArguments(
