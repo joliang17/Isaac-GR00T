@@ -161,13 +161,22 @@ class DualBrainTrainer(transformers.Trainer):
             # save adapter
             self.model.save_pretrained(output_dir, safe_serialization=True, )
             rm_old_ckpt(output_dir, num_limit=3)
+            # p1 = self.model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
+            # p2 = self.model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
+            # print("special emb: Same storage?", p1.data_ptr() == p2.data_ptr())
             try:
                 # save normal ckpt
                 # 1. Load a fresh instance of your base model
                 base_model = GR00T_N1_5.from_pretrained("nvidia/GR00T-N1.5-3B", torch_dtype=torch.bfloat16 )
                 inference_model = PeftModel.from_pretrained(base_model, output_dir)
+                # p3 = inference_model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
+                # p4 = inference_model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
+                # print("loaded emb: Same storage?", p3.data_ptr() == p4.data_ptr() == p5.data_ptr())
 
                 merged_model = inference_model.merge_and_unload()
+                # p6 = merged_model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
+                # p7 = merged_model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
+                # print("loaded emb: Same storage?", p6.data_ptr() == p7.data_ptr())
 
                 # 2. Save the final, merged model
                 output_dir_merged = output_dir.split('/')
