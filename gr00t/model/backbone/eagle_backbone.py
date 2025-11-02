@@ -458,19 +458,18 @@ class EagleBackbone(nn.Module):
 
         # If tune_llm=True, the special layers are trainable by default.
         # We add explicit controls to turn them OFF.
-        if tune_llm:
-            if isinstance(hybrid_embedding, HybridEmbedding):
-                if hasattr(hybrid_embedding, 'special_embedding_A'):
-                    hybrid_embedding.special_embedding_A.requires_grad_(tune_special_A)
-                if hasattr(hybrid_embedding, 'special_embedding_B'):
-                    hybrid_embedding.special_embedding_B.requires_grad_(tune_special_B)
-            
-            if isinstance(hybrid_lm_head, HybridLMHead):
-                # This should be redundant due to weight tying, but it's good to be explicit.
-                if hasattr(hybrid_lm_head, 'special_head_A'):
-                    hybrid_lm_head.special_head_A.requires_grad_(tune_special_A)
-                if hasattr(hybrid_lm_head, 'special_head_B'):
-                    hybrid_lm_head.special_head_B.requires_grad_(tune_special_B)
+        if isinstance(hybrid_embedding, HybridEmbedding):
+            if hasattr(hybrid_embedding, 'special_embedding_A'):
+                hybrid_embedding.special_embedding_A.requires_grad_(tune_special_A)
+            if hasattr(hybrid_embedding, 'special_embedding_B'):
+                hybrid_embedding.special_embedding_B.requires_grad_(tune_special_B)
+        
+        if isinstance(hybrid_lm_head, HybridLMHead):
+            # This should be redundant due to weight tying, but it's good to be explicit.
+            if hasattr(hybrid_lm_head, 'special_head_A'):
+                hybrid_lm_head.special_head_A.requires_grad_(tune_special_A)
+            if hasattr(hybrid_lm_head, 'special_head_B'):
+                hybrid_lm_head.special_head_B.requires_grad_(tune_special_B)
         
         # If tune_llm=False, all the above layers were already frozen
         # by the self.eagle_model.language_model.requires_grad_(False) call.
@@ -587,9 +586,9 @@ class EagleBackbone(nn.Module):
             base_vocab_size = base_lm_head.out_features
 
             if base_mask.any():
-                base_logits_view = shift_logits[..., :base_vocab_size]
+                base_logits = shift_logits[..., :base_vocab_size]
                 # Filter logits and labels by the base mask
-                base_loss = F.cross_entropy(base_logits_view[base_mask], shift_labels[base_mask], reduction="none")
+                base_loss = F.cross_entropy(base_logits[base_mask], shift_labels[base_mask], reduction="none")
                 per_token_loss[base_mask] = base_loss.to(dtype=per_token_loss.dtype)
 
             if special_mask_A.any():
@@ -611,29 +610,49 @@ class EagleBackbone(nn.Module):
                 special_loss_B = F.cross_entropy(special_logits_B[special_mask_B], target_positions_B, reduction="none")
                 per_token_loss[special_mask_B] = special_loss_B.to(dtype=per_token_loss.dtype)
 
-                # pred_ids = base_logits.argmax(dim=-1)
-                # valid_pred_ids = pred_ids[shift_labels != -100]
-                # valid_label_ids = shift_labels[shift_labels != -100]
-                # decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
-                # print(''.join(decoded_texts))
-                # decoded_texts_label = self.eagle_tokenizer.batch_decode(valid_label_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
-                # print(''.join(decoded_texts_label))
+            #######################
+            if False:
+                pred_ids = base_logits.argmax(dim=-1)
+                valid_pred_ids = pred_ids[shift_labels != -100]
+                valid_label_ids = shift_labels[shift_labels != -100]
+                decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
+                print(''.join(decoded_texts))
+                decoded_texts_label = self.eagle_tokenizer.batch_decode(valid_label_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
+                print(''.join(decoded_texts_label))
 
-                # # build inverse lookup (small id → normal vocab id)
-                # inverse_lookup = torch.full((num_special,), -1, dtype=torch.long, device=lookup.device)
-                # inverse_lookup[torch.arange(num_special)] = special_ids
-                # pred_sp_ids = special_logits[special_mask].argmax(dim=-1)
-                # pred_sp_ids = inverse_lookup[pred_sp_ids]
-                # decoded_pred = self.eagle_tokenizer.batch_decode(pred_sp_ids, skip_special_tokens=False)
-                # print(''.join(decoded_pred))
-                # decoded_label = self.eagle_tokenizer.batch_decode(shift_labels[special_mask], skip_special_tokens=False)
-                # print(''.join(decoded_label))
+                if special_mask_A.any():
+                    pred_sp_ids_A_small = special_logits_A[special_mask_A].argmax(dim=-1)
+                    num_special_A = special_ids_A.shape[0]
+                    inverse_lookup_A = torch.full((num_special_A,), -1, dtype=torch.long, device=special_ids_A.device)
+                    inverse_lookup_A[torch.arange(num_special_A, device=special_ids_A.device)] = special_ids_A
+                    
+                    pred_sp_ids_A_full = inverse_lookup_A[pred_sp_ids_A_small]
+                    label_sp_ids_A = shift_labels[special_mask_A]
+                    
+                    decoded_pred_A = self.eagle_tokenizer.batch_decode(pred_sp_ids_A_full, skip_special_tokens=False)
+                    decoded_label_A = self.eagle_tokenizer.batch_decode(label_sp_ids_A, skip_special_tokens=False)
+                    
+                    print("\n--- [DEBUG] SPECIAL Tokens (Group A) ---")
+                    print(f"Preds:  {''.join(decoded_pred_A)}")
+                    print(f"Labels: {''.join(decoded_label_A)}")
 
-                # import pdb;pdb.set_trace()
+                    
+                if special_mask_B.any():
+                    pred_sp_ids_B_small = special_logits_B[special_mask_B].argmax(dim=-1)
+                    num_special_B = special_ids_B.shape[0]
+                    inverse_lookup_B = torch.full((num_special_B,), -1, dtype=torch.long, device=special_ids_B.device)
+                    inverse_lookup_B[torch.arange(num_special_B, device=special_ids_B.device)] = special_ids_B
+                    
+                    pred_sp_ids_B_full = inverse_lookup_B[pred_sp_ids_B_small]
+                    label_sp_ids_B = shift_labels[special_mask_B]
+                    decoded_pred_B = self.eagle_tokenizer.batch_decode(pred_sp_ids_B_full, skip_special_tokens=False)
+                    decoded_label_B = self.eagle_tokenizer.batch_decode(label_sp_ids_B, skip_special_tokens=False)
+                    
+                    print("\n--- [DEBUG] SPECIAL Tokens (Group B) ---")
+                    print(f"Preds:  {''.join(decoded_pred_B)}")
+                    print(f"Labels: {''.join(decoded_label_B)}")
 
-        # ######################################
-        # # version1: 
-        # loss = per_token_loss.mean()
+                    import pdb;pdb.set_trace()
 
         ######################################
         # loss avg per type
