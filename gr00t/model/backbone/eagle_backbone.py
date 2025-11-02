@@ -55,7 +55,13 @@ class HybridEmbedding(nn.Module):
     An embedding module that uses a frozen base embedding table and a new,
     trainable special embedding table.
     """
-    def __init__(self, base_embedding: nn.Embedding, num_special_tokens: int, special_id_lookup: torch.Tensor):
+    def __init__(self, 
+                base_embedding: nn.Embedding, 
+                num_special_tokens_A: int, 
+                special_id_lookup_A: torch.Tensor,
+                num_special_tokens_B: int,
+                special_id_lookup_B: torch.Tensor
+            ):
         super().__init__()
         self.embedding_dim = base_embedding.embedding_dim
         
@@ -63,33 +69,41 @@ class HybridEmbedding(nn.Module):
         self.base_embedding = base_embedding
         self.base_embedding.requires_grad_(False)
         
-        # Create a new, trainable embedding layer for special tokens
-        self.special_embedding = nn.Embedding(num_special_tokens, self.embedding_dim)
+        # MODIFIED: Create two new, trainable embedding layers for special tokens
+        self.special_embedding_A = nn.Embedding(num_special_tokens_A, self.embedding_dim)
+        self.special_embedding_B = nn.Embedding(num_special_tokens_B, self.embedding_dim)
 
-        self.register_buffer("special_id_lookup", special_id_lookup.clone(), persistent=False)
+        # MODIFIED: Register buffers for both lookup tables
+        self.register_buffer("special_id_lookup_A", special_id_lookup_A.clone(), persistent=False)
+        self.register_buffer("special_id_lookup_B", special_id_lookup_B.clone(), persistent=False)
+
         self.embedding_dim = self.base_embedding.embedding_dim
-        self.num_embeddings = self.special_id_lookup.numel()
+        self.num_embeddings = self.special_id_lookup_A.numel() # Total vocab size
         self.padding_idx = self.base_embedding.padding_idx
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        if self.special_id_lookup.numel() == 0:
-            return self.base_embedding(input_ids)
-
-        special_indices = self.special_id_lookup[input_ids]
-        special_mask = special_indices >= 0
-
+        # MODIFIED: Updated forward logic for three embedding tables
+        
         base_vocab_size = self.base_embedding.num_embeddings
         base_mask = input_ids < base_vocab_size
-        special_mask = ~base_mask
 
-        if special_mask.any():
-            base_input = input_ids.clone()
-            base_input = base_input.masked_fill(special_mask, 0)
-            embeddings = self.base_embedding(base_input)
-            embeddings = embeddings.clone()
-            embeddings[special_mask] = self.special_embedding(special_indices[special_mask]).to(dtype=embeddings.dtype)
-        else:
-            embeddings = self.base_embedding(input_ids)
+        # Use a base input, masking all special tokens to 0 (or any valid base token)
+        base_input = input_ids.clone().masked_fill(~base_mask, 0)
+        embeddings = self.base_embedding(base_input).clone()
+
+        # Find tokens for group A
+        special_indices_A = self.special_id_lookup_A[input_ids]
+        special_mask_A = special_indices_A >= 0
+        
+        if special_mask_A.any():
+            embeddings[special_mask_A] = self.special_embedding_A(special_indices_A[special_mask_A]).to(dtype=embeddings.dtype)
+
+        # Find tokens for group B
+        special_indices_B = self.special_id_lookup_B[input_ids]
+        special_mask_B = special_indices_B >= 0
+
+        if special_mask_B.any():
+            embeddings[special_mask_B] = self.special_embedding_B(special_indices_B[special_mask_B]).to(dtype=embeddings.dtype)
             
         return embeddings
 
@@ -130,7 +144,14 @@ class HybridLMHead(nn.Module):
     """
     An LM head that uses a frozen base head and a new, trainable special head.
     """
-    def __init__(self, base_head: nn.Linear, num_special_tokens: int, special_token_ids: torch.Tensor, total_vocab_size: int,):
+    def __init__(self, 
+                 base_head: nn.Linear, 
+                 num_special_tokens_A: int, 
+                 special_token_ids_A: torch.Tensor, 
+                 num_special_tokens_B: int,
+                 special_token_ids_B: torch.Tensor,
+                 total_vocab_size: int,
+                ):
         super().__init__()
         self.in_features = base_head.in_features
         self.out_features = total_vocab_size
@@ -139,27 +160,41 @@ class HybridLMHead(nn.Module):
         self.base_head = base_head
         self.base_head.requires_grad_(False)
         
-        # Create a new, trainable LM head for special tokens
-        self.special_head = nn.Linear(self.in_features, num_special_tokens, bias=False)
+        # MODIFIED: Create two new, trainable LM heads for special tokens
+        self.special_head_A = nn.Linear(self.in_features, num_special_tokens_A, bias=False)
+        self.special_head_B = nn.Linear(self.in_features, num_special_tokens_B, bias=False)
 
-        self.register_buffer("special_token_ids", special_token_ids.clone(), persistent=False)
+        # MODIFIED: Register buffers for both ID tensors
+        self.register_buffer("special_token_ids_A", special_token_ids_A.clone(), persistent=False)
+        self.register_buffer("special_token_ids_B", special_token_ids_B.clone(), persistent=False)
         self.total_vocab_size = total_vocab_size
 
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # MODIFIED: Updated forward logic to scatter logits from three heads
         base_logits = self.base_head(hidden_states)
-        if self.special_token_ids.numel() == 0:
-            return base_logits
         
         logits_shape = hidden_states.shape[:-1] + (self.total_vocab_size,)
-        logits = base_logits.new_zeros(logits_shape)
+        # Ensure logits tensor is on the same device and dtype as hidden_states
+        logits = torch.zeros(logits_shape, dtype=hidden_states.dtype, device=hidden_states.device)
+
+        # Place base logits
         logits[..., : base_logits.size(-1)] = base_logits
-        special_logits = self.special_head(hidden_states)
-        if special_logits.dtype != logits.dtype:
-            special_logits = special_logits.to(logits.dtype)
+
+        # Place special logits for group A
+        if self.special_token_ids_A.numel() > 0:
+            special_logits_A = self.special_head_A(hidden_states)
+            if special_logits_A.dtype != logits.dtype:
+                special_logits_A = special_logits_A.to(logits.dtype)
+            logits[..., self.special_token_ids_A] = special_logits_A
+
+        # Place special logits for group B
+        if self.special_token_ids_B.numel() > 0:
+            special_logits_B = self.special_head_B(hidden_states)
+            if special_logits_B.dtype != logits.dtype:
+                special_logits_B = special_logits_B.to(logits.dtype)
+            logits[..., self.special_token_ids_B] = special_logits_B
         
-        logits[..., self.special_token_ids] = special_logits
-        # Combine them into a single output tensor
         return logits
 
     def _load_from_state_dict(
@@ -203,6 +238,8 @@ class EagleBackbone(nn.Module):
         self,
         tune_llm: bool = False,
         tune_visual: bool = False,
+        tune_special_A: bool = True,
+        tune_special_B: bool = True,
         select_layer: int = -1,
         reproject_vision: bool = False,
         use_flash_attention: bool = False,
@@ -230,15 +267,19 @@ class EagleBackbone(nn.Module):
         )
         self.eagle_tokenizer = self.eagle_processor.tokenizer
 
-        # specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
-
+        # MODIFIED: Partition special tokens into group A and B
         list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]
         list_special.extend([f"[SKILL_{i}]" for i in range(1, 42)])
         specials = {"additional_special_tokens": list_special}
-        # Filter out ones already present
-        existing = set(self.eagle_tokenizer.all_special_tokens)
-        to_add = [t for t in specials["additional_special_tokens"] if t not in existing]
 
+        list_special_A_names = set(["[ACTIONS]", "[TOOLS_END]", "[SKILL_MODE]"])
+        list_special_B_names = set(["[TOOLS]", "[TRAJ_MODE]"] + [f"[SKILL_{i}]" for i in range(1, 42)])
+        
+        existing = set(self.eagle_tokenizer.all_special_tokens)
+        to_add = [t for t in specials["additional_special_tokens"] if t not in existing] 
+        # Partition the new tokens into their respective groups
+        to_add_A = [t for t in to_add if t in list_special_A_names]
+        to_add_B = [t for t in to_add if t in list_special_B_names]
         if to_add:
             num_added = self.eagle_tokenizer.add_special_tokens({"additional_special_tokens": to_add})
             print(f"Added {num_added} new tokens: {to_add}")
@@ -250,27 +291,25 @@ class EagleBackbone(nn.Module):
         base_embeddings = self.eagle_model.get_input_embeddings()
         base_vocab_size = base_embeddings.num_embeddings
 
-        new_special_token_ids: list[int] = []
-        for token in to_add:
-            token_id = self.eagle_tokenizer.convert_tokens_to_ids(token)
-            if token_id is not None and token_id >= base_vocab_size:
-                new_special_token_ids.append(token_id)
+         # MODIFIED: Create ID/lookup tensors for both groups
+        special_ids_A, special_lookup_A, num_new_A = self.get_ids_and_lookup(to_add_A, base_vocab_size, total_vocab_size)
+        special_ids_B, special_lookup_B, num_new_B = self.get_ids_and_lookup(to_add_B, base_vocab_size, total_vocab_size)
 
-        if new_special_token_ids:
-            special_ids_tensor = torch.tensor(new_special_token_ids, dtype=torch.long)
-            self.register_buffer("special_token_ids", special_ids_tensor, persistent=False)
+        self.register_buffer("special_token_ids_A", special_ids_A, persistent=False)
+        self.register_buffer("special_token_ids_B", special_ids_B, persistent=False)
+        self.register_buffer("special_token_lookup_A", special_lookup_A, persistent=False)
+        self.register_buffer("special_token_lookup_B", special_lookup_B, persistent=False)
 
-            special_lookup = torch.full((total_vocab_size,), -1, dtype=torch.long)
-            for idx, token_id in enumerate(self.special_token_ids.tolist()):
-                special_lookup[token_id] = idx
+        # MODIFIED: Instantiate Hybrid layers if any new tokens were added
+        if num_new_A > 0 or num_new_B > 0:
 
             # 1. Get the original, pre-trained layers
             base_embedding = self.eagle_model.get_input_embeddings()
             base_lm_head = self.eagle_model.get_output_embeddings()
 
             # 2. Create your new hybrid layers
-            hybrid_embedding = HybridEmbedding(base_embedding, num_added, special_lookup)
-            hybrid_lm_head = HybridLMHead(base_lm_head, num_added, self.special_token_ids, total_vocab_size)
+            hybrid_embedding = HybridEmbedding(base_embedding, num_new_A, special_lookup_A, num_new_B, special_lookup_B)
+            hybrid_lm_head = HybridLMHead(base_lm_head, num_new_A, self.special_token_ids_A, num_new_B, self.special_token_ids_B, total_vocab_size)
 
             # 3. Replace the model's original layers with the new ones
             self.eagle_model.set_input_embeddings(hybrid_embedding)
@@ -282,7 +321,6 @@ class EagleBackbone(nn.Module):
         else:
             self.register_buffer("special_token_ids", torch.empty(0, dtype=torch.long), persistent=False)
             
-
         # Cache special token ids (single-token by construction)
         self.actions_id = self.eagle_tokenizer.convert_tokens_to_ids("[ACTIONS]")
         self.tools_id = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS]")
@@ -319,36 +357,80 @@ class EagleBackbone(nn.Module):
             self.eagle_model.language_model.model.layers.pop(-1)
 
         self.select_layer = select_layer
-        self.set_trainable_parameters(tune_llm, tune_visual)
+        self.set_trainable_parameters(tune_llm, tune_visual, tune_special_A, tune_special_B)
 
         # Safety for generation
         if self.eagle_tokenizer.pad_token_id is None:
             self.eagle_tokenizer.pad_token = self.eagle_tokenizer.eos_token
 
+    def get_ids_and_lookup(self, tokens_to_add_list, base_vocab_size, total_vocab_size):
+        new_special_token_ids = []
+        for token in tokens_to_add_list:
+            token_id = self.eagle_tokenizer.convert_tokens_to_ids(token)
+            # Only consider tokens that are *actually* new (i.e., outside the base vocab)
+            if token_id is not None and token_id >= base_vocab_size:
+                new_special_token_ids.append(token_id)
+        
+        if not new_special_token_ids:
+            ids_tensor = torch.empty(0, dtype=torch.long)
+            # Lookup tensor still needs to cover the full vocab
+            lookup_tensor = torch.full((total_vocab_size,), -1, dtype=torch.long)
+            return ids_tensor, lookup_tensor, 0
+        
+        ids_tensor = torch.tensor(sorted(new_special_token_ids), dtype=torch.long)
+        lookup_tensor = torch.full((total_vocab_size,), -1, dtype=torch.long)
+        for idx, token_id in enumerate(ids_tensor.tolist()):
+            lookup_tensor[token_id] = idx
+        
+        return ids_tensor, lookup_tensor, len(new_special_token_ids)
+
 
     def initialize_new_token_weights(self):
-        """ Initializes the special embedding part with the mean of the base weights. """
+        """ Initializes the special embedding parts with the mean of the base weights. """
+        # MODIFIED: Initialize both special embedding groups
         hybrid_embedding = self.eagle_model.get_input_embeddings()
-        base_weights = hybrid_embedding.base_embedding.weight
-        special_layer_to_init = hybrid_embedding.special_embedding
+        if not isinstance(hybrid_embedding, HybridEmbedding):
+            print("Not a HybridEmbedding; skipping special token initialization.")
+            return
 
+        base_weights = hybrid_embedding.base_embedding.weight
+        
         with torch.no_grad():
             mean_vec = base_weights.detach().to(torch.float32).mean(dim=0)
-            target_weight = special_layer_to_init.weight
-            mean_vec = mean_vec.to(dtype=target_weight.dtype, device=target_weight.device)
-            target_weight.copy_(mean_vec.repeat(target_weight.size(0), 1))
-        print("Initialized new special token embeddings with the mean vector.")
+
+            if hasattr(hybrid_embedding, 'special_embedding_A') and hybrid_embedding.special_embedding_A.weight.size(0) > 0:
+                target_weight_A = hybrid_embedding.special_embedding_A.weight
+                mean_vec_A = mean_vec.to(dtype=target_weight_A.dtype, device=target_weight_A.device)
+                target_weight_A.copy_(mean_vec_A.repeat(target_weight_A.size(0), 1))
+                print("Initialized new special token embeddings (Group A) with the mean vector.")
+
+            if hasattr(hybrid_embedding, 'special_embedding_B') and hybrid_embedding.special_embedding_B.weight.size(0) > 0:
+                target_weight_B = hybrid_embedding.special_embedding_B.weight
+                mean_vec_B = mean_vec.to(dtype=target_weight_B.dtype, device=target_weight_B.device)
+                target_weight_B.copy_(mean_vec_B.repeat(target_weight_B.size(0), 1))
+                print("Initialized new special token embeddings (Group B) with the mean vector.")
 
 
     def tie_special_weights(self):
-        """ Ties the new special LM head to the new special embedding. """
+        """ Ties the new special LM heads to the new special embeddings. """
+        # MODIFIED: Tie both pairs of special weights
         hybrid_embedding = self.eagle_model.get_input_embeddings()
         hybrid_lm_head = self.eagle_model.get_output_embeddings()
-        hybrid_lm_head.special_head.weight = hybrid_embedding.special_embedding.weight
-        print("Tied special LM head to special embeddings.")
+
+        if not isinstance(hybrid_embedding, HybridEmbedding) or not isinstance(hybrid_lm_head, HybridLMHead):
+            print("Not a Hybrid model; skipping special weight tying.")
+            return
+
+        if hasattr(hybrid_lm_head, 'special_head_A') and hasattr(hybrid_embedding, 'special_embedding_A'):
+            hybrid_lm_head.special_head_A.weight = hybrid_embedding.special_embedding_A.weight
+            print("Tied special LM head (Group A) to special embeddings (Group A).")
+        
+        if hasattr(hybrid_lm_head, 'special_head_B') and hasattr(hybrid_embedding, 'special_embedding_B'):
+            hybrid_lm_head.special_head_B.weight = hybrid_embedding.special_embedding_B.weight
+            print("Tied special LM head (Group B) to special embeddings (Group B).")
 
 
-    def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool):
+    def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_special_A: bool, tune_special_B: bool):
         self.tune_llm = tune_llm
         self.tune_visual = tune_visual
         for p in self.parameters():
