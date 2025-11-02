@@ -641,9 +641,16 @@ class EagleBackbone(nn.Module):
             base_loss_avg = base_loss.mean()
         else:
             base_loss_avg = torch.tensor(0.0, device=shift_labels.device)
+            
+        # MODIFIED: Average special loss across both groups
+        special_loss_combined = []
+        if special_loss_A is not None:
+            special_loss_combined.append(special_loss_A)
+        if special_loss_B is not None:
+            special_loss_combined.append(special_loss_B)
 
-        if special_loss is not None:
-            special_loss_avg = special_loss.mean()
+        if special_loss_combined:
+            special_loss_avg = torch.cat(special_loss_combined).mean()
         else:
             special_loss_avg = torch.tensor(0.0, device=shift_labels.device)
 
