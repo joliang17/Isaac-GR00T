@@ -47,6 +47,7 @@ from libero_scripts.utils import (
     quat2axisangle,
     save_rollout_video,
 )
+from libero_scripts.gpt_call import generate_instruction_variants
 from gr00t.model.policy import Gr00tPolicy
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from libero.libero import benchmark
@@ -138,7 +139,8 @@ def eval_libero(cfg) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+    # for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+    for task_id in tqdm.tqdm(range(3)):
         # Get task
         task = task_suite.get_task(task_id)
 
@@ -161,84 +163,95 @@ def eval_libero(cfg) -> None:
         # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
-            print(f"\nTask: {task_description}")
-            log_file.write(f"\nTask: {task_description}\n")
+            ori_desc = task.language
+            dict_variant, _ = generate_instruction_variants(task_description)
 
-            # Reset environment
-            env.reset()
+            # empty description
+            list_description = [ori_desc]
+            list_description.append("")
+            list_description.extend(dict_variant['paraphrases'])
+            list_description.extend(dict_variant['contrasts'])
 
-            # Set initial states
-            obs = env.set_init_state(initial_states[episode_idx])
+            for task_description in list_description:
 
-            # Setup
-            t = 0
-            top_view = []
-            wrist_view = []
-            if cfg.task_suite_name == "libero_spatial":
-                max_steps = 220  # longest training demo has 193 steps
-            elif cfg.task_suite_name == "libero_object":
-                max_steps = 280  # longest training demo has 254 steps
-            elif cfg.task_suite_name == "libero_goal":
-                max_steps = 600  # longest training demo has 270 steps
-            elif cfg.task_suite_name == "libero_10":
-                max_steps = 1000  # longest training demo has 505 steps
-            elif cfg.task_suite_name == "libero_90":
-                max_steps = 400  # longest training demo has 373 steps
+                print(f"\nTask: {task_description}")
+                log_file.write(f"\nTask: {task_description}\n")
 
-            print(f"Starting episode {task_episodes+1}...")
-            log_file.write(f"Starting episode {task_episodes+1}...\n")
-            while t < max_steps + cfg.num_steps_wait:
-                try:
-                    # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
-                    # and we need to wait for them to fall
-                    if t < cfg.num_steps_wait:
-                        obs, reward, done, info = env.step(get_libero_dummy_action())
+                # Reset environment
+                env.reset()
+
+                # Set initial states
+                obs = env.set_init_state(initial_states[episode_idx])
+
+                # Setup
+                t = 0
+                top_view = []
+                wrist_view = []
+                if cfg.task_suite_name == "libero_spatial":
+                    max_steps = 220  # longest training demo has 193 steps
+                elif cfg.task_suite_name == "libero_object":
+                    max_steps = 280  # longest training demo has 254 steps
+                elif cfg.task_suite_name == "libero_goal":
+                    max_steps = 600  # longest training demo has 270 steps
+                elif cfg.task_suite_name == "libero_10":
+                    max_steps = 1000  # longest training demo has 505 steps
+                elif cfg.task_suite_name == "libero_90":
+                    max_steps = 400  # longest training demo has 373 steps
+
+                print(f"Starting episode {task_episodes+1}...")
+                log_file.write(f"Starting episode {task_episodes+1}...\n")
+                while t < max_steps + cfg.num_steps_wait:
+                    try:
+                        # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
+                        # and we need to wait for them to fall
+                        if t < cfg.num_steps_wait:
+                            obs, reward, done, info = env.step(get_libero_dummy_action())
+                            t += 1
+                            continue
+
+                        # # Get preprocessed image
+                        img, wrist_img = get_libero_image(obs)
+
+                        # # Save preprocessed image for replay video
+                        top_view.append(img)
+                        wrist_view.append(wrist_img)
+
+                        # Query model to get action
+                        obs_dict = process_observation(obs, task.language, headless=args.headless)
+                        action_chunk, _, _, _ = gr00t_policy.get_action(obs_dict, mode='baseline')
+                        action = convert_to_libero_action(action_chunk, action_keys)
+
+                        # Execute action in environment
+                        obs, reward, done, info = env.step(action.tolist())
+                        if done:
+                            task_successes += 1
+                            total_successes += 1
+                            break
                         t += 1
-                        continue
 
-                    # # Get preprocessed image
-                    img, wrist_img = get_libero_image(obs)
-
-                    # # Save preprocessed image for replay video
-                    top_view.append(img)
-                    wrist_view.append(wrist_img)
-
-                    # Query model to get action
-                    obs_dict = process_observation(obs, task.language, headless=args.headless)
-                    action_chunk, _, _, _ = gr00t_policy.get_action(obs_dict, mode='baseline')
-                    action = convert_to_libero_action(action_chunk, action_keys)
-
-                    # Execute action in environment
-                    obs, reward, done, info = env.step(action.tolist())
-                    if done:
-                        task_successes += 1
-                        total_successes += 1
+                    except Exception as e:
+                        traceback.print_exc()
+                        print(f"Caught exception: {e}")
+                        log_file.write(f"Caught exception: {e}\n")
+                        # sys.exit(-1)
                         break
-                    t += 1
 
-                except Exception as e:
-                    traceback.print_exc()
-                    print(f"Caught exception: {e}")
-                    log_file.write(f"Caught exception: {e}\n")
-                    # sys.exit(-1)
-                    break
+                task_episodes += 1
+                total_episodes += 1
 
-            task_episodes += 1
-            total_episodes += 1
+                # Save a replay video of the episode
+                save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, )
 
-            # Save a replay video of the episode
-            save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, )
-
-            # Log current results
-            print(f"Success: {done}")
-            print(f"# episodes completed so far: {total_episodes}")
-            print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
-            log_file.write(f"Success: {done}\n")
-            log_file.write(f"# episodes completed so far: {total_episodes}\n")
-            log_file.write(
-                f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
-            )
-            log_file.flush()
+                # Log current results
+                print(f"Success: {done}")
+                print(f"# episodes completed so far: {total_episodes}")
+                print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+                log_file.write(f"Success: {done}\n")
+                log_file.write(f"# episodes completed so far: {total_episodes}\n")
+                log_file.write(
+                    f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
+                )
+                log_file.flush()
 
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")

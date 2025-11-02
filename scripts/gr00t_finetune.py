@@ -92,7 +92,7 @@ class ArgsConfig:
     """Whether to fine-tune the diffusion model."""
 
     freeze_embeddings: bool = False
-    """Whether to fine-tune the diffusion model."""
+    """Whether to fine-tune the embedding model."""
 
     init_mode: bool = False
     """Whether to load model from pretrained model or self-model."""
