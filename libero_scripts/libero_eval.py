@@ -174,8 +174,8 @@ def eval_libero(cfg) -> None:
 
             for task_description in list_description:
 
-                print(f"\nTask: {task_description}")
-                log_file.write(f"\nTask: {task_description}\n")
+                print(f"\nTask: {ori_desc}")
+                log_file.write(f"\nTask: {ori_desc}\n")
 
                 # Reset environment
                 env.reset()
@@ -217,7 +217,7 @@ def eval_libero(cfg) -> None:
                         wrist_view.append(wrist_img)
 
                         # Query model to get action
-                        obs_dict = process_observation(obs, task.language, headless=args.headless)
+                        obs_dict = process_observation(obs, task_description, headless=args.headless)
                         action_chunk, _, _, _ = gr00t_policy.get_action(obs_dict, mode='baseline')
                         action = convert_to_libero_action(action_chunk, action_keys)
 
