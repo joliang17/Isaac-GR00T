@@ -433,16 +433,58 @@ class EagleBackbone(nn.Module):
     def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_special_A: bool, tune_special_B: bool):
         self.tune_llm = tune_llm
         self.tune_visual = tune_visual
+        self.tune_special_A = tune_special_A
+        self.tune_special_B = tune_special_B
+
+        # Start with all params of this module (EagleBackbone) trainable
+        # This includes eagle_linear and the entire eagle_model
         for p in self.parameters():
             p.requires_grad = True
+        
         if not tune_llm:
+            # This freezes the entire language_model, including all embedding layers
             self.eagle_model.language_model.requires_grad_(False)
+        
         if not tune_visual:
             self.eagle_model.vision_model.requires_grad_(False)
             self.eagle_model.mlp1.requires_grad_(False)
+
+        # Get hybrid layers
+        hybrid_embedding = self.eagle_model.get_input_embeddings()
+        hybrid_lm_head = self.eagle_model.get_output_embeddings()
+        
+        # The base layers are frozen by default in Hybrid* init, so we don't
+        # need to re-freeze them if tune_llm=True.
+
+        # If tune_llm=True, the special layers are trainable by default.
+        # We add explicit controls to turn them OFF.
+        if tune_llm:
+            if isinstance(hybrid_embedding, HybridEmbedding):
+                if hasattr(hybrid_embedding, 'special_embedding_A'):
+                    hybrid_embedding.special_embedding_A.requires_grad_(tune_special_A)
+                if hasattr(hybrid_embedding, 'special_embedding_B'):
+                    hybrid_embedding.special_embedding_B.requires_grad_(tune_special_B)
+            
+            if isinstance(hybrid_lm_head, HybridLMHead):
+                # This should be redundant due to weight tying, but it's good to be explicit.
+                if hasattr(hybrid_lm_head, 'special_head_A'):
+                    hybrid_lm_head.special_head_A.requires_grad_(tune_special_A)
+                if hasattr(hybrid_lm_head, 'special_head_B'):
+                    hybrid_lm_head.special_head_B.requires_grad_(tune_special_B)
+        
+        # If tune_llm=False, all the above layers were already frozen
+        # by the self.eagle_model.language_model.requires_grad_(False) call.
+
         print(f"Tune backbone llm: {self.tune_llm}")
         print(f"Tune backbone visual: {self.tune_visual}")
-        # Check if any parameters are still trainable. If not, print a warning.
+        
+        # MODIFIED: Print the *actual* status of the special layers
+        if isinstance(hybrid_embedding, HybridEmbedding):
+            status_A = hybrid_embedding.special_embedding_A.weight.requires_grad if hasattr(hybrid_embedding, 'special_embedding_A') and hybrid_embedding.special_embedding_A.weight.size(0) > 0 else 'N/A'
+            status_B = hybrid_embedding.special_embedding_B.weight.requires_grad if hasattr(hybrid_embedding, 'special_embedding_B') and hybrid_embedding.special_embedding_B.weight.size(0) > 0 else 'N/A'
+            print(f"Tune special tokens A: {status_A}")
+            print(f"Tune special tokens B: {status_B}")
+        
         if not tune_llm and not tune_visual:
             for name, p in self.named_parameters():
                 if p.requires_grad:
@@ -502,10 +544,9 @@ class EagleBackbone(nn.Module):
             for k, v in vl_input.items()
             if k.startswith("eagle_") and k != "eagle_num_images" and 'length' not in k
         }
-        eagle_input.pop("image_sizes", None)  # if present
+        eagle_input.pop("image_sizes", None)
         labels = eagle_input.pop("llm_labels")
 
-        # do not calculate loss on image tokens & action pad tokens
         mask_img = torch.isin(labels, self.img_ids.to(labels.device))
         labels[mask_img] = -100
 
@@ -516,37 +557,59 @@ class EagleBackbone(nn.Module):
 
         vocab_size = shift_logits.size(-1)
         valid_mask = shift_labels != -100
-        num_special = self.special_token_ids.numel()
-        special_loss = None
+        
+        # MODIFIED: Get counts for both special groups
+        num_special_A = self.special_token_ids_A.numel()
+        num_special_B = self.special_token_ids_B.numel()
+        num_special_total = num_special_A + num_special_B
+        
+        special_loss_A = None
+        special_loss_B = None
         base_loss = None
-        if num_special == 0:
+
+        if num_special_total == 0:
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
             per_token_loss = loss_fct(shift_logits.view(-1, vocab_size), shift_labels.view(-1))
             per_token_loss = per_token_loss.view_as(shift_labels)
         else:
-            special_ids = self.special_token_ids.to(shift_labels.device)
-            special_mask = torch.isin(shift_labels, special_ids) & valid_mask
-            base_mask = valid_mask & ~special_mask
+            # MODIFIED: Handle 3 disjoint groups: base, special_A, special_B
+            special_ids_A = self.special_token_ids_A.to(shift_labels.device)
+            special_ids_B = self.special_token_ids_B.to(shift_labels.device)
+            
+            special_mask_A = torch.isin(shift_labels, special_ids_A) & valid_mask
+            special_mask_B = torch.isin(shift_labels, special_ids_B) & valid_mask
+            base_mask = valid_mask & ~special_mask_A & ~special_mask_B
+            
             per_token_loss = shift_logits.new_zeros(shift_labels.shape, dtype=shift_logits.dtype)
 
+            # Get base vocab size from the frozen base head
+            base_lm_head = self.eagle_model.get_output_embeddings().base_head
+            base_vocab_size = base_lm_head.out_features
+
             if base_mask.any():
-                base_vocab_size = vocab_size - num_special
-                base_logits = shift_logits[..., :base_vocab_size]
-                base_loss = F.cross_entropy(base_logits[base_mask], shift_labels[base_mask], reduction="none")
+                base_logits_view = shift_logits[..., :base_vocab_size]
+                # Filter logits and labels by the base mask
+                base_loss = F.cross_entropy(base_logits_view[base_mask], shift_labels[base_mask], reduction="none")
                 per_token_loss[base_mask] = base_loss.to(dtype=per_token_loss.dtype)
 
-            if special_mask.any():
-                special_logits = shift_logits.index_select(-1, special_ids)
-                lookup = getattr(self, "special_token_lookup", None)
-                if lookup is None or lookup.numel() != vocab_size:
-                    lookup = shift_labels.new_full((vocab_size,), -1, dtype=torch.long)
-                    lookup[special_ids] = torch.arange(num_special, device=shift_labels.device)
-                else:
-                    if lookup.device != shift_labels.device:
-                        lookup = lookup.to(device=shift_labels.device)
-                target_positions = lookup[shift_labels[special_mask]].to(dtype=torch.long)
-                special_loss = F.cross_entropy(special_logits[special_mask], target_positions, reduction="none")
-                per_token_loss[special_mask] = special_loss.to(dtype=per_token_loss.dtype)
+            if special_mask_A.any():
+                # Select the logits corresponding to group A's vocab positions
+                special_logits_A = shift_logits.index_select(-1, special_ids_A)
+                # Get the lookup table to map full-vocab-ID -> group-A-index
+                lookup_A = self.special_token_lookup_A.to(shift_labels.device)
+                # Map the labels to the small index range [0, num_special_A)
+                target_positions_A = lookup_A[shift_labels[special_mask_A]].to(dtype=torch.long)
+                # Calculate loss
+                special_loss_A = F.cross_entropy(special_logits_A[special_mask_A], target_positions_A, reduction="none")
+                per_token_loss[special_mask_A] = special_loss_A.to(dtype=per_token_loss.dtype)
+                
+            if special_mask_B.any():
+                # Repeat for group B
+                special_logits_B = shift_logits.index_select(-1, special_ids_B)
+                lookup_B = self.special_token_lookup_B.to(shift_labels.device)
+                target_positions_B = lookup_B[shift_labels[special_mask_B]].to(dtype=torch.long)
+                special_loss_B = F.cross_entropy(special_logits_B[special_mask_B], target_positions_B, reduction="none")
+                per_token_loss[special_mask_B] = special_loss_B.to(dtype=per_token_loss.dtype)
 
                 # pred_ids = base_logits.argmax(dim=-1)
                 # valid_pred_ids = pred_ids[shift_labels != -100]
@@ -791,26 +854,10 @@ class EagleBackbone(nn.Module):
             }
         )
 
+
     @torch.no_grad()
     def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, special_token_only=False, inside_tool=False):
-        """Greedy token generation for the language backbone.
-
-        Args:
-            vl_input: BatchFeature holding the model inputs. The tensors under
-                `eagle_input_ids` and `eagle_attention_mask` are updated in-place
-                with the generated tokens so the caller can reuse the batch.
-            max_token: Maximum number of tokens to generate. When greater than 1,
-                generation stops early once all sequences emit `[EOT]`.
-            past_key_values: Optional cache passed through to the underlying
-                language model. The cache is recomputed before returning so the
-                caller receives a fresh set for the updated sequence.
-
-        Returns:
-            A tuple `(generated_ids, backbone_outputs)` where `generated_ids` is a
-            tensor of shape `[B]` when a single token is produced or `[B, T]` for
-            multiple tokens, and `backbone_outputs` matches the structure returned
-            by `forward()` with features computed on the updated prompt.
-        """
+        """Greedy token generation for the language backbone."""
         if max_token is None or max_token < 1:
             max_token = 1
 
@@ -834,11 +881,19 @@ class EagleBackbone(nn.Module):
         generated_tokens: list[torch.Tensor] = []
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
         cache = past_key_values
-        num_special = self.special_token_ids.numel()
+        
+        # MODIFIED: Get all special token IDs
+        num_special_A = self.special_token_ids_A.numel()
+        num_special_B = self.special_token_ids_B.numel()
+        num_special_all = num_special_A + num_special_B
+        
+        special_ids_all = torch.cat([
+            self.special_token_ids_A.to(device), 
+            self.special_token_ids_B.to(device)
+        ])
 
-        if num_special > 0 and special_token_only:
+        if num_special_all > 0 and special_token_only:
             if not inside_tool:
-                # Allowed tokens (e.g., tools and actions; add others if needed)
                 allowed_ids = torch.tensor(
                     [self.tools_id, self.actions_id, self.skills_end], 
                     device=input_ids.device, dtype=torch.long
@@ -848,6 +903,9 @@ class EagleBackbone(nn.Module):
                     [self.actions_id, self.skills_end], 
                     device=input_ids.device, dtype=torch.long
                 )
+            # Filter allowed_ids to only include those that are *actually* special tokens
+            # This prevents errors if e.g. self.tools_id is a base vocab token
+            allowed_ids = allowed_ids[torch.isin(allowed_ids, special_ids_all)]
 
 
         for _ in range(max_token):
@@ -855,7 +913,8 @@ class EagleBackbone(nn.Module):
                 vl_input, past_key_values=cache
             )
             vocab_size = logits.size(-1)
-            base_vocab_size = vocab_size - num_special
+            # MODIFIED: Get base_vocab_size reliably from the model
+            base_vocab_size = self.eagle_model.get_output_embeddings().base_head.out_features
 
             if logits.size(0) != batch_size:
                 raise RuntimeError("Batch size changed during generation")
@@ -867,39 +926,25 @@ class EagleBackbone(nn.Module):
             batch_indices = torch.arange(batch_size, device=device)
             next_token_logits = logits[batch_indices, route_pos, :]
 
-            if num_special > 0 and special_token_only:
-
-                # Build a -inf mask over the full vocab, then open only allowed ids
-                neg_inf = torch.finfo(next_token_logits.dtype).min  # safe -inf for current dtype
+            if num_special_all > 0 and special_token_only:
+                neg_inf = torch.finfo(next_token_logits.dtype).min
                 mask = torch.full_like(next_token_logits, neg_inf)
+                
+                # Only allow sampling from the `allowed_ids`
                 mask.scatter_(dim=-1, index=allowed_ids.unsqueeze(0).expand(next_token_logits.size(0), -1), value=0)
-                masked_logits = next_token_logits + mask  # now only allowed ids are selectable
+                masked_logits = next_token_logits + mask
 
-                special_ids = self.special_token_ids.to(next_token_logits.device)
-                special_logits = masked_logits.index_select(-1, special_ids)
-
-                # Choose the token (greedy or temperature sampling)
+                # MODIFIED: Select from *all* allowed special tokens, not just a subset
+                # We need to find the argmax over the full vocab, but restricted
                 temperature = getattr(self.args, "route_temperature", 0.0) if hasattr(self, "args") else 0.0
                 if temperature and temperature > 0.0:
-                    probs = torch.softmax(special_logits / temperature, dim=-1)
-                    next_token_raw_sp = torch.multinomial(probs, num_samples=1).squeeze(-1)
+                    probs = torch.softmax(masked_logits / temperature, dim=-1)
+                    next_token_raw = torch.multinomial(probs, num_samples=1).squeeze(-1)
                 else:
-                    next_token_raw_sp = special_logits.argmax(dim=-1)
-                
-                # ADDED: map the  next_token_raw to the original token id
-                # original setup
-                lookup = getattr(self, "special_token_lookup", None)
-                if lookup is None or lookup.numel() != vocab_size:
-                    lookup = next_token_logits.new_full((vocab_size,), -1, dtype=torch.long)
-                    lookup[special_ids] = torch.arange(num_special, device=next_token_logits.device)
-                    
-                # build inverse lookup (small id → normal vocab id)
-                inverse_lookup = torch.full((num_special,), -1, dtype=torch.long, device=lookup.device)
-                inverse_lookup[torch.arange(num_special)] = special_ids
-                next_token_raw = inverse_lookup[next_token_raw_sp]
+                    next_token_raw = masked_logits.argmax(dim=-1)
 
             else:
-                # generate special tokens from base logits
+                # generate from base logits
                 base_logits = next_token_logits[..., :base_vocab_size]
                 next_token_raw = base_logits.argmax(dim=-1)
 
@@ -933,7 +978,6 @@ class EagleBackbone(nn.Module):
             if max_token == 1 or finished.all():
                 break
 
-        # Recompute backbone features so downstream heads consume the updated prompt.
         backbone_outputs = self.forward(vl_input, past_key_values=cache)
         backbone_outputs["past_key_values"] = cache
 
