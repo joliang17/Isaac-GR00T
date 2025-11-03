@@ -120,6 +120,7 @@ class LeRobotSingleDataset(Dataset):
         transforms: ComposedModalityTransform | None = None,
         window_length: int | None = None,
         skill_inclusion_ratio: float = 0.5, 
+        action_ds_ratio: float = 1.0
     ):
         """
         Initialize the dataset.
@@ -156,13 +157,13 @@ class LeRobotSingleDataset(Dataset):
         else:
             self.window_length = window_length
         self.skill_inclusion_ratio = skill_inclusion_ratio
+        self.action_ds_ratio = action_ds_ratio
 
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
         self._trajectory_ids, self._trajectory_lengths, self._trajectory_types = self._get_trajectories()
         self._all_steps = self._get_all_steps()
         self._modality_keys = self._get_modality_keys()
         self._delta_indices = self._get_delta_indices()
-        self._window_steps = self._get_all_windows()
         self.set_transforms_metadata(self.metadata)
         self.set_epoch(0)
 
@@ -178,6 +179,7 @@ class LeRobotSingleDataset(Dataset):
         self.curr_traj_data = None
         self.curr_traj_id = None
 
+        self._window_steps = self._get_all_windows()
         # Check if the dataset is valid
         self._check_integrity()
 
@@ -462,6 +464,11 @@ class LeRobotSingleDataset(Dataset):
             raise ValueError(
                 f"skill_inclusion_ratio must be in [0.0, 1.0], got {skill_inclusion_ratio}"
             )
+        action_ds_ratio = float(getattr(self, "action_ds_ratio", 1.0))
+        if not (0.0 <= action_ds_ratio <= 1.0):
+            raise ValueError(
+                f"action_ds_ratio must be in [0.0, 1.0], got {action_ds_ratio}"
+            )
         # --- End Added Block ---
 
         all_windows: list[list[tuple[int, int]]] = []
@@ -489,28 +496,70 @@ class LeRobotSingleDataset(Dataset):
                     all_windows.append([(tid, i) for i in range(T)])
                 # else: skip this trajectory
                 continue
+            
+            # --- MODIFIED BLOCK ---
+            # for trajectory data: get action descriptions to check for downsampling
+            list_action = None
+            if ttype == 0:
+                # if there is [ACTIONS] in trajectory, we'll use this list to subsample
+                list_action = [self.get_step_data(tid, idx)['annotation.step_description'] for idx in range(T)]
+                list_act = [(idx, 1 if item[0].endswith('[ACTIONS]') else 0) for idx, item in enumerate(list_action)]
+                # downsample the action steps in trajectory and generate the window based on the downsamples trajectory
+                # 1. Separate steps
+                action_steps = [idx for idx, is_action in list_act if is_action == 1]
+                other_steps = [idx for idx, is_action in list_act if is_action == 0]
 
-            # Normal case: T >= wl
-            last_start = T - wl
-            start = 0
-            while start <= last_start:
-                window = [(tid, start + off) for off in range(wl)]
+                # 2. Calculate number of action steps to keep
+                n_actions_to_keep = int(len(action_steps) * action_ds_ratio)
+
+                # 3. Randomly sample the action steps
+                random.shuffle(action_steps) # Shuffle in-place
+                sampled_action_steps = action_steps[:n_actions_to_keep]
+
+                # 4. Combine all "other" steps with the *sampled* action steps and sort
+                available_indices = sorted(other_steps + sampled_action_steps)
+            else:
+                # For skill data (ttype == 1) or other types, use all steps
+                available_indices = list(range(T))
+            # --- END MODIFIED BLOCK ---
+
+            n_available = len(available_indices)
+            # Check if the *remaining* steps are fewer than window_length
+            if n_available < wl:
+                if not drop_short and n_available > 0:
+                    # Emit one short window with all *available* steps
+                    all_windows.append([(tid, step_idx) for step_idx in available_indices])
+                continue # Skip if dropping short or if list is empty
+
+            # Normal case: n_available >= wl
+            # We slide over the *indices* of the `available_indices` list
+            last_start_idx = n_available - wl
+            start_idx = 0
+            while start_idx <= last_start_idx:
+                # Get the actual step indices from our sparse list
+                window_step_indices = [available_indices[start_idx + off] for off in range(wl)]
+                window = [(tid, step_idx) for step_idx in window_step_indices]
                 all_windows.append(window)
+                
                 if max_windows is not None and len(all_windows) >= max_windows:
+                    print(f"skill_inclusion_ratio={skill_inclusion_ratio}, skill-level data ratio: {np.round(skill_cnt/(skill_cnt+traj_cnt), 4)}")
                     return all_windows
-                start += stride
+                start_idx += stride
 
-            # Optionally include a tail window ending at T-1 if stride skipped it
-            if include_tail and (last_start % stride != 0):
+            # Optionally include a tail window
+            if include_tail and (last_start_idx % stride != 0):
                 # Check if this tail window is different from the last one added
-                last_added_start = (start - stride) if 'start' in locals() else -1
-                if last_added_start != last_start:
-                    tail_start = max(0, last_start)
-                    window = [(tid, tail_start + off) for off in range(wl)]
+                last_added_start_idx = (start_idx - stride) if 'start_idx' in locals() else -1
+                if last_added_start_idx != last_start_idx:
+                    tail_start_idx = max(0, last_start_idx)
+                    window_step_indices = [available_indices[tail_start_idx + off] for off in range(wl)]
+                    window = [(tid, step_idx) for step_idx in window_step_indices]
                     all_windows.append(window)
                     if max_windows is not None and len(all_windows) >= max_windows:
+                        print(f"skill_inclusion_ratio={skill_inclusion_ratio}, skill-level data ratio: {np.round(skill_cnt/(skill_cnt+traj_cnt), 4)}")
                         return all_windows
-
+            
+            # --- END MODIFIED BLOCK ---
         if not all_windows:
             raise ValueError(
                 "No windows created. "

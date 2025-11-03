@@ -66,6 +66,8 @@ class ArgsConfig:
 
     skill_inclusion_ratio: float = 0.5
 
+    action_ds_ratio: float=1.0
+
     max_steps: int = 10000
     """Maximum number of training steps."""
 
@@ -88,7 +90,7 @@ class ArgsConfig:
     tune_projector: bool = True
     """Whether to fine-tune the projector."""
 
-    tune_diffusion_model: bool = True
+    tune_diffusion_model: bool = False
     """Whether to fine-tune the diffusion model."""
 
     tune_special_A: bool = False
@@ -184,6 +186,7 @@ def main(config: ArgsConfig):
             video_backend=config.video_backend,
             window_length=config.window_length, 
             skill_inclusion_ratio=config.skill_inclusion_ratio,
+            action_ds_ratio=config.action_ds_ratio,
         )
     else:
         single_datasets = []
@@ -199,6 +202,7 @@ def main(config: ArgsConfig):
                 video_backend=config.video_backend,
                 window_length=config.window_length, 
                 skill_inclusion_ratio=config.skill_inclusion_ratio,
+                action_ds_ratio=config.action_ds_ratio,
             )
             single_datasets.append(dataset)
 
@@ -272,7 +276,6 @@ def main(config: ArgsConfig):
     model_emb = model.backbone.eagle_model.language_model.model.embed_tokens
     # MODIFIED: Get lm_head as well
     lm_head = model.backbone.eagle_model.language_model.lm_head
-
     if (getattr(model_emb, "special_embedding_A", None) or getattr(model_emb, "special_embedding_B", None)) and config.base_model_path == "nvidia/GR00T-N1.5-3B":
         # --- Re-init special token embeddings ---
         with torch.no_grad():
