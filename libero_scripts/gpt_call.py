@@ -1,6 +1,7 @@
 # instruction_variants.py
 import json
 import re
+import os
 from typing import Dict, List, Optional, Tuple
 from openai import OpenAI
 # ---- model_infer.py (drop-in) ----

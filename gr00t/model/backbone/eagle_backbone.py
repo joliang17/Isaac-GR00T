@@ -908,31 +908,7 @@ class EagleBackbone(nn.Module):
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
         cache = past_key_values
         
-        # MODIFIED: Get all special token IDs
-        num_special_A = self.special_token_ids_A.numel()
-        num_special_B = self.special_token_ids_B.numel()
-        num_special_all = num_special_A + num_special_B
-        
-        special_ids_all = torch.cat([
-            self.special_token_ids_A.to(device), 
-            self.special_token_ids_B.to(device)
-        ])
-
-        if num_special_all > 0 and special_token_only:
-            if not inside_tool:
-                allowed_ids = torch.tensor(
-                    [self.tools_id, self.actions_id, self.skills_end], 
-                    device=input_ids.device, dtype=torch.long
-                )
-            else:
-                allowed_ids = torch.tensor(
-                    [self.actions_id, self.skills_end], 
-                    device=input_ids.device, dtype=torch.long
-                )
-            # Filter allowed_ids to only include those that are *actually* special tokens
-            # This prevents errors if e.g. self.tools_id is a base vocab token
-            allowed_ids = allowed_ids[torch.isin(allowed_ids, special_ids_all)]
-
+        # MODIFIED: Removed unused num_special_all and special_ids_all variables
 
         for _ in range(max_token):
             logits, route_pos, _, _, cache = self.forward_eagle(
@@ -952,16 +928,29 @@ class EagleBackbone(nn.Module):
             batch_indices = torch.arange(batch_size, device=device)
             next_token_logits = logits[batch_indices, route_pos, :]
 
-            if num_special_all > 0 and special_token_only:
+            # MODIFIED: Restructured this entire logic block
+            if special_token_only:
+                # 1. Define the set of allowed tokens
+                if not inside_tool:
+                    allowed_ids = torch.tensor(
+                        [self.tools_id, self.actions_id, self.skills_end], 
+                        device=input_ids.device, dtype=torch.long
+                    )
+                else:
+                    allowed_ids = torch.tensor(
+                        [self.actions_id, self.skills_end], 
+                        device=input_ids.device, dtype=torch.long
+                    )
+                
+                # 2. Create a mask that allows *only* these tokens
                 neg_inf = torch.finfo(next_token_logits.dtype).min
                 mask = torch.full_like(next_token_logits, neg_inf)
                 
-                # Only allow sampling from the `allowed_ids`
+                # 3. Apply the mask
                 mask.scatter_(dim=-1, index=allowed_ids.unsqueeze(0).expand(next_token_logits.size(0), -1), value=0)
                 masked_logits = next_token_logits + mask
-
-                # MODIFIED: Select from *all* allowed special tokens, not just a subset
-                # We need to find the argmax over the full vocab, but restricted
+                
+                # 4. Get the next token from the *masked* full-vocabulary logits
                 temperature = getattr(self.args, "route_temperature", 0.0) if hasattr(self, "args") else 0.0
                 if temperature and temperature > 0.0:
                     probs = torch.softmax(masked_logits / temperature, dim=-1)
@@ -970,9 +959,11 @@ class EagleBackbone(nn.Module):
                     next_token_raw = masked_logits.argmax(dim=-1)
 
             else:
-                # generate from base logits
-                base_logits = next_token_logits[..., :base_vocab_size]
-                next_token_raw = base_logits.argmax(dim=-1)
+                # Normal generation: select the most likely token from the *entire* vocabulary.
+                # The previous logic (restricting to base_logits) was a bug,
+                # as it would prevent the model from ever generating special tokens.
+                next_token_raw = next_token_logits.argmax(dim=-1)
+            # END MODIFIED BLOCK
 
             prev_finished = finished.clone()
             recorded_token = torch.where(
