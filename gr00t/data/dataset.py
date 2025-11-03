@@ -500,7 +500,7 @@ class LeRobotSingleDataset(Dataset):
             # --- MODIFIED BLOCK ---
             # for trajectory data: get action descriptions to check for downsampling
             list_action = None
-            if ttype == 0:
+            if ttype == 0 and action_ds_ratio < 1:
                 # if there is [ACTIONS] in trajectory, we'll use this list to subsample
                 list_action = [self.get_step_data(tid, idx)['annotation.step_description'] for idx in range(T)]
                 list_act = [(idx, 1 if item[0].endswith('[ACTIONS]') else 0) for idx, item in enumerate(list_action)]
