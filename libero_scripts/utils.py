@@ -120,14 +120,18 @@ def best_fourcc(preferred=("mp4v", "avc1", "H264", "XVID")):
     return cv2.VideoWriter_fourcc(*"mp4v")
 
 
-def save_rollout_video(top_view, wrist_view, idx, success, task_description, log_file=None):
+def save_rollout_video(top_view, wrist_view, idx, success, task_description, log_file=None, model_name=''):
     """Saves an MP4 replay of an episode."""
     rollout_dir = f"./rollouts/{DATE}"
     os.makedirs(rollout_dir, exist_ok=True)
     processed_task_description = (
         task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
     )
-    mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
+    if model_name != '':
+        os.makedirs(f"{rollout_dir}/{model_name}", exist_ok=True)
+        mp4_path = f"{rollout_dir}/{model_name}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
+    else:
+        mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
 
     if len(top_view) == 0:
         return 

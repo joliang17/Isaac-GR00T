@@ -18,6 +18,8 @@ import av
 import cv2
 import decord  # noqa: F401
 import numpy as np
+from math import isclose
+
 
 
 def get_frames_by_indices(
@@ -113,7 +115,7 @@ def get_frames_by_timestamps(
             current_ts = frame["pts"]
             loaded_frames.append(frame["data"].numpy())
             loaded_ts.append(current_ts)
-            if current_ts >= last_ts:
+            if current_ts > last_ts or isclose(current_ts, last_ts, rel_tol=1e-8, abs_tol=1e-8):
                 break
         reader.container.close()
         reader = None

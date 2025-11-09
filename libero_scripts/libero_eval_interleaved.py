@@ -282,7 +282,7 @@ def eval_libero(cfg) -> None:
             total_episodes += 1
 
             # Save a replay video of the episode
-            save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, )
+            save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, model_name=args.model_name)
 
             # Log current results
             print(f"Success: {done}")
@@ -332,5 +332,6 @@ if __name__ == "__main__":
     parser.add_argument("--embodiment_tag", type=str, default="new_embodiment")
     parser.add_argument("--data_config", type=str, default="libero_traj_arms")
     parser.add_argument("--denoising_steps", type=int, default=8)
+    parser.add_argument("--model_name", type=str, default='')
     args = parser.parse_args()
     eval_libero(args)
