@@ -167,12 +167,13 @@ def eval_libero(cfg) -> None:
             dict_variant, _ = generate_instruction_variants(task_description)
 
             # empty description
-            list_description = [ori_desc]
+            # list_description = [ori_desc]
+            list_description = []
             list_description.append("")
             list_description.extend(dict_variant['paraphrases'])
             list_description.extend(dict_variant['contrasts'])
 
-            for task_description in list_description:
+            for task_description in tqdm.tqdm(list_description):
 
                 print(f"\nTask: {ori_desc}")
                 log_file.write(f"\nTask: {ori_desc}\n")
