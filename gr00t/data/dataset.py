@@ -415,7 +415,7 @@ class LeRobotSingleDataset(Dataset):
         trajectory_ids = []
         trajectory_lengths = []
         trajectory_type = []
-        for episode in episode_metadata[:10]:
+        for episode in episode_metadata:
             trajectory_ids.append(episode["episode_index"])
             trajectory_lengths.append(episode["length"])
             tasks = episode["tasks"]
