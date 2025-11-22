@@ -125,6 +125,9 @@ class ArgsConfig:
     tune_special_B: bool = False
     """Whether to fine-tune the language model backbone."""
 
+    tune_tool_end: bool = False
+    """Whether to fine-tune the language model backbone."""
+
     freeze_embeddings: bool = False
     """Whether to fine-tune the embedding model."""
 
@@ -203,7 +206,6 @@ def main(config: ArgsConfig):
     transforms = data_config_cls.transform()
 
     # 1.2 data loader: we will use either single dataset or mixture dataset
-# 1.2 data loader: we will use either single dataset or mixture dataset
     if len(config.dataset_path) == 1:
         train_dataset = LeRobotSingleDataset(
             dataset_path=config.dataset_path[0],
@@ -270,6 +272,7 @@ def main(config: ArgsConfig):
         tune_diffusion_model=config.tune_diffusion_model,  # action head's DiT
         tune_special_A=config.tune_special_A,  # backbone's embedding
         tune_special_B=config.tune_special_B,  # backbone's embedding
+        tune_tool_end=config.tune_tool_end,
         pred_nextstep=pred_nextstep
     )
 
@@ -342,6 +345,14 @@ def main(config: ArgsConfig):
                 special_layer_to_init_B.copy_(mean_vec_B.repeat(num_embeddings_B, 1))
                 special_head_to_init_B.copy_(mean_vec_B.repeat(num_embeddings_B, 1))
                 print(f"Re-initialized {num_embeddings_B} special tokens (Group B) with base embedding mean.")
+    
+    # Initialize the tool head so it doesn't output garbage initially
+    if config.tune_tool_end and hasattr(model.backbone, "tool_end_head") and config.base_model_path == "nvidia/GR00T-N1.5-3B":
+        with torch.no_grad():
+            model.backbone.tool_end_head.weight.data.normal_(mean=0.0, std=0.02)
+            model.backbone.tool_end_head.bias.data.zero_()
+            model.backbone.tool_end_head.bias.data[1] = -5.0 
+        print("Initialized tool_end_head with custom weights.")
 
     # Set the model's compute_dtype to bfloat16
     model.compute_dtype = "bfloat16"
@@ -362,6 +373,7 @@ def main(config: ArgsConfig):
             train_action_head=train_action_head,
             tune_special_A=config.tune_special_A,
             tune_special_B=config.tune_special_B,
+            tune_tool_end=config.tune_tool_end,
         )
     else:
         _ = list_trainable_parameter_names(model)
