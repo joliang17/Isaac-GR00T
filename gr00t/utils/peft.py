@@ -107,7 +107,7 @@ def tie_all_special_weights(model):
         print("Base embedding not found, skipping check.")
 
 
-def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action_head=True, freeze_embeddings=False, tune_special_A=False, tune_special_B=False):
+def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action_head=True, freeze_embeddings=False, tune_special_A=False, tune_special_B=False, tune_tool_end=False):
     def find_saved_module(list_candidate):
         modules_to_save = []
         for candidate in list_candidate:
@@ -141,6 +141,9 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, train_action
     modules_to_save = []
     if train_action_head:
         modules_to_save = find_saved_module(["action_head", "backbone.action_head", ])
+    
+    if tune_tool_end:
+        modules_to_save.extend(find_saved_module(["tool_end_head", "backbone.tool_end_head", ]))
     
     if not freeze_embeddings:
         special_modules = []
