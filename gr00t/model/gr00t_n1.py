@@ -50,7 +50,7 @@ class GR00T_N1_5_Config(PretrainedConfig):
     action_dim: int = field(init=False, metadata={"help": "Action dimension."})
     compute_dtype: str = field(default="float32", metadata={"help": "Compute dtype."})
 
-    init_mode: bool = field(default=True, metadata={"help": "Compute dtype."})
+    pred_nextstep: bool = field(default=True, metadata={"help": "Compute dtype."})
 
 
     def __init__(self, **kwargs):
@@ -80,7 +80,7 @@ class GR00T_N1_5(PreTrainedModel):
 
         super().__init__(config)
         self.local_model_path = local_model_path
-        self.backbone = EagleBackbone(init_mode=config.init_mode, **config.backbone_cfg)
+        self.backbone = EagleBackbone(**config.backbone_cfg)
         action_head_cfg = FlowmatchingActionHeadConfig(**config.action_head_cfg)
         self.action_head = FlowmatchingActionHead(action_head_cfg)
 

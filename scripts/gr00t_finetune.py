@@ -15,6 +15,7 @@
 
 import os
 CACHE_DIR = "/fs/nexus-projects/wilddiffusion/cache"
+CACHE_DIR = "/fs/nexus-scratch/yliang17/Research/cache"
 
 os.environ["HF_HOME"] = CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
@@ -62,11 +63,36 @@ class ArgsConfig:
     """Batch size per GPU for training."""
 
     window_length: int = 10
-    """Batch size per GPU for training."""
+    """Maximum number of steps per window (context length)."""
 
+    # --- Window Generation Control ---
+    windowing_mode: str = "sliding_prefix"
+    """
+    Determines how windows are sliced:
+    - 'fixed': [1-10], [11-20] (Standard non-overlapping blocks)
+    - 'block_prefix': [1-2]..[1-10], [11-12].. (Expand prefixes, then jump block)
+    - 'sliding_prefix': [1-2]..[1-10], [2-3]..[2-11] (Expand prefixes, slide by 1)
+    """
+
+    min_seq_len: int = 2
+    """Minimum sequence length. Set to 2 to generate '1-2' as the smallest window."""
+
+    stride: int = 1
+    """Step size between window starts (mostly for 'sliding_prefix' mode)."""
+
+    # --- Sampling Ratios ---
     skill_inclusion_ratio: float = 0.5
+    """Ratio of 'skill' trajectories to include (0.0 to 1.0)."""
 
-    action_ds_ratio: float=1.0
+    action_ds_ratio: float = 1.0
+    """Ratio of action steps to keep within a trajectory (0.0 to 1.0)."""
+
+    toolend_upsample_ratio: float = 1.0
+    """
+    Upsampling ratio for windows containing [TOOLS_END]. 
+    1.0 = no upsampling. 
+    3.0 = repeat window 3 times.
+    """
 
     max_steps: int = 10000
     """Maximum number of training steps."""
@@ -177,23 +203,25 @@ def main(config: ArgsConfig):
     transforms = data_config_cls.transform()
 
     # 1.2 data loader: we will use either single dataset or mixture dataset
+# 1.2 data loader: we will use either single dataset or mixture dataset
     if len(config.dataset_path) == 1:
         train_dataset = LeRobotSingleDataset(
             dataset_path=config.dataset_path[0],
             modality_configs=modality_configs,
             transforms=transforms,
-            embodiment_tag=embodiment_tag,  # This will override the dataset's embodiment tag to "new_embodiment"
+            embodiment_tag=embodiment_tag,
             video_backend=config.video_backend,
             window_length=config.window_length, 
+            windowing_mode=config.windowing_mode,
+            min_seq_len=config.min_seq_len,
             skill_inclusion_ratio=config.skill_inclusion_ratio,
             action_ds_ratio=config.action_ds_ratio,
+            toolend_upsample_ratio=config.toolend_upsample_ratio,
         )
     else:
         single_datasets = []
         for p in config.dataset_path:
             assert os.path.exists(p), f"Dataset path {p} does not exist"
-            ## We use the same transforms, modality configs, and embodiment tag for all datasets here,
-            ## in reality, you can use dataset from different modalities and embodiment tags
             dataset = LeRobotSingleDataset(
                 dataset_path=p,
                 modality_configs=modality_configs,
@@ -201,8 +229,11 @@ def main(config: ArgsConfig):
                 embodiment_tag=embodiment_tag,
                 video_backend=config.video_backend,
                 window_length=config.window_length, 
+                windowing_mode=config.windowing_mode,
+                min_seq_len=config.min_seq_len,
                 skill_inclusion_ratio=config.skill_inclusion_ratio,
                 action_ds_ratio=config.action_ds_ratio,
+                toolend_upsample_ratio=config.toolend_upsample_ratio,
             )
             single_datasets.append(dataset)
 
@@ -226,6 +257,11 @@ def main(config: ArgsConfig):
     data_action_horizon = len(data_config_cls.action_indices)
 
     # Load model
+    # training parameters
+    pred_nextstep = False
+    if 'nextstep' in config.run_name:
+        pred_nextstep = True
+
     model = GR00T_N1_5.from_pretrained(
         pretrained_model_name_or_path=config.base_model_path,
         tune_llm=config.tune_llm,  # backbone's LLM
@@ -234,7 +270,7 @@ def main(config: ArgsConfig):
         tune_diffusion_model=config.tune_diffusion_model,  # action head's DiT
         tune_special_A=config.tune_special_A,  # backbone's embedding
         tune_special_B=config.tune_special_B,  # backbone's embedding
-        init_mode=config.init_mode
+        pred_nextstep=pred_nextstep
     )
 
     # Update action_horizon to match data config
@@ -274,7 +310,6 @@ def main(config: ArgsConfig):
 
     # ADDED: reload special embed after pretrained
     model_emb = model.backbone.eagle_model.language_model.model.embed_tokens
-    # MODIFIED: Get lm_head as well
     lm_head = model.backbone.eagle_model.language_model.lm_head
     if (getattr(model_emb, "special_embedding_A", None) or getattr(model_emb, "special_embedding_B", None)) and config.base_model_path == "nvidia/GR00T-N1.5-3B":
         # --- Re-init special token embeddings ---

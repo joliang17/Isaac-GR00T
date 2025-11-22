@@ -160,7 +160,7 @@ class DualBrainTrainer(transformers.Trainer):
             tokenizer.save_pretrained(output_dir)
             # save adapter
             self.model.save_pretrained(output_dir, safe_serialization=True, )
-            rm_old_ckpt(output_dir, num_limit=3)
+            rm_old_ckpt(output_dir, num_limit=2)
             # p1 = self.model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
             # p2 = self.model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
             # print("special emb: Same storage?", p1.data_ptr() == p2.data_ptr())
@@ -172,7 +172,6 @@ class DualBrainTrainer(transformers.Trainer):
                 # p3 = inference_model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
                 # p4 = inference_model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
                 # print("loaded emb: Same storage?", p3.data_ptr() == p4.data_ptr() == p5.data_ptr())
-
                 merged_model = inference_model.merge_and_unload()
                 # p6 = merged_model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
                 # p7 = merged_model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
@@ -184,7 +183,7 @@ class DualBrainTrainer(transformers.Trainer):
                 output_dir_merged = '/'.join(output_dir_merged)
                 merged_model.save_pretrained(output_dir_merged)
                 print(f"Saving merged checkpoint {output_dir_merged}")
-                rm_old_ckpt(output_dir_merged, num_limit=3)
+                rm_old_ckpt(output_dir_merged, num_limit=2)
             except Exception as e:
                 print(e)
                 traceback.print_exc()
