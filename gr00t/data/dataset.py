@@ -47,7 +47,7 @@ from .schema import (
     LeRobotStateActionMetadata,
 )
 from .transform import ComposedModalityTransform
-
+from tqdm import tqdm
 LE_ROBOT_MODALITY_FILENAME = "meta/modality.json"
 LE_ROBOT_EPISODE_FILENAME = "meta/episodes.jsonl"
 LE_ROBOT_TASKS_FILENAME = "meta/tasks.jsonl"
@@ -415,7 +415,7 @@ class LeRobotSingleDataset(Dataset):
         trajectory_ids = []
         trajectory_lengths = []
         trajectory_type = []
-        for episode in episode_metadata:
+        for episode in episode_metadata[:10]:
             trajectory_ids.append(episode["episode_index"])
             trajectory_lengths.append(episode["length"])
             tasks = episode["tasks"]
@@ -448,7 +448,7 @@ class LeRobotSingleDataset(Dataset):
         # Track stats for tool ends
         tool_end_window_count = 0 
 
-        for tid, T, ttype in zip(self.trajectory_ids, self.trajectory_lengths, self.trajectory_types):
+        for tid, T, ttype in tqdm(zip(self.trajectory_ids, self.trajectory_lengths, self.trajectory_types), total=len(self.trajectory_ids)):
             if max_windows is not None and len(all_windows) >= max_windows:
                 break
 
@@ -471,9 +471,14 @@ class LeRobotSingleDataset(Dataset):
             
             if need_text:
                 step_descs = [self.get_step_data(tid, idx)['annotation.step_description'] for idx in range(T)]
-                
                 if ttype == 0 and action_ratio < 1.0:
-                    list_act = [(idx, 1 if '[ACTIONS]' in desc else 0) for idx, desc in enumerate(step_descs)]
+                    list_act = []
+                    for idx, desc in enumerate(step_descs):
+                        if isinstance(desc, list) and len(desc) == 1:
+                            desc = desc[0]
+                        list_act.append((idx, 1 if '[ACTIONS]' in desc else 0))
+
+                    # list_act = [(idx, 1 if '[ACTIONS]' in desc[0] else 0) for idx, desc in enumerate(step_descs)]
                     action_steps = [x[0] for x in list_act if x[1] == 1]
                     other_steps = [x[0] for x in list_act if x[1] == 0]
                     n_keep = int(len(action_steps) * action_ratio)
@@ -482,6 +487,8 @@ class LeRobotSingleDataset(Dataset):
 
                 if toolend_ratio > 1.0:
                     for idx, desc in enumerate(step_descs):
+                        if isinstance(desc, list) and len(desc) == 1:
+                            desc = desc[0]
                         if '[TOOLS_END]' in desc:
                             tool_end_indices.add(idx)
 
@@ -539,7 +546,6 @@ class LeRobotSingleDataset(Dataset):
                         self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
                         return all_windows
 
-        import pdb;pdb.set_trace()
         self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
         return all_windows
 

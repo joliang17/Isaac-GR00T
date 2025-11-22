@@ -240,6 +240,7 @@ class EagleBackbone(nn.Module):
         tune_visual: bool = False,
         tune_special_A: bool = True,
         tune_special_B: bool = True,
+        tune_tool_end: bool = False,
         select_layer: int = -1,
         reproject_vision: bool = False,
         use_flash_attention: bool = False,
@@ -248,6 +249,7 @@ class EagleBackbone(nn.Module):
         project_to_dim: int = 1536,
         special_token_loss_weight: float = 2.0,
         pred_nextstep: bool = False,
+        tool_end_loss_weight: float = 1.0,
     ):
         """
         Args:
@@ -260,6 +262,7 @@ class EagleBackbone(nn.Module):
         self.pred_nextstep = pred_nextstep
         config = AutoConfig.from_pretrained(DEFAULT_EAGLE_PATH, trust_remote_code=True)
         self.eagle_model = AutoModel.from_config(config, trust_remote_code=True)
+        hidden_size = self.eagle_model.language_model.lm_head.in_features
 
         # ADDED: add special tokens to tokenizer
         self.eagle_processor = AutoProcessor.from_pretrained(
@@ -339,6 +342,8 @@ class EagleBackbone(nn.Module):
         self.img_ids = torch.tensor(img_ids)
 
         self.special_token_loss_weight = special_token_loss_weight
+        self.tool_end_loss_weight = tool_end_loss_weight
+
         loss_token_ids = [self.actions_id, self.tools_id, self.skills_end]
         loss_token_ids = [tid for tid in dict.fromkeys(loss_token_ids) if tid is not None and tid >= 0]
         self.special_loss_ids = (
@@ -352,12 +357,15 @@ class EagleBackbone(nn.Module):
         else:
             self.eagle_linear = torch.nn.Identity()
 
+        # ADDED: Binary classification head for [TOOLS_END] prediction
+        self.tool_end_head = nn.Linear(hidden_size, 2)
+
         # needed since we don't use these layers. Also saves compute
         while len(self.eagle_model.language_model.model.layers) > select_layer:
             self.eagle_model.language_model.model.layers.pop(-1)
 
         self.select_layer = select_layer
-        self.set_trainable_parameters(tune_llm, tune_visual, tune_special_A, tune_special_B)
+        self.set_trainable_parameters(tune_llm, tune_visual, tune_special_A, tune_special_B, tune_tool_end)
 
         # Safety for generation
         if self.eagle_tokenizer.pad_token_id is None:
@@ -430,16 +438,20 @@ class EagleBackbone(nn.Module):
             print("Tied special LM head (Group B) to special embeddings (Group B).")
 
 
-    def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_special_A: bool, tune_special_B: bool):
+    def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_special_A: bool, tune_special_B: bool, tune_tool_end: bool=False):
         self.tune_llm = tune_llm
         self.tune_visual = tune_visual
         self.tune_special_A = tune_special_A
         self.tune_special_B = tune_special_B
+        self.tune_tool_end = tune_tool_end
 
         # Start with all params of this module (EagleBackbone) trainable
         # This includes eagle_linear and the entire eagle_model
         for p in self.parameters():
             p.requires_grad = True
+        
+        # Control the Tool End Head explicitly
+        self.tool_end_head.requires_grad_(tune_tool_end)
         
         if not tune_llm:
             # This freezes the entire language_model, including all embedding layers
@@ -476,6 +488,7 @@ class EagleBackbone(nn.Module):
 
         print(f"Tune backbone llm: {self.tune_llm}")
         print(f"Tune backbone visual: {self.tune_visual}")
+        print(f"Tune tool_end head: {self.tune_tool_end}")
         
         # MODIFIED: Print the *actual* status of the special layers
         if isinstance(hybrid_embedding, HybridEmbedding):
@@ -584,10 +597,30 @@ class EagleBackbone(nn.Module):
             final_mask = find_last_step(labels, mask_img)
             labels[final_mask] = -100
 
-        outputs = self.eagle_model(**eagle_input, return_dict=True)
+        # We need hidden states if we are tuning the tool head
+        need_hidden = self.tune_tool_end
+        outputs = self.eagle_model(**eagle_input, return_dict=True, output_hidden_states=need_hidden)
         logits = outputs.logits
+
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
+
+        # --- Tool End Loss Logic (Controlled) ---
+        tool_loss_avg = torch.tensor(0.0, device=shift_labels.device)
+        
+        if self.tune_tool_end:
+            hidden_states = outputs.hidden_states[-1] 
+            shift_hidden = hidden_states[..., :-1, :].contiguous()
+            tool_logits = self.tool_end_head(shift_hidden)
+            tool_targets = (shift_labels == self.skills_end).long()
+            
+            valid_mask_tool = shift_labels != -100
+            
+            if valid_mask_tool.any():
+                tool_loss_fct = nn.CrossEntropyLoss(reduction='none')
+                loss_per_token = tool_loss_fct(tool_logits.view(-1, 2), tool_targets.view(-1))
+                loss_per_token = loss_per_token.view_as(shift_labels)
+                tool_loss_avg = loss_per_token[valid_mask_tool].mean()
 
         vocab_size = shift_logits.size(-1)
         valid_mask = shift_labels != -100
@@ -708,8 +741,10 @@ class EagleBackbone(nn.Module):
         else:
             special_loss_avg = torch.tensor(0.0, device=shift_labels.device)
 
+        # MODIFIED: Only add tool loss if tuning is enabled
         loss = special_loss_avg + base_loss_avg
-        
+        if self.tune_tool_end:
+            loss = loss + (self.tool_end_loss_weight * tool_loss_avg)
         return loss, base_loss_avg, special_loss_avg
         
 

@@ -80,7 +80,7 @@ class GR00T_N1_5(PreTrainedModel):
 
         super().__init__(config)
         self.local_model_path = local_model_path
-        self.backbone = EagleBackbone(**config.backbone_cfg)
+        self.backbone = EagleBackbone(pred_nextstep=config.pred_nextstep, **config.backbone_cfg)
         action_head_cfg = FlowmatchingActionHeadConfig(**config.action_head_cfg)
         self.action_head = FlowmatchingActionHead(action_head_cfg)
 
@@ -451,12 +451,14 @@ class GR00T_N1_5(PreTrainedModel):
         tune_diffusion_model = kwargs.pop("tune_diffusion_model", True)
         tune_special_A = kwargs.pop("tune_special_A", True)
         tune_special_B = kwargs.pop("tune_special_B", False)
+        tune_tool_end = kwargs.pop("tune_tool_end", False)
 
         print(f"Loading pretrained dual brain from {pretrained_model_name_or_path}")
         print(f"Tune backbone vision tower: {tune_visual}")
         print(f"Tune backbone LLM: {tune_llm}")
         print(f"Tune embedding A: {tune_special_A}")
         print(f"Tune embedding B: {tune_special_B}")
+        print(f"Tune tool end head: {tune_tool_end}")
         print(f"Tune action head projector: {tune_projector}")
         print(f"Tune action head DiT: {tune_diffusion_model}")
 
@@ -476,7 +478,7 @@ class GR00T_N1_5(PreTrainedModel):
             local_model_path, local_model_path=local_model_path, **kwargs
         )
         pretrained_model.backbone.set_trainable_parameters(
-            tune_visual=tune_visual, tune_llm=tune_llm, tune_special_A=tune_special_A, tune_special_B=tune_special_B
+            tune_visual=tune_visual, tune_llm=tune_llm, tune_special_A=tune_special_A, tune_special_B=tune_special_B, tune_tool_end=tune_tool_end
         )
         pretrained_model.action_head.set_trainable_parameters(
             tune_projector=tune_projector, tune_diffusion_model=tune_diffusion_model
