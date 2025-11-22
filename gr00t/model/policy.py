@@ -115,6 +115,7 @@ class Gr00tPolicy(BasePolicy):
         self.model_path = Path(model_path)
         self.device = device
         self.call_baseline = call_baseline
+        self.toolend_head = False
 
         # Convert string embodiment tag to EmbodimentTag enum if needed
         if isinstance(embodiment_tag, str):
@@ -126,7 +127,8 @@ class Gr00tPolicy(BasePolicy):
         self._load_model(model_path)
 
         # ADDED: Load transforms
-        self._load_metadata(Path("/fs/nexus-projects/wilddiffusion/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
+        # self._load_metadata(Path("/fs/nexus-projects/wilddiffusion/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
+        self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
         # self._load_metadata(self.model_path / "experiment_cfg")
         # Load horizons
         self._load_horizons()
@@ -163,7 +165,7 @@ class Gr00tPolicy(BasePolicy):
         """
         return self._modality_transform.unapply(action)
 
-    def get_action(self, observations: Dict[str, Any], img_count: int=1, past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False) -> Dict[str, Any]:
+    def get_action(self, observations: Dict[str, Any], img_count: int=1, past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> Dict[str, Any]:
         """
         Make a prediction with the model.
         Args:
@@ -198,7 +200,7 @@ class Gr00tPolicy(BasePolicy):
         observations_bs = observations.copy()
         # Apply transforms
         normalized_input = self.apply_transforms(observations)
-        normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False, inside_tool=inside_tool)
+        normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False, inside_tool=inside_tool, )
         unnormalized_action = self._get_unnormalized_action(normalized_action, )
         if not is_batch:
             unnormalized_action = squeeze_dict_values(unnormalized_action)
@@ -214,13 +216,13 @@ class Gr00tPolicy(BasePolicy):
                 unnormalized_action_bs = squeeze_dict_values(unnormalized_action_bs)
         return unnormalized_action, tools_output, past_key_values, unnormalized_action_bs
 
-    def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False) -> torch.Tensor:
+    def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> torch.Tensor:
         # Set up autocast context if needed
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=COMPUTE_DTYPE):
             if call_baseline:
                 model_pred, backbone_outputs, tools_output, past_key_values = self.base_model.get_action(normalized_input, mode='baseline')
             else:
-                model_pred, backbone_outputs, tools_output, past_key_values = self.model.get_action(normalized_input, past_key_values=past_key_values, mode=mode, inside_tool=inside_tool)
+                model_pred, backbone_outputs, tools_output, past_key_values = self.model.get_action(normalized_input, past_key_values=past_key_values, mode=mode, inside_tool=inside_tool, toolend_head=self.toolend_head)
 
         normalized_action = model_pred["action_pred"].float()
         return normalized_action, backbone_outputs, tools_output, past_key_values
@@ -305,7 +307,9 @@ class Gr00tPolicy(BasePolicy):
 
         # my trained model
         print(f"load my trained model: {model_path}")
-        model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=COMPUTE_DTYPE, init_mode=False,)
+        if 'toolhead' in model_path:
+            self.toolend_head = True
+        model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=COMPUTE_DTYPE, )
         model.eval()  # Set model to eval mode
         model.to(device=self.device)  # type: ignore
 
@@ -315,7 +319,7 @@ class Gr00tPolicy(BasePolicy):
         if model_path != "youliangtan/gr00t-n1.5-libero-long-posttrain" and self.call_baseline: 
             # load baseline model
             print(f"load libero baseline model")
-            base_model = GR00T_N1_5.from_pretrained("youliangtan/gr00t-n1.5-libero-long-posttrain", torch_dtype=COMPUTE_DTYPE, init_mode=False,)
+            base_model = GR00T_N1_5.from_pretrained("youliangtan/gr00t-n1.5-libero-long-posttrain", torch_dtype=COMPUTE_DTYPE, )
             base_model.eval()  # Set model to eval mode
             base_model.to(device=self.device)  # type: ignore
             base_model = check_horizon(base_model)

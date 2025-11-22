@@ -539,7 +539,11 @@ class EagleBackbone(nn.Module):
         attn = eagle_input.get("attention_mask")   # [B, T]
         route_pos = attn.sum(dim=1) - 1        # [B]
 
-        return eagle_logits, route_pos, eagle_features, eagle_input["attention_mask"], past_key_values
+        # Raw Hidden States for Tool Head (Unprojected)
+        # Assuming tool_end_head was trained on the last layer
+        raw_hidden_states = eagle_output.hidden_states[-1]
+
+        return eagle_logits, route_pos, eagle_features, eagle_input["attention_mask"], past_key_values, raw_hidden_states
 
     def _transcript_lm_loss(self, vl_input: BatchFeature) -> torch.Tensor:
         """
@@ -704,7 +708,6 @@ class EagleBackbone(nn.Module):
                     print(f"Preds:  {''.join(decoded_pred_A)}")
                     print(f"Labels: {''.join(decoded_label_A)}")
 
-                    
                 if special_mask_B.any():
                     pred_sp_ids_B_small = special_logits_B[special_mask_B].argmax(dim=-1)
                     num_special_B = special_ids_B.shape[0]
@@ -879,7 +882,7 @@ class EagleBackbone(nn.Module):
     def forward_route(self, vl_input: BatchFeature, past_key_values=None):
         # vl_input: ['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'step_input_ids', 'step_attention_mask', 'eagle_input_ids', 'eagle_attention_mask', 'eagle_pixel_values', 'eagle_image_sizes', 'embodiment_id']
         # 1) Run backbone once
-        eagle_logits, route_pos, eagle_embeds, eagle_mask, past_key_values = self.forward_eagle(vl_input, past_key_values=past_key_values)
+        eagle_logits, route_pos, eagle_embeds, eagle_mask, past_key_values, _ = self.forward_eagle(vl_input, past_key_values=past_key_values)
 
         # if there is no step information (single instruction input)
         input_keys = vl_input.keys()
@@ -952,7 +955,7 @@ class EagleBackbone(nn.Module):
 
 
     @torch.no_grad()
-    def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, special_token_only=False, inside_tool=False):
+    def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, special_token_only=False, inside_tool=False, toolend_head=False):
         """Greedy token generation for the language backbone."""
         if max_token is None or max_token < 1:
             max_token = 1
@@ -981,7 +984,7 @@ class EagleBackbone(nn.Module):
         # MODIFIED: Removed unused num_special_all and special_ids_all variables
 
         for _ in range(max_token):
-            logits, route_pos, _, _, cache = self.forward_eagle(
+            logits, route_pos, _, _, cache, raw_hidden_states = self.forward_eagle(
                 vl_input, past_key_values=cache
             )
             vocab_size = logits.size(-1)
@@ -1000,48 +1003,66 @@ class EagleBackbone(nn.Module):
 
             # MODIFIED: Restructured this entire logic block
             if special_token_only:
-                # 1. Define the set of allowed tokens
-                if not inside_tool:
-                    allowed_ids = torch.tensor(
-                        [self.tools_id, self.actions_id, self.skills_end], 
-                        device=input_ids.device, dtype=torch.long
+                # CASE 1: Inside Tool AND Tuning the Head -> Use Classifier
+                if inside_tool and toolend_head:
+                    # 1. Extract the hidden state at the exact routing position
+                    # raw_hidden_states is [B, T, H]
+                    current_hidden = raw_hidden_states[batch_indices, route_pos, :] # [B, H]
+                    
+                    # 2. Pass through the binary classifier
+                    tool_logits = self.tool_end_head(current_hidden) # [B, 2]
+                    
+                    # 3. Predict: 0 = Keep Going ([ACTIONS]), 1 = End ([TOOLS_END])
+                    tool_preds = tool_logits.argmax(dim=-1) # [B]
+                    
+                    # 4. Force the token ID based on prediction
+                    # If pred is 1 -> SKILLS_END, else -> ACTIONS
+                    next_token_raw = torch.where(
+                        tool_preds == 1,
+                        torch.tensor(self.skills_end, device=device),
+                        torch.tensor(self.actions_id, device=device)
                     )
+                # CASE 2: Text-based Fallback (Original Model behavior)
                 else:
-                    allowed_ids = torch.tensor(
-                        [self.actions_id, self.skills_end], 
-                        device=input_ids.device, dtype=torch.long
-                    )
-                
-                # Check the logits for the first item in the batch
-                for token_id in allowed_ids:
-                    # Ensure token_id is a simple integer for indexing
-                    if isinstance(token_id, torch.Tensor):
-                        token_id = token_id.item()
-                        
-                    print(f"Original logit for ID {token_id}: {next_token_logits[0, token_id].item()}")
+                    # 1. Define the set of allowed tokens
+                    if not inside_tool:
+                        allowed_ids = torch.tensor(
+                            [self.tools_id, self.actions_id, self.skills_end], 
+                            device=input_ids.device, dtype=torch.long
+                        )
+                    else:
+                        allowed_ids = torch.tensor(
+                            [self.actions_id, self.skills_end], 
+                            device=input_ids.device, dtype=torch.long
+                        )
+                    
+                    # Check the logits for the first item in the batch
+                    for token_id in allowed_ids:
+                        # Ensure token_id is a simple integer for indexing
+                        if isinstance(token_id, torch.Tensor):
+                            token_id = token_id.item()
+                            
+                        print(f"Original logit for ID {token_id}: {next_token_logits[0, token_id].item()}")
 
-                # 2. Create a mask that allows *only* these tokens
-                neg_inf = torch.finfo(next_token_logits.dtype).min
-                mask = torch.full_like(next_token_logits, neg_inf)
-                
-                # 3. Apply the mask
-                mask.scatter_(dim=-1, index=allowed_ids.unsqueeze(0).expand(next_token_logits.size(0), -1), value=0)
-                masked_logits = next_token_logits + mask
-                # 4. Get the next token from the *masked* full-vocabulary logits
-                temperature = getattr(self.args, "route_temperature", 0.0) if hasattr(self, "args") else 0.0
-                if temperature and temperature > 0.0:
-                    probs = torch.softmax(masked_logits / temperature, dim=-1)
-                    next_token_raw = torch.multinomial(probs, num_samples=1).squeeze(-1)
-                else:
-                    next_token_raw = masked_logits.argmax(dim=-1)
-                # import pdb;pdb.set_trace()
+                    # 2. Create a mask that allows *only* these tokens
+                    neg_inf = torch.finfo(next_token_logits.dtype).min
+                    mask = torch.full_like(next_token_logits, neg_inf)
+                    
+                    # 3. Apply the mask
+                    mask.scatter_(dim=-1, index=allowed_ids.unsqueeze(0).expand(next_token_logits.size(0), -1), value=0)
+                    masked_logits = next_token_logits + mask
+                    # 4. Get the next token from the *masked* full-vocabulary logits
+                    temperature = getattr(self.args, "route_temperature", 0.0) if hasattr(self, "args") else 0.0
+                    if temperature and temperature > 0.0:
+                        probs = torch.softmax(masked_logits / temperature, dim=-1)
+                        next_token_raw = torch.multinomial(probs, num_samples=1).squeeze(-1)
+                    else:
+                        next_token_raw = masked_logits.argmax(dim=-1)
+                    # import pdb;pdb.set_trace()
 
             else:
                 # Normal generation: select the most likely token from the *entire* vocabulary.
-                # The previous logic (restricting to base_logits) was a bug,
-                # as it would prevent the model from ever generating special tokens.
                 next_token_raw = next_token_logits.argmax(dim=-1)
-            # END MODIFIED BLOCK
 
             prev_finished = finished.clone()
             recorded_token = torch.where(
@@ -1072,7 +1093,8 @@ class EagleBackbone(nn.Module):
 
             if max_token == 1 or finished.all():
                 break
-
+        
+        # Cleanup return
         backbone_outputs = self.forward(vl_input, past_key_values=cache)
         backbone_outputs["past_key_values"] = cache
 

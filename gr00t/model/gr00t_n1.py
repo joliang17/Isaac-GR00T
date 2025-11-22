@@ -233,6 +233,7 @@ class GR00T_N1_5(PreTrainedModel):
         past_key_values=None,
         mode: str='baseline',
         inside_tool: bool=False,
+        toolend_head: bool=False
     ) -> BatchFeature:
         def create_empty_actions(backbone_inputs):
             token_device = backbone_inputs['eagle_input_ids'].device if 'eagle_input_ids' in backbone_inputs else self.device
@@ -262,7 +263,7 @@ class GR00T_N1_5(PreTrainedModel):
         else:
             # self.backbone.eagle_tokenizer.decode(backbone_inputs['eagle_input_ids'][0])
             generated_ids, backbone_outputs = self.backbone.generate(
-                backbone_inputs, max_token=1, past_key_values=past_key_values, special_token_only=True, inside_tool=inside_tool, 
+                backbone_inputs, max_token=1, past_key_values=past_key_values, special_token_only=True, inside_tool=inside_tool, toolend_head=toolend_head,
             )
             past_key_values = backbone_outputs.get('past_key_values', None)
 
