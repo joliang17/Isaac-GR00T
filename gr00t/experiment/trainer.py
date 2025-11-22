@@ -37,7 +37,7 @@ from transformers import AutoConfig, AutoModel, AutoTokenizer, AutoProcessor
 from tempfile import TemporaryDirectory
 from peft import PeftModel
 from gr00t.model.gr00t_n1 import GR00T_N1_5
-from gr00t.utils.peft import tie_all_special_weights
+from gr00t.utils.peft import tie_all_special_weights, list_trainable_parameter_names
 
 
 class BaseSampler(Sampler):
@@ -164,29 +164,30 @@ class DualBrainTrainer(transformers.Trainer):
             # p1 = self.model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
             # p2 = self.model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
             # print("special emb: Same storage?", p1.data_ptr() == p2.data_ptr())
-            try:
-                # save normal ckpt
-                # 1. Load a fresh instance of your base model
-                base_model = GR00T_N1_5.from_pretrained("nvidia/GR00T-N1.5-3B", torch_dtype=torch.bfloat16 )
-                inference_model = PeftModel.from_pretrained(base_model, output_dir)
-                # p3 = inference_model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
-                # p4 = inference_model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
-                # print("loaded emb: Same storage?", p3.data_ptr() == p4.data_ptr() == p5.data_ptr())
-                merged_model = inference_model.merge_and_unload()
-                # p6 = merged_model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
-                # p7 = merged_model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
-                # print("loaded emb: Same storage?", p6.data_ptr() == p7.data_ptr())
+            if isinstance(self.model, PeftModel):
+                try:
+                    # save normal ckpt
+                    # 1. Load a fresh instance of your base model
+                    base_model = GR00T_N1_5.from_pretrained("nvidia/GR00T-N1.5-3B", torch_dtype=torch.bfloat16 )
+                    inference_model = PeftModel.from_pretrained(base_model, output_dir)
+                    # p3 = inference_model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
+                    # p4 = inference_model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
+                    # print("loaded emb: Same storage?", p3.data_ptr() == p4.data_ptr() == p5.data_ptr())
+                    merged_model = inference_model.merge_and_unload()
+                    # p6 = merged_model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
+                    # p7 = merged_model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
+                    # print("loaded emb: Same storage?", p6.data_ptr() == p7.data_ptr())
 
-                # 2. Save the final, merged model
-                output_dir_merged = output_dir.split('/')
-                output_dir_merged[-2] += '_merged'
-                output_dir_merged = '/'.join(output_dir_merged)
-                merged_model.save_pretrained(output_dir_merged)
-                print(f"Saving merged checkpoint {output_dir_merged}")
-                rm_old_ckpt(output_dir_merged, num_limit=2)
-            except Exception as e:
-                print(e)
-                traceback.print_exc()
+                    # 2. Save the final, merged model
+                    output_dir_merged = output_dir.split('/')
+                    output_dir_merged[-2] += '_merged'
+                    output_dir_merged = '/'.join(output_dir_merged)
+                    merged_model.save_pretrained(output_dir_merged)
+                    print(f"Saving merged checkpoint {output_dir_merged}")
+                    rm_old_ckpt(output_dir_merged, num_limit=2)
+                except Exception as e:
+                    print(e)
+                    traceback.print_exc()
             return 
 
     def train(
