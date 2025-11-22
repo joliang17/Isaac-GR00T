@@ -184,7 +184,7 @@ class DualBrainTrainer(transformers.Trainer):
                     output_dir_merged = '/'.join(output_dir_merged)
                     merged_model.save_pretrained(output_dir_merged)
                     print(f"Saving merged checkpoint {output_dir_merged}")
-                    rm_old_ckpt(output_dir_merged, num_limit=2)
+                    rm_old_ckpt(output_dir_merged, num_limit=1)
                 except Exception as e:
                     print(e)
                     traceback.print_exc()

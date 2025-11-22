@@ -358,11 +358,11 @@ def main(config: ArgsConfig):
     model.compute_dtype = "bfloat16"
     model.config.compute_dtype = "bfloat16"
 
+    train_action_head = False
+    if 'traj_video_both' in config.dataset_path[0] and 'skip_action' not in config.run_name:
+        train_action_head = True
+
     if config.lora_rank > 0:
-        train_action_head = False
-        if 'traj_video_both' in config.dataset_path[0] and 'skip_action' not in config.run_name:
-            train_action_head = True
-            
         # normal lora training (only for action_head / full model)
         model = get_lora_model(
             model,
@@ -376,6 +376,7 @@ def main(config: ArgsConfig):
             tune_tool_end=config.tune_tool_end,
         )
     else:
+        model.action_head.requires_grad_(train_action_head)
         _ = list_trainable_parameter_names(model)
             
     # 2.1 modify training args
