@@ -120,7 +120,10 @@ class LeRobotSingleDataset(Dataset):
         transforms: ComposedModalityTransform | None = None,
         window_length: int | None = None,
         skill_inclusion_ratio: float = 0.5, 
-        action_ds_ratio: float = 1.0
+        action_ds_ratio: float = 1.0,
+        toolend_upsample_ratio: float = 1.0,
+        min_seq_len: int = 2,
+        windowing_mode: str = 'sliding_prefix'
     ):
         """
         Initialize the dataset.
@@ -160,8 +163,20 @@ class LeRobotSingleDataset(Dataset):
         self.drop_short = False
         self.include_tail = False
         self.max_windows = None
+        
+        # --- Sampling Ratios ---
         self.skill_inclusion_ratio = skill_inclusion_ratio
         self.action_ds_ratio = action_ds_ratio
+        self.toolend_upsample_ratio = toolend_upsample_ratio
+
+        # --- Windowing Logic Control ---
+        # Options: 'fixed', 'block_prefix', 'sliding_prefix'
+        # "fixed": Produces 1-10, 11-20, 21-30 (Fixed length, jumps by length).
+        # "block_prefix": Produces 1-2...1-10, 11-12... (Expands prefixes, then jumps to next block).
+        # "sliding_prefix": Produces 1-2...1-10, 2-3... (Expands prefixes, slides by 1).
+
+        self.windowing_mode = windowing_mode
+        self.min_seq_len = min_seq_len
 
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
         self._trajectory_ids, self._trajectory_lengths, self._trajectory_types = self._get_trajectories()
@@ -413,197 +428,131 @@ class LeRobotSingleDataset(Dataset):
         return np.array(trajectory_ids), np.array(trajectory_lengths), np.array(trajectory_type)
 
     def _get_all_windows(self) -> list[list[tuple[int, int]]]:
-        """
-        Build sliding windows over trajectories.
-
-        Each window is a list of (trajectory_id, step_index) pairs.
+        wl = int(self.window_length)
+        if wl <= 0: raise ValueError(f"window_length must be > 0, got {wl}")
         
-        --- MODIFICATION ---
-        Instead of fixed-length windows, this now generates all
-        sub-sequences (prefixes) from length 1 up to window_length
-        for each valid starting position.
-        --- END MODIFICATION ---
-
-        Returns:
-            list[list[tuple[int, int]]]: A list of windows. Each window is a list of
-            (trajectory_id, step_index).
-
-        Config (read from `self` if present; otherwise uses defaults):
-            - self.window_length (int, required): *max* number of steps per window (>0)
-            - self.stride (int, default=1): step between window *starts* (>=1)
-            - self.drop_short (bool, default=False): if True, trajectories shorter than
-            window_length are skipped; if False, emit all sub-windows up to the
-            trajectory's short length.
-            - self.include_tail (bool, default=False): if True and T >= window_length,
-            also include all sub-windows from the final valid starting position.
-            - self.max_windows (int | None, default=None): if set, cap the total output windows.
-            - self.skill_inclusion_ratio (float, default=1.0): Ratio of "skill" trajectories
-            (ttype=1) to include. 0.0=none, 0.1=10%, 1.0=all.
-        Example:
-            self.trajectory_ids = [0, 1, 2]
-            self.trajectory_lengths = [3, 2, 4]
-            self.window_length = 2
-            self.stride = 1
-            self.drop_short = False
-            
-            Original return:
-                [
-                [(0,0),(0,1)], [(0,1),(0,2)],
-                [(1,0)],
-                [(2,0),(2,1)], [(2,1),(2,2)], [(2,2),(2,3)]
-                ]
-            
-            New return (prefixes from each start):
-                [
-                [(0,0)], [(0,0),(0,1)],                 # Start at 0
-                [(0,1)], [(0,1),(0,2)],                 # Start at 1
-                [(1,0)],                                # Short traj (n=1), wl=2. Emits prefix of len 1.
-                [(2,0)], [(2,0),(2,1)],                 # Start at 0
-                [(2,1)], [(2,1),(2,2)],                 # Start at 1
-                [(2,2)], [(2,2),(2,3)]                  # Start at 2
-                ]
-        """
-        wl = int(getattr(self, "window_length"))
-        if wl <= 0:
-            raise ValueError(f"window_length must be > 0, got {wl}")
-
-        stride = int(getattr(self, "stride", 1)) or 1
-        if stride < 1:
-            stride = 1
-
-        drop_short = bool(getattr(self, "drop_short", False))
-        include_tail = bool(getattr(self, "include_tail", False))
-        max_windows = getattr(self, "max_windows", None)
-        if max_windows is not None:
-            max_windows = int(max_windows)
-            if max_windows <= 0:
-                raise ValueError(f"max_windows must be positive if set, got {max_windows}")
-
-        skill_inclusion_ratio = float(getattr(self, "skill_inclusion_ratio", 1.0))
-        if not (0.0 <= skill_inclusion_ratio <= 1.0):
-            raise ValueError(
-                f"skill_inclusion_ratio must be in [0.0, 1.0], got {skill_inclusion_ratio}"
-            )
-        action_ds_ratio = float(getattr(self, "action_ds_ratio", 1.0))
-        if not (0.0 <= action_ds_ratio <= 1.0):
-            raise ValueError(
-                f"action_ds_ratio must be in [0.0, 1.0], got {action_ds_ratio}"
-            )
+        mode = self.windowing_mode
+        min_seq_len = int(self.min_seq_len)
+        stride = int(self.stride) if self.stride > 0 else 1
+        max_windows = self.max_windows
+        
+        # Ratios
+        skill_ratio = float(self.skill_inclusion_ratio)
+        action_ratio = float(self.action_ds_ratio)
+        toolend_ratio = float(self.toolend_upsample_ratio)
 
         all_windows: list[list[tuple[int, int]]] = []
         skill_cnt = 0
         traj_cnt = 0
+        
+        # Track stats for tool ends
+        tool_end_window_count = 0 
 
         for tid, T, ttype in zip(self.trajectory_ids, self.trajectory_lengths, self.trajectory_types):
             if max_windows is not None and len(all_windows) >= max_windows:
-                break # Stop processing new trajectories if cap is hit
+                break
 
-            # Downsample skills based on the inclusion ratio
-            if ttype == 1:  # ttype == 1: skill
-                if random.random() > skill_inclusion_ratio:
-                    continue  # Skip this skill trajectory
+            # --- 1. Skill Downsampling ---
+            if ttype == 1:
+                if random.random() > skill_ratio:
+                    continue
                 skill_cnt += 1
             else:
                 traj_cnt += 1
 
-            if T <= 0:
-                # skip empty trajectories
-                continue
+            if T <= 0: continue
+
+            # --- 2. Step Filtering ---
+            available_indices = list(range(T))
+            tool_end_indices = set()
+
+            # Only fetch text if needed for Action DS or Tool Upsampling
+            need_text = (ttype == 0 and action_ratio < 1.0) or (toolend_ratio > 1.0)
             
-            # --- This block is unchanged, it correctly creates available_indices ---
-            list_action = None
-            if ttype == 0 and action_ds_ratio < 1:
-                list_action = [self.get_step_data(tid, idx)['annotation.step_description'] for idx in range(T)]
-                list_act = [(idx, 1 if item[0].endswith('[ACTIONS]') else 0) for idx, item in enumerate(list_action)]
-                action_steps = [idx for idx, is_action in list_act if is_action == 1]
-                other_steps = [idx for idx, is_action in list_act if is_action == 0]
-                n_actions_to_keep = int(len(action_steps) * action_ds_ratio)
-                random.shuffle(action_steps)
-                sampled_action_steps = action_steps[:n_actions_to_keep]
-                available_indices = sorted(other_steps + sampled_action_steps)
-            else:
-                available_indices = list(range(T))
-            # --- End unchanged block ---
-            
+            if need_text:
+                step_descs = [self.get_step_data(tid, idx)['annotation.step_description'] for idx in range(T)]
+                
+                if ttype == 0 and action_ratio < 1.0:
+                    list_act = [(idx, 1 if '[ACTIONS]' in desc else 0) for idx, desc in enumerate(step_descs)]
+                    action_steps = [x[0] for x in list_act if x[1] == 1]
+                    other_steps = [x[0] for x in list_act if x[1] == 0]
+                    n_keep = int(len(action_steps) * action_ratio)
+                    random.shuffle(action_steps)
+                    available_indices = sorted(other_steps + action_steps[:n_keep])
+
+                if toolend_ratio > 1.0:
+                    for idx, desc in enumerate(step_descs):
+                        if '[TOOLS_END]' in desc:
+                            tool_end_indices.add(idx)
+
             n_available = len(available_indices)
-            
-            if n_available <= 0: # Skip if downsampling removed all steps
-                continue
-                
-            # --- MODIFICATION 1: Handle "short" trajectories ---
-            # Generate all prefixes for short trajectories if not dropping them.
-            if n_available < wl:
-                if not drop_short:
-                    # Emit all prefixes of this short trajectory
-                    # e.g., if n_available=3, emit len 1, len 2, len 3
-                    for current_length in range(1, n_available + 1):
-                        window_step_indices = [available_indices[off] for off in range(current_length)]
-                        window = [(tid, step_idx) for step_idx in window_step_indices]
-                        all_windows.append(window)
-                        
-                        if max_windows is not None and len(all_windows) >= max_windows:
-                            print(f"skill_inclusion_ratio={skill_inclusion_ratio}, skill-level data ratio: {np.round(skill_cnt/(skill_cnt+traj_cnt), 4)}")
-                            return all_windows
-                continue # Go to next trajectory
-            # --- END MODIFICATION 1 ---
+            if n_available < min_seq_len: continue
 
-            # Normal case: n_available >= wl
-            last_start_idx = n_available - wl
-            start_idx = 0
-            
-            # --- MODIFICATION 2: Main windowing loop ---
-            # Add a nested loop to generate prefixes from len 1 to wl
-            while start_idx <= last_start_idx:
-                # New nested loop for variable length
-                for current_length in range(1, wl + 1):
-                    window_step_indices = [available_indices[start_idx + off] for off in range(current_length)]
-                    window = [(tid, step_idx) for step_idx in window_step_indices]
+            # --- 3. Window Generation ---
+            windows_to_process = [] 
+
+            if mode == 'fixed':
+                curr = 0
+                while curr + wl <= n_available:
+                    windows_to_process.append(available_indices[curr : curr + wl])
+                    curr += wl
+
+            elif mode == 'block_prefix':
+                curr = 0
+                while curr < n_available:
+                    max_len_here = min(wl, n_available - curr)
+                    if max_len_here >= min_seq_len:
+                        for length in range(min_seq_len, max_len_here + 1):
+                            windows_to_process.append(available_indices[curr : curr + length])
+                    curr += wl
+
+            elif mode == 'sliding_prefix':
+                last_start = n_available - min_seq_len
+                curr = 0
+                while curr <= last_start:
+                    max_len_here = min(wl, n_available - curr)
+                    for length in range(min_seq_len, max_len_here + 1):
+                        windows_to_process.append(available_indices[curr : curr + length])
+                    curr += stride
+
+            # --- 4. Final Processing ---
+            for step_indices in windows_to_process:
+                window = [(tid, s_idx) for s_idx in step_indices]
+                
+                repeats = 1
+                is_tool_end = False
+                
+                # Check Tool End
+                if toolend_ratio > 1.0 and len(tool_end_indices) > 0:
+                    if not tool_end_indices.isdisjoint(step_indices):
+                        is_tool_end = True
+                        base = int(toolend_ratio)
+                        remainder = toolend_ratio - base
+                        repeats = base + (1 if random.random() < remainder else 0)
+                
+                for _ in range(repeats):
                     all_windows.append(window)
-                    
-                    if max_windows is not None and len(all_windows) >= max_windows:
-                        print(f"skill_inclusion_ratio={skill_inclusion_ratio}, skill-level data ratio: {np.round(skill_cnt/(skill_cnt+traj_cnt), 4)}")
-                        return all_windows
-                
-                start_idx += stride
-            # --- END MODIFICATION 2 ---
-
-            # --- MODIFICATION 3: Tail window logic ---
-            # Also generate all prefixes for the tail window
-            if include_tail and (last_start_idx % stride != 0):
-                # Check if this tail window is different from the last one added
-                # (start_idx was incremented, so 'start_idx - stride' is the last start)
-                last_added_start_idx = (start_idx - stride)
-                tail_start_idx = last_start_idx # This is n_available - wl
-                
-                if last_added_start_idx != tail_start_idx:
-                    # This is a new starting point, add all its prefixes
-                    for current_length in range(1, wl + 1):
-                        window_step_indices = [available_indices[tail_start_idx + off] for off in range(current_length)]
-                        window = [(tid, step_idx) for step_idx in window_step_indices]
-                        all_windows.append(window)
+                    if is_tool_end:
+                        tool_end_window_count += 1
                         
-                        if max_windows is not None and len(all_windows) >= max_windows:
-                            print(f"skill_inclusion_ratio={skill_inclusion_ratio}, skill-level data ratio: {np.round(skill_cnt/(skill_cnt+traj_cnt), 4)}")
-                            return all_windows
-            # --- END MODIFICATION 3 ---
-            
-        if not all_windows:
-            # Check if trajectory_lengths exists and is not empty before calling min
-            min_len = min(self.trajectory_lengths) if (self.trajectory_lengths and len(self.trajectory_lengths) > 0) else 0
-            raise ValueError(
-                "No windows created. "
-                f"window_length={wl}, stride={stride}, drop_short={drop_short}, "
-                f"include_tail={include_tail}, min_traj_len={min_len}, "
-                f"skill_inclusion_ratio={skill_inclusion_ratio}"
-            )
-            
-        # Handle case where skill_cnt + traj_cnt might be zero
-        skill_ratio = 0.0
-        if (skill_cnt + traj_cnt) > 0:
-            skill_ratio = np.round(skill_cnt / (skill_cnt + traj_cnt), 4)
-            
-        print(f"skill_inclusion_ratio={skill_inclusion_ratio}, skill-level data ratio: {skill_ratio}")
+                    if max_windows is not None and len(all_windows) >= max_windows:
+                        self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
+                        return all_windows
+
+        import pdb;pdb.set_trace()
+        self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
         return all_windows
+
+    def _print_stats(self, skill_cnt, traj_cnt, skill_conf, tool_win_cnt, total_win, tool_conf):
+        # Skill Stats
+        total_traj = skill_cnt + traj_cnt
+        actual_skill = np.round(skill_cnt / total_traj, 4) if total_traj > 0 else 0.0
+        
+        # Tool End Stats
+        # If tool_conf is 1.0, we might not have tracked tool_win_cnt (it stays 0), so we report N/A or 0
+        actual_tool = np.round(tool_win_cnt / total_win, 4) if total_win > 0 else 0.0
+        
+        print(f"Stats | Skill Config: {skill_conf}, Actual: {actual_skill} | ToolEnd Config: {tool_conf}, Actual Window Freq: {actual_tool}")
 
     def _get_all_steps(self) -> list[tuple[int, int]]:
         """Get the trajectory IDs and base indices for all steps in the dataset.
