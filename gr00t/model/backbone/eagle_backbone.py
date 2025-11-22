@@ -246,8 +246,8 @@ class EagleBackbone(nn.Module):
         load_bf16: bool = False,
         eagle_path: str | None = None,
         project_to_dim: int = 1536,
-        init_mode: bool = True,
         special_token_loss_weight: float = 2.0,
+        pred_nextstep: bool = False,
     ):
         """
         Args:
@@ -255,9 +255,9 @@ class EagleBackbone(nn.Module):
             tune_visual: whether to tune the visual model (default: False)
         """
         super().__init__()
-        self.init_mode = init_mode
         assert not reproject_vision, "Reproject vision is not implemented here, set to False"
 
+        self.pred_nextstep = pred_nextstep
         config = AutoConfig.from_pretrained(DEFAULT_EAGLE_PATH, trust_remote_code=True)
         self.eagle_model = AutoModel.from_config(config, trust_remote_code=True)
 
@@ -579,9 +579,10 @@ class EagleBackbone(nn.Module):
         mask_img = torch.isin(labels, self.img_ids.to(labels.device))
         labels[mask_img] = -100
 
-        # only predict next step
-        final_mask = find_last_step(labels, mask_img)
-        labels[final_mask] = -100
+        if self.pred_nextstep:
+            # only predict next step
+            final_mask = find_last_step(labels, mask_img)
+            labels[final_mask] = -100
 
         outputs = self.eagle_model(**eagle_input, return_dict=True)
         logits = outputs.logits
