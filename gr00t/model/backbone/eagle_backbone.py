@@ -535,6 +535,36 @@ class EagleBackbone(nn.Module):
         - eagle_input_ids / eagle_attention_mask / (pixel_values | video_pixel_values)
         - eagle_labels  (same shape; -100 where we don't supervise, e.g., [PAD_A])
         """
+        def find_last_step(labels, mask_img):
+            # 2. Find the index of the *last* image token in each row
+            seq_len = labels.shape[1]
+
+            # We find the *first* True from the right by flipping the tensor
+            # and using argmax.
+            flipped_mask = torch.flip(mask_img, dims=[1])
+            flipped_indices = torch.argmax(flipped_mask.long(), dim=1)
+            # Convert the "flipped" index back to a normal index from the left
+            last_img_indices = seq_len - 1 - flipped_indices
+
+            # 3. Correct for rows that have *no* image tokens
+            # For an all-False row, argmax returns 0. This incorrectly points to
+            # seq_len - 1, as if the last token was an image.
+            # We must find rows with no images and set their index to -1.
+            has_any_img = torch.any(mask_img, dim=1)
+            last_img_indices[~has_any_img] = -1
+
+            # 4. Create a final mask for all tokens up to and including the last image
+            # Create a tensor of indices: [[0, 1, 2, ..., seq_len-1]]
+            # Shape: [1, seq_len]
+            all_indices = torch.arange(seq_len, device=labels.device).unsqueeze(0)
+
+            # Broadcast compare: [batch_size, 1] <= [1, seq_len]
+            # This creates a [batch_size, seq_len] boolean mask where
+            # mask[i, j] is True if j <= last_img_indices[i]
+            final_mask = (all_indices <= last_img_indices.unsqueeze(1))
+
+            return final_mask
+
         if "eagle_llm_labels" not in vl_input:
             return torch.tensor(0.0, device=next(self.parameters()).device)
 
@@ -548,6 +578,10 @@ class EagleBackbone(nn.Module):
 
         mask_img = torch.isin(labels, self.img_ids.to(labels.device))
         labels[mask_img] = -100
+
+        # only predict next step
+        final_mask = find_last_step(labels, mask_img)
+        labels[final_mask] = -100
 
         outputs = self.eagle_model(**eagle_input, return_dict=True)
         logits = outputs.logits
@@ -942,6 +976,14 @@ class EagleBackbone(nn.Module):
                         device=input_ids.device, dtype=torch.long
                     )
                 
+                # Check the logits for the first item in the batch
+                for token_id in allowed_ids:
+                    # Ensure token_id is a simple integer for indexing
+                    if isinstance(token_id, torch.Tensor):
+                        token_id = token_id.item()
+                        
+                    print(f"Original logit for ID {token_id}: {next_token_logits[0, token_id].item()}")
+
                 # 2. Create a mask that allows *only* these tokens
                 neg_inf = torch.finfo(next_token_logits.dtype).min
                 mask = torch.full_like(next_token_logits, neg_inf)
@@ -949,7 +991,6 @@ class EagleBackbone(nn.Module):
                 # 3. Apply the mask
                 mask.scatter_(dim=-1, index=allowed_ids.unsqueeze(0).expand(next_token_logits.size(0), -1), value=0)
                 masked_logits = next_token_logits + mask
-                
                 # 4. Get the next token from the *masked* full-vocabulary logits
                 temperature = getattr(self.args, "route_temperature", 0.0) if hasattr(self, "args") else 0.0
                 if temperature and temperature > 0.0:
@@ -957,6 +998,7 @@ class EagleBackbone(nn.Module):
                     next_token_raw = torch.multinomial(probs, num_samples=1).squeeze(-1)
                 else:
                     next_token_raw = masked_logits.argmax(dim=-1)
+                # import pdb;pdb.set_trace()
 
             else:
                 # Normal generation: select the most likely token from the *entire* vocabulary.
