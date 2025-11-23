@@ -123,3 +123,9 @@ demo_data/gr00t-gr1-apple-to-shelf/
 tmp/
 output/
 demo_data/so101-table-cleanup/
+
+# checkpoint
+checkpoint/*
+rollouts/*
+
+*.slurm

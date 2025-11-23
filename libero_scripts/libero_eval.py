@@ -24,7 +24,7 @@ os.environ["PYTHONPATH"] = os.pathsep.join(
 if importlib.util.find_spec("libero") is None:
     raise ModuleNotFoundError(f"'libero' not found on sys.path. Tried: {_LIBERO_ROOT}")
 
-CACHE_DIR = "/fs/nexus-projects/wilddiffusion/cache"
+CACHE_DIR = "/fs/nexus-scratch/yliang17/Research/cache"
 
 os.environ["HF_HOME"] = CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
