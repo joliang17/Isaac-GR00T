@@ -128,8 +128,8 @@ class Gr00tPolicy(BasePolicy):
 
         # ADDED: Load transforms
         # self._load_metadata(Path("/fs/nexus-projects/wilddiffusion/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
-        self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
-        # self._load_metadata(self.model_path / "experiment_cfg")
+        # self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
+        self._load_metadata(self.model_path / "experiment_cfg")
         # Load horizons
         self._load_horizons()
 

@@ -269,8 +269,8 @@ def eval_libero(cfg) -> None:
                         total_successes += 1
                         break
                     t += 1
-                    if t % 10 == 0:
-                        print(f"current t: {t}")
+                    # if t % 10 == 0:
+                    #     print(f"current t: {t}")
 
                 except Exception as e:
                     traceback.print_exc()

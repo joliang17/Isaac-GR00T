@@ -25,6 +25,7 @@ if importlib.util.find_spec("libero") is None:
     raise ModuleNotFoundError(f"'libero' not found on sys.path. Tried: {_LIBERO_ROOT}")
 
 CACHE_DIR = "/fs/nexus-projects/wilddiffusion/cache"
+CACHE_DIR = "/fs/nexus-scratch/yliang17/Research/cache"
 
 os.environ["HF_HOME"] = CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
@@ -164,14 +165,14 @@ def eval_libero(cfg) -> None:
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
             ori_desc = task.language
-            dict_variant, _ = generate_instruction_variants(task_description)
+            # dict_variant, _ = generate_instruction_variants(task_description)
 
             # empty description
-            # list_description = [ori_desc]
-            list_description = []
-            list_description.append("")
-            list_description.extend(dict_variant['paraphrases'])
-            list_description.extend(dict_variant['contrasts'])
+            list_description = [ori_desc]
+            # list_description = []
+            # list_description.append("")
+            # list_description.extend(dict_variant['paraphrases'])
+            # list_description.extend(dict_variant['contrasts'])
 
             for task_description in tqdm.tqdm(list_description):
 

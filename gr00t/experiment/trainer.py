@@ -168,13 +168,14 @@ class DualBrainTrainer(transformers.Trainer):
                 try:
                     # save normal ckpt
                     # 1. Load a fresh instance of your base model
-                    base_model = GR00T_N1_5.from_pretrained("nvidia/GR00T-N1.5-3B", torch_dtype=torch.bfloat16 )
+                    base_model = GR00T_N1_5.from_pretrained(self.model.local_model_path, torch_dtype=torch.bfloat16 )
                     inference_model = PeftModel.from_pretrained(base_model, output_dir)
                     # p3 = inference_model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
                     # p4 = inference_model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
                     # print("loaded emb: Same storage?", p3.data_ptr() == p4.data_ptr() == p5.data_ptr())
                     merged_model = inference_model.merge_and_unload()
                     # p6 = merged_model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
+                    # p6 = merged_model.backbone.eagle_model.language_model.lm_head.special_head_B.weight
                     # p7 = merged_model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
                     # print("loaded emb: Same storage?", p6.data_ptr() == p7.data_ptr())
 

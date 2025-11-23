@@ -35,4 +35,6 @@ python scripts/gr00t_finetune.py \
   --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
   --run_name ${TASK_NAME} \
   --grad_norm 1.0 \
+  --tune_special_A \
+  --tune_special_B \
   --init_mode

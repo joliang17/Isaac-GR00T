@@ -707,6 +707,7 @@ class EagleBackbone(nn.Module):
                     print("\n--- [DEBUG] SPECIAL Tokens (Group A) ---")
                     print(f"Preds:  {''.join(decoded_pred_A)}")
                     print(f"Labels: {''.join(decoded_label_A)}")
+                    import pdb;pdb.set_trace()
 
                 if special_mask_B.any():
                     pred_sp_ids_B_small = special_logits_B[special_mask_B].argmax(dim=-1)
@@ -1036,13 +1037,13 @@ class EagleBackbone(nn.Module):
                             device=input_ids.device, dtype=torch.long
                         )
                     
-                    # Check the logits for the first item in the batch
-                    for token_id in allowed_ids:
-                        # Ensure token_id is a simple integer for indexing
-                        if isinstance(token_id, torch.Tensor):
-                            token_id = token_id.item()
+                    # # Check the logits for the first item in the batch
+                    # for token_id in allowed_ids:
+                    #     # Ensure token_id is a simple integer for indexing
+                    #     if isinstance(token_id, torch.Tensor):
+                    #         token_id = token_id.item()
                             
-                        print(f"Original logit for ID {token_id}: {next_token_logits[0, token_id].item()}")
+                        # print(f"Original logit for ID {token_id}: {next_token_logits[0, token_id].item()}")
 
                     # 2. Create a mask that allows *only* these tokens
                     neg_inf = torch.finfo(next_token_logits.dtype).min
