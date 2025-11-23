@@ -138,6 +138,10 @@ def eval_libero(cfg) -> None:
     data_config = DATA_CONFIG_MAP[cfg.data_config]
     modality_config = data_config.modality_config()
     modality_transform = data_config.transform()
+
+    data_config_base = DATA_CONFIG_MAP['libero_original']
+    modality_config_base = data_config_base.modality_config()
+    modality_transform_base = data_config_base.transform()
     action_keys = ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
 
     # Start evaluation
@@ -157,6 +161,8 @@ def eval_libero(cfg) -> None:
             model_path=cfg.model_path,
             modality_config=modality_config,
             modality_transform=modality_transform,
+            modality_config_base=modality_config_base,
+            modality_transform_base=modality_transform_base,
             embodiment_tag=cfg.embodiment_tag,
             denoising_steps=cfg.denoising_steps,
             device="cuda" if torch.cuda.is_available() else "cpu",
@@ -226,7 +232,7 @@ def eval_libero(cfg) -> None:
                         traj_img_count += 1
                         # task instruction is already included in past_key_values_traj
                         obs_dict = process_observation(obs, cur_instr, headless=cfg.headless)
-                        action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved')
+                        action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
                         if tools_output != '':
                             print(f"Call Tools: {tools_output}")
                             # generated skill instructions
@@ -236,10 +242,11 @@ def eval_libero(cfg) -> None:
                             # for step t, regenerate the action with the new instructions
                             obs_dict_tools = process_observation(obs, '[SKILL_MODE]' + tools_output, headless=cfg.headless)
                             action_chunk, invalid_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict_tools, past_key_values=past_key_values_tools, mode='interleaved', call_baseline=call_baseline, inside_tool=True)
-                            if call_baseline:
-                                call_action = action_chunk_bs
-                            else:
-                                call_action = action_chunk
+                            
+                        if call_baseline:
+                            call_action = action_chunk_bs
+                        else:
+                            call_action = action_chunk
 
                         # generate action_tokens for execution
                         action = convert_to_libero_action(action_chunk, action_keys)

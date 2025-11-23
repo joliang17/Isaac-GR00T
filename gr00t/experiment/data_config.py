@@ -1083,7 +1083,7 @@ class LIEBROTrajDataConfig(BaseDataConfig):
 class LiberoDataConfig(BaseDataConfig):
     video_keys = [
         "video.image",
-        # "video.wrist_image",
+        "video.wrist_image",
     ]
     state_keys = [
         "state.x",

@@ -84,6 +84,8 @@ class Gr00tPolicy(BasePolicy):
         embodiment_tag: Union[str, EmbodimentTag],
         modality_config: Dict[str, ModalityConfig],
         modality_transform: ComposedModalityTransform,
+        modality_config_base = None,
+        modality_transform_base = None,
         denoising_steps: Optional[int] = None,
         device: Union[int, str] = "cuda" if torch.cuda.is_available() else "cpu",
         call_baseline: bool=False,
@@ -112,6 +114,15 @@ class Gr00tPolicy(BasePolicy):
         self._modality_config = modality_config
         self._modality_transform = modality_transform
         self._modality_transform.eval()  # set this to eval mode
+
+        if modality_config_base is not None:
+            self._modality_config_base = modality_config_base
+            self._modality_transform_base = modality_transform_base
+        else:
+            self._modality_config_base = modality_config
+            self._modality_transform_base = modality_transform
+        self._modality_transform_base.eval()  # set this to eval mode
+
         self.model_path = Path(model_path)
         self.device = device
         self.call_baseline = call_baseline
@@ -130,6 +141,7 @@ class Gr00tPolicy(BasePolicy):
         # self._load_metadata(Path("/fs/nexus-projects/wilddiffusion/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
         # self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
         self._load_metadata(self.model_path / "experiment_cfg")
+        self._load_metadata(self.model_path / "experiment_cfg", base=True)
         # Load horizons
         self._load_horizons()
 
@@ -140,7 +152,7 @@ class Gr00tPolicy(BasePolicy):
                 self.model.action_head.num_inference_timesteps = denoising_steps
                 print(f"Set action denoising steps to {denoising_steps}")
 
-    def apply_transforms(self, obs: Dict[str, Any]) -> Dict[str, Any]:
+    def apply_transforms(self, obs: Dict[str, Any], base: bool=False) -> Dict[str, Any]:
         """
         Apply transforms to the observation.
 
@@ -150,10 +162,14 @@ class Gr00tPolicy(BasePolicy):
         Returns:
             Dict[str, Any]: The transformed observation.
         """
-        # Ensure correct dimensions before applying transforms
-        return self._modality_transform(obs)
+        if not base:
+            # Ensure correct dimensions before applying transforms
+            return self._modality_transform(obs)
+        else:
+            return self._modality_transform_base(obs)
 
-    def unapply_transforms(self, action: Dict[str, Any]) -> Dict[str, Any]:
+
+    def unapply_transforms(self, action: Dict[str, Any], base: bool=False) -> Dict[str, Any]:
         """
         Unapply transforms to the action.
 
@@ -163,7 +179,11 @@ class Gr00tPolicy(BasePolicy):
         Returns:
             Dict[str, Any]: The untransformed action.
         """
-        return self._modality_transform.unapply(action)
+        if not base:
+            return self._modality_transform.unapply(action)
+        else:
+            return self._modality_transform_base.unapply(action)
+
 
     def get_action(self, observations: Dict[str, Any], img_count: int=1, past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> Dict[str, Any]:
         """
@@ -197,8 +217,10 @@ class Gr00tPolicy(BasePolicy):
             if not isinstance(v, np.ndarray):
                 observations[k] = np.array(v)
 
-        observations_bs = observations.copy()
+        observations_backup = observations.copy()
+        observations_bs = observations_backup.copy()
         # Apply transforms
+        del observations['video.wrist_image']
         normalized_input = self.apply_transforms(observations)
         normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False, inside_tool=inside_tool, )
         unnormalized_action = self._get_unnormalized_action(normalized_action, )
@@ -208,10 +230,10 @@ class Gr00tPolicy(BasePolicy):
         unnormalized_action_bs = None
         if call_baseline:
             observations_bs['annotation.human.action.task_description'] = np.array([observations_bs['annotation.human.action.task_description'].item().replace('[TRAJ_MODE]', '').replace('[SKILL_MODE]', '')])
-            normalized_input_bs = self.apply_transforms(observations_bs)
+            normalized_input_bs = self.apply_transforms(observations_bs, base=True)
 
             normalized_action_bs, _, _, _ = self._get_action_from_normalized_input(normalized_input_bs, past_key_values=None, mode="baseline", call_baseline=True)
-            unnormalized_action_bs = self._get_unnormalized_action(normalized_action_bs, )
+            unnormalized_action_bs = self._get_unnormalized_action(normalized_action_bs, base=True)
             if not is_batch:
                 unnormalized_action_bs = squeeze_dict_values(unnormalized_action_bs)
         return unnormalized_action, tools_output, past_key_values, unnormalized_action_bs
@@ -227,8 +249,8 @@ class Gr00tPolicy(BasePolicy):
         normalized_action = model_pred["action_pred"].float()
         return normalized_action, backbone_outputs, tools_output, past_key_values
 
-    def _get_unnormalized_action(self, normalized_action: torch.Tensor) -> Dict[str, Any]:
-        return self.unapply_transforms({"action": normalized_action.cpu()})
+    def _get_unnormalized_action(self, normalized_action: torch.Tensor, base: bool=False) -> Dict[str, Any]:
+        return self.unapply_transforms({"action": normalized_action.cpu()}, base=base)
 
     def get_modality_config(self) -> Dict[str, ModalityConfig]:
         """
@@ -271,11 +293,15 @@ class Gr00tPolicy(BasePolicy):
         return True
 
     def _load_model(self, model_path):
-        def check_horizon(cur_model):
+        def check_horizon(cur_model, base: bool=False):
 
             # Update action_horizon to match modality config
             # Get the expected action horizon from the modality config
-            expected_action_horizon = len(self._modality_config["action"].delta_indices)
+            if not base:
+                expected_action_horizon = len(self._modality_config["action"].delta_indices)
+            else:
+                expected_action_horizon = len(self._modality_config_base["action"].delta_indices)
+
             if expected_action_horizon != cur_model.action_head.config.action_horizon:
                 print(
                     f"Policy: Recreating action head with action_horizon {expected_action_horizon} (was {cur_model.action_head.config.action_horizon})"
@@ -322,10 +348,10 @@ class Gr00tPolicy(BasePolicy):
             base_model = GR00T_N1_5.from_pretrained("youliangtan/gr00t-n1.5-libero-long-posttrain", torch_dtype=COMPUTE_DTYPE, )
             base_model.eval()  # Set model to eval mode
             base_model.to(device=self.device)  # type: ignore
-            base_model = check_horizon(base_model)
+            base_model = check_horizon(base_model, base=True)
             self.base_model = base_model
 
-    def _load_metadata(self, exp_cfg_dir: Path):
+    def _load_metadata(self, exp_cfg_dir: Path, base: bool=False):
         """Load the transforms for the model."""
         # Load metadata for normalization stats
         metadata_path = exp_cfg_dir / "metadata.json"
@@ -342,7 +368,11 @@ class Gr00tPolicy(BasePolicy):
 
         metadata = DatasetMetadata.model_validate(metadata_dict)
 
-        self._modality_transform.set_metadata(metadata)
+        if not base:
+            self._modality_transform.set_metadata(metadata)
+        else:
+            self._modality_transform_base.set_metadata(metadata)
+
         self.metadata = metadata
 
     def _load_horizons(self):

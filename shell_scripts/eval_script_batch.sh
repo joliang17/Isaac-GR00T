@@ -21,7 +21,7 @@ source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 # export CUDA_LAUNCH_BLOCKING=1
 # export TORCH_SHOW_CPP_STACKTRACES=1
 # export TORCH_USE_CUDA_DSA=1
-export OPENAI_API_KEY="
+export OPENAI_API_KEY=""
 run_eval () {
     model_ckpt="$1"
     base_dir="/fs/nexus-scratch/yliang17/Research/VLA/saved_folder/checkpoint"
@@ -61,7 +61,7 @@ run_eval () {
         --num_steps_wait 10 \
         --num_trials_per_task 5 \
         --embodiment_tag new_embodiment \
-        --data_config libero_original \
+        --data_config libero_traj_arms \
         --denoising_steps 8 \
         --model_path "${final_model_path}" \
         --model_name "${model_ckpt}" \
@@ -74,8 +74,8 @@ run_eval () {
 # run_eval "stage2_freezeembB_nextstep_skip_action"
 # run_eval "stage2_onlyembA_nextstep_skip_action"
 
-run_eval "stage2_freezeembB_allstep_skip_action"
-# run_eval "stage2_onlyembA_allstep_skip_action"
+# run_eval "stage2_freezeembB_allstep_skip_action"
+run_eval "stage2_onlyembA_allstep_skip_action"
 
 # run_eval "stage2_freezeembB_nextstep_skip_action_slicing"
 # run_eval "stage2_onlyembA_nextstep_skip_action_slicing"
