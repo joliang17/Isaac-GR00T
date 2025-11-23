@@ -1036,15 +1036,15 @@ class EagleBackbone(nn.Module):
                             [self.actions_id, self.skills_end], 
                             device=input_ids.device, dtype=torch.long
                         )
+                        # Check the logits for the first item in the batch
+                        for token_id in allowed_ids:
+                            # Ensure token_id is a simple integer for indexing
+                            if isinstance(token_id, torch.Tensor):
+                                token_id = token_id.item()
+                                
+                            print(f"Original logit for ID {token_id}: {next_token_logits[0, token_id].item()}")
+                        import pdb;pdb.set_trace()
                     
-                    # # Check the logits for the first item in the batch
-                    # for token_id in allowed_ids:
-                    #     # Ensure token_id is a simple integer for indexing
-                    #     if isinstance(token_id, torch.Tensor):
-                    #         token_id = token_id.item()
-                            
-                        # print(f"Original logit for ID {token_id}: {next_token_logits[0, token_id].item()}")
-
                     # 2. Create a mask that allows *only* these tokens
                     neg_inf = torch.finfo(next_token_logits.dtype).min
                     mask = torch.full_like(next_token_logits, neg_inf)
