@@ -31,4 +31,3 @@ python3 libero_scripts/libero_eval.py \
     --embodiment_tag new_embodiment \
     --data_config libero_original \
     --denoising_steps 8
-
