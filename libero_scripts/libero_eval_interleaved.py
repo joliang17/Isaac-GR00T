@@ -133,7 +133,7 @@ def eval_libero(cfg) -> None:
                 max_steps = 600  # longest training demo has 270 steps
             elif cfg.task_suite_name == "libero_10":
                 # max_steps = 500  # longest training demo has 505 steps
-                max_steps = 200  # longest training demo has 505 steps
+                max_steps = 1000  # longest training demo has 505 steps
             elif cfg.task_suite_name == "libero_90":
                 max_steps = 400  # longest training demo has 373 steps
 
@@ -175,7 +175,6 @@ def eval_libero(cfg) -> None:
                         obs_dict = process_observation(obs, cur_instr, headless=cfg.headless)
                         obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
                         action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
-                        # action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict_base, mode='baseline', call_baseline=call_baseline, )
                         if tools_output != '':
                             print(f"Call Tools: {tools_output}")
                             # generated skill instructions
@@ -185,7 +184,6 @@ def eval_libero(cfg) -> None:
                             # for step t, regenerate the action with the new instructions
                             obs_dict_tools = process_observation(obs, '[SKILL_MODE]' + tools_output, headless=cfg.headless)
                             obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
-                            # action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict_base, mode='baseline', call_baseline=call_baseline, )
                             action_chunk, invalid_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict_tools, observations_base=obs_dict_base, past_key_values=past_key_values_tools, mode='interleaved', call_baseline=call_baseline, inside_tool=True)
                             
                         if call_baseline:
@@ -195,17 +193,11 @@ def eval_libero(cfg) -> None:
 
                         # generate action_tokens for execution
                         action = convert_to_libero_action(action_chunk, action_keys)
-                        # with open('saved_action.pkl', 'wb') as f:
-                        #     pickle.dump((action_chunk, action), f)
-                        # with open('saved_action.pkl', 'rb') as f:
-                        #     action_chunk_1, action_1 = pickle.load(f)
-                        # import pdb;pdb.set_trace()
                     else:
                         # inside tools
                         # skill instruction is already included in past_key_values_traj
                         obs_dict = process_observation(obs, '', headless=cfg.headless)
                         obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
-                        # action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict_base, mode='baseline', call_baseline=call_baseline, )
                         action_chunk, tools_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, past_key_values=past_key_values_tools, mode='interleaved', inside_tool=True, call_baseline=call_baseline, )
                         if call_baseline:
                             action_chunk = action_chunk_bs

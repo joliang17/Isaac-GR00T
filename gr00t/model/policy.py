@@ -252,16 +252,7 @@ class Gr00tPolicy(BasePolicy):
             unnormalized_action_bs = self._get_unnormalized_action(normalized_action_bs, base=True)
             if not is_batch:
                 unnormalized_action_bs = squeeze_dict_values(unnormalized_action_bs)
-            # import pdb;pdb.set_trace()
-            # # with open('saved_res_base.pkl', 'wb') as f:
-            # #     pickle.dump((observations_backup, observations_bs, normalized_input_bs, normalized_action_bs, unnormalized_action_bs, ), f)
-            # with open('saved_res_base.pkl', 'rb') as f: observations_backup_1, observations_bs_1, normalized_input_bs_1, normalized_action_bs_1, unnormalized_action_bs_1 = pickle.load(f)
-            # check_obs = {key: (observations_backup[key] == observations_backup_1[key]).all() for key in observations_backup_1.keys()}
-            # check_obs_detail = {key: observations_backup[key] == observations_backup_1[key] for key in observations_backup_1.keys()}
-            # check_input = {key: (normalized_input_bs[key] == normalized_input_bs_1[key]).all() for key in normalized_input_bs.keys()}
-            # check_actions_unnorm = {key: (unnormalized_action_bs[key] == unnormalized_action_bs_1[key]).all() for key in unnormalized_action_bs.keys()}
-            # import pdb;pdb.set_trace()
-
+            
         return unnormalized_action, tools_output, past_key_values, unnormalized_action_bs
 
     def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> torch.Tensor:
