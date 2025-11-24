@@ -88,6 +88,7 @@ class Gr00tPolicy(BasePolicy):
         modality_transform_base = None,
         denoising_steps: Optional[int] = None,
         device: Union[int, str] = "cuda" if torch.cuda.is_available() else "cpu",
+        data_config: str='libero_original',
         call_baseline: bool=False,
     ):
         """
@@ -111,6 +112,7 @@ class Gr00tPolicy(BasePolicy):
                 f"Model not found or avail in the huggingface hub. Loading from local path: {model_path}"
             )
 
+        self.data_config = data_config
         self._modality_config = modality_config
         self._modality_transform = modality_transform
         self._modality_transform.eval()  # set this to eval mode
@@ -139,7 +141,8 @@ class Gr00tPolicy(BasePolicy):
 
         # ADDED: Load transforms
         # self._load_metadata(Path("/fs/nexus-projects/wilddiffusion/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
-        self._load_metadata(self.model_path / "experiment_cfg")
+        # self._load_metadata(self.model_path / "experiment_cfg")
+        self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
         self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"), base=True)
         # Load horizons
         self._load_horizons()
@@ -216,15 +219,6 @@ class Gr00tPolicy(BasePolicy):
             if not isinstance(v, np.ndarray):
                 observations[k] = np.array(v)
 
-        observations_bs = observations.copy()
-        # Apply transforms
-        del observations['video.wrist_image']
-        normalized_input = self.apply_transforms(observations)
-        normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False, inside_tool=inside_tool, )
-        unnormalized_action = self._get_unnormalized_action(normalized_action, )
-        if not is_batch:
-            unnormalized_action = squeeze_dict_values(unnormalized_action)
-
         if observations_base is not None:
             # let the get_action handles both batch and single input
             is_batch = self._check_state_is_batched(observations_base)
@@ -236,17 +230,38 @@ class Gr00tPolicy(BasePolicy):
                 if not isinstance(v, np.ndarray):
                     observations_base[k] = np.array(v)
             observations_bs = observations_base.copy()
+        else:
+            observations_bs = observations.copy()
+
+        # Apply transforms
+        if self.data_config == 'libero_traj_arms':
+            del observations['video.wrist_image']
+        normalized_input = self.apply_transforms(observations)
+        normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False, inside_tool=inside_tool, )
+        unnormalized_action = self._get_unnormalized_action(normalized_action, )
+        if not is_batch:
+            unnormalized_action = squeeze_dict_values(unnormalized_action)
 
         unnormalized_action_bs = None
         if call_baseline:
-            import pdb;pdb.set_trace()
+            observations_backup = observations_bs.copy()
             observations_bs['annotation.human.action.task_description'] = np.array([observations_bs['annotation.human.action.task_description'].item().replace('[TRAJ_MODE]', '').replace('[SKILL_MODE]', '')])
             normalized_input_bs = self.apply_transforms(observations_bs, base=True)
 
-            normalized_action_bs, _, _, _ = self._get_action_from_normalized_input(normalized_input_bs, past_key_values=None, mode="baseline", call_baseline=True)
+            normalized_action_bs, _, _, _ = self._get_action_from_normalized_input(normalized_input_bs, mode="baseline", call_baseline=True)
             unnormalized_action_bs = self._get_unnormalized_action(normalized_action_bs, base=True)
             if not is_batch:
                 unnormalized_action_bs = squeeze_dict_values(unnormalized_action_bs)
+            # import pdb;pdb.set_trace()
+            # # with open('saved_res_base.pkl', 'wb') as f:
+            # #     pickle.dump((observations_backup, observations_bs, normalized_input_bs, normalized_action_bs, unnormalized_action_bs, ), f)
+            # with open('saved_res_base.pkl', 'rb') as f: observations_backup_1, observations_bs_1, normalized_input_bs_1, normalized_action_bs_1, unnormalized_action_bs_1 = pickle.load(f)
+            # check_obs = {key: (observations_backup[key] == observations_backup_1[key]).all() for key in observations_backup_1.keys()}
+            # check_obs_detail = {key: observations_backup[key] == observations_backup_1[key] for key in observations_backup_1.keys()}
+            # check_input = {key: (normalized_input_bs[key] == normalized_input_bs_1[key]).all() for key in normalized_input_bs.keys()}
+            # check_actions_unnorm = {key: (unnormalized_action_bs[key] == unnormalized_action_bs_1[key]).all() for key in unnormalized_action_bs.keys()}
+            # import pdb;pdb.set_trace()
+
         return unnormalized_action, tools_output, past_key_values, unnormalized_action_bs
 
     def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> torch.Tensor:
@@ -390,12 +405,12 @@ class Gr00tPolicy(BasePolicy):
         """Load the horizons needed for the model."""
         # Get modality configs
         # Video horizons
-        self._video_delta_indices = np.array(self._modality_config["video"].delta_indices)
+        self._video_delta_indices = np.array(self._modality_config_base["video"].delta_indices)
         self._assert_delta_indices(self._video_delta_indices)
         self._video_horizon = len(self._video_delta_indices)
         # State horizons (if used)
-        if "state" in self._modality_config:
-            self._state_delta_indices = np.array(self._modality_config["state"].delta_indices)
+        if "state" in self._modality_config_base:
+            self._state_delta_indices = np.array(self._modality_config_base["state"].delta_indices)
             self._assert_delta_indices(self._state_delta_indices)
             self._state_horizon = len(self._state_delta_indices)
         else:

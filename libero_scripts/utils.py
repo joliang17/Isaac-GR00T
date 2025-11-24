@@ -9,9 +9,24 @@ import numpy as np
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 import cv2
+import random
+import torch
 
 DATE = time.strftime("%Y_%m_%d")
 DATE_TIME = time.strftime("%Y_%m_%d-%H_%M_%S")
+
+
+def set_seed(seed=42):
+    """Sets the seed for python, numpy, and torch to ensure reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    
+    # Optional: Force deterministic algorithms (can slow down performance)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def get_libero_env(task, resolution=256):
@@ -31,6 +46,75 @@ def get_libero_env(task, resolution=256):
     )  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description
 
+
+def process_observation(obs, lang: str, headless:bool=False):
+    """Convert Libero observation to GR00T format."""
+    xyz = obs["robot0_eef_pos"]
+    rpy = quat2axisangle(obs["robot0_eef_quat"])
+    gripper = obs["robot0_gripper_qpos"]
+    img, wrist_img = get_libero_image(obs)
+    new_obs = {
+        "video.image": np.expand_dims(img, axis=0),
+        "video.wrist_image": np.expand_dims(wrist_img, axis=0),
+        "state.x": np.array([[xyz[0]]]),
+        "state.y": np.array([[xyz[1]]]),
+        "state.z": np.array([[xyz[2]]]),
+        "state.roll": np.array([[rpy[0]]]),
+        "state.pitch": np.array([[rpy[1]]]),
+        "state.yaw": np.array([[rpy[2]]]),
+        "state.gripper": np.expand_dims(gripper, axis=0),
+        "annotation.human.action.task_description": [lang],
+    }
+    # if not headless:
+    #     show_obs_images_cv2(new_obs)
+    return new_obs
+
+
+def show_obs_images_cv2(new_obs):
+    # remove batch dim
+    img_agent = new_obs["video.image"][0]
+    img_agent_bgr = cv2.cvtColor(img_agent, cv2.COLOR_RGB2BGR)
+    cv2.imshow("Agent View", img_agent_bgr)
+
+    # convert RGB -> BGR for OpenCV
+    # img_wrist = new_obs["video.wrist_image"][0]
+    # img_wrist_bgr = cv2.cvtColor(img_wrist, cv2.COLOR_RGB2BGR)
+    # cv2.imshow("Wrist View", img_wrist_bgr)
+    cv2.waitKey(1)
+
+
+def summarize_obs(obs_dict):
+    summary = {}
+    for k, v in obs_dict.items():
+        if isinstance(v, torch.Tensor):
+            summary[k] = {"shape": tuple(v.shape), "dtype": v.dtype, "device": v.device}
+        elif isinstance(v, np.ndarray):
+            summary[k] = {"shape": v.shape, "dtype": v.dtype}
+        else:
+            summary[k] = type(v).__name__
+    pprint.pprint(summary)
+
+
+def convert_to_libero_action(
+    action_chunk: dict[str, np.array], action_keys, idx: int = 0
+) -> np.ndarray:
+    """Convert GR00T action chunk to Libero format.
+
+    Args:
+        action_chunk: Dictionary of action components from GR00T policy
+        idx: Index of action to extract from chunk (default: 0 for first action)
+
+    Returns:
+        7-dim numpy array: [dx, dy, dz, droll, dpitch, dyaw, gripper]
+    """
+    action_components = [
+        np.atleast_1d(action_chunk[f"action.{key}"][idx])[0] for key in action_keys
+    ]
+    action_array = np.array(action_components, dtype=np.float32)
+    action_array = normalize_gripper_action(action_array, binarize=True)
+    assert len(action_array) == 7, f"Expected 7-dim action, got {len(action_array)}"
+    return action_array
+    
 
 def get_libero_dummy_action():
     """Get dummy/no-op action, used to roll out the simulation while the robot does nothing."""

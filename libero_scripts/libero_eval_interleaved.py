@@ -2,6 +2,7 @@ import os
 import sys
 import pathlib
 import traceback
+import pickle
 # --- path bootstrap: make GR00T and LIBERO importable ---
 import sys, os, pathlib, importlib.util
 
@@ -48,81 +49,19 @@ from libero_scripts.utils import (
     normalize_gripper_action,
     quat2axisangle,
     save_rollout_video,
+    process_observation,
+    show_obs_images_cv2,
+    convert_to_libero_action,
+    summarize_obs,
+    set_seed
 )
 from gr00t.model.policy import Gr00tPolicy
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from libero.libero import benchmark
+set_seed(42)
 log_dir = "logs/"
 os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
 
-
-def summarize_obs(obs_dict):
-    summary = {}
-    for k, v in obs_dict.items():
-        if isinstance(v, torch.Tensor):
-            summary[k] = {"shape": tuple(v.shape), "dtype": v.dtype, "device": v.device}
-        elif isinstance(v, np.ndarray):
-            summary[k] = {"shape": v.shape, "dtype": v.dtype}
-        else:
-            summary[k] = type(v).__name__
-    pprint.pprint(summary)
-
-
-def show_obs_images_cv2(new_obs):
-    # remove batch dim
-    img_agent = new_obs["video.image"][0]
-    img_agent_bgr = cv2.cvtColor(img_agent, cv2.COLOR_RGB2BGR)
-    cv2.imshow("Agent View", img_agent_bgr)
-
-    # convert RGB -> BGR for OpenCV
-    # img_wrist = new_obs["video.wrist_image"][0]
-    # img_wrist_bgr = cv2.cvtColor(img_wrist, cv2.COLOR_RGB2BGR)
-    # cv2.imshow("Wrist View", img_wrist_bgr)
-    cv2.waitKey(1)
-
-
-def process_observation(obs, lang: str, headless:bool=False):
-    """Convert Libero observation to GR00T format."""
-    xyz = obs["robot0_eef_pos"]
-    rpy = quat2axisangle(obs["robot0_eef_quat"])
-    gripper = obs["robot0_gripper_qpos"]
-    img, wrist_img = get_libero_image(obs)
-    new_obs = {
-        "video.image": np.expand_dims(img, axis=0),
-        "video.wrist_image": np.expand_dims(wrist_img, axis=0),
-        "state.x": np.array([[xyz[0]]]),
-        "state.y": np.array([[xyz[1]]]),
-        "state.z": np.array([[xyz[2]]]),
-        "state.roll": np.array([[rpy[0]]]),
-        "state.pitch": np.array([[rpy[1]]]),
-        "state.yaw": np.array([[rpy[2]]]),
-        "state.gripper": np.expand_dims(gripper, axis=0),
-        "annotation.human.action.task_description": [lang],
-    }
-    # if not headless:
-    #     show_obs_images_cv2(new_obs)
-    return new_obs
-
-def convert_to_libero_action(
-    action_chunk: dict[str, np.array], action_keys, idx: int = 0
-) -> np.ndarray:
-    """Convert GR00T action chunk to Libero format.
-
-    Args:
-        action_chunk: Dictionary of action components from GR00T policy
-        idx: Index of action to extract from chunk (default: 0 for first action)
-
-    Returns:
-        7-dim numpy array: [dx, dy, dz, droll, dpitch, dyaw, gripper]
-    """
-    action_components = [
-        np.atleast_1d(action_chunk[f"action.{key}"][idx])[0] for key in action_keys
-    ]
-    action_array = np.array(action_components, dtype=np.float32)
-    action_array = normalize_gripper_action(action_array, binarize=True)
-    assert len(action_array) == 7, f"Expected 7-dim action, got {len(action_array)}"
-    return action_array
-    
 
 def eval_libero(cfg) -> None:
     call_baseline = cfg.call_baseline 
@@ -166,6 +105,7 @@ def eval_libero(cfg) -> None:
             embodiment_tag=cfg.embodiment_tag,
             denoising_steps=cfg.denoising_steps,
             device="cuda" if torch.cuda.is_available() else "cpu",
+            data_config=cfg.data_config, 
             call_baseline=call_baseline,
         )
 
@@ -192,7 +132,8 @@ def eval_libero(cfg) -> None:
             elif cfg.task_suite_name == "libero_goal":
                 max_steps = 600  # longest training demo has 270 steps
             elif cfg.task_suite_name == "libero_10":
-                max_steps = 500  # longest training demo has 505 steps
+                # max_steps = 500  # longest training demo has 505 steps
+                max_steps = 200  # longest training demo has 505 steps
             elif cfg.task_suite_name == "libero_90":
                 max_steps = 400  # longest training demo has 373 steps
 
@@ -234,7 +175,7 @@ def eval_libero(cfg) -> None:
                         obs_dict = process_observation(obs, cur_instr, headless=cfg.headless)
                         obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
                         action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
-
+                        # action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict_base, mode='baseline', call_baseline=call_baseline, )
                         if tools_output != '':
                             print(f"Call Tools: {tools_output}")
                             # generated skill instructions
@@ -244,25 +185,32 @@ def eval_libero(cfg) -> None:
                             # for step t, regenerate the action with the new instructions
                             obs_dict_tools = process_observation(obs, '[SKILL_MODE]' + tools_output, headless=cfg.headless)
                             obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
+                            # action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict_base, mode='baseline', call_baseline=call_baseline, )
                             action_chunk, invalid_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict_tools, observations_base=obs_dict_base, past_key_values=past_key_values_tools, mode='interleaved', call_baseline=call_baseline, inside_tool=True)
                             
                         if call_baseline:
-                            call_action = action_chunk_bs
+                            action_chunk = action_chunk_bs
                         else:
-                            call_action = action_chunk
+                            action_chunk = action_chunk
 
                         # generate action_tokens for execution
                         action = convert_to_libero_action(action_chunk, action_keys)
+                        # with open('saved_action.pkl', 'wb') as f:
+                        #     pickle.dump((action_chunk, action), f)
+                        # with open('saved_action.pkl', 'rb') as f:
+                        #     action_chunk_1, action_1 = pickle.load(f)
+                        # import pdb;pdb.set_trace()
                     else:
                         # inside tools
                         # skill instruction is already included in past_key_values_traj
                         obs_dict = process_observation(obs, '', headless=cfg.headless)
                         obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
+                        # action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict_base, mode='baseline', call_baseline=call_baseline, )
                         action_chunk, tools_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, past_key_values=past_key_values_tools, mode='interleaved', inside_tool=True, call_baseline=call_baseline, )
                         if call_baseline:
-                            call_action = action_chunk_bs
+                            action_chunk = action_chunk_bs
                         else:
-                            call_action = action_chunk
+                            action_chunk = action_chunk
 
                         if tools_output == '[TOOLS_END]':
                             # skill finished, no action is needed at the current step

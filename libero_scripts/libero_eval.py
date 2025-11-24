@@ -47,82 +47,20 @@ from libero_scripts.utils import (
     normalize_gripper_action,
     quat2axisangle,
     save_rollout_video,
+    process_observation,
+    show_obs_images_cv2,
+    convert_to_libero_action,
+    summarize_obs,
+    set_seed
 )
 from libero_scripts.gpt_call import generate_instruction_variants
 from gr00t.model.policy import Gr00tPolicy
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from libero.libero import benchmark
+set_seed(42)
 log_dir = "logs/"
 os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
 
-
-def summarize_obs(obs_dict):
-    summary = {}
-    for k, v in obs_dict.items():
-        if isinstance(v, torch.Tensor):
-            summary[k] = {"shape": tuple(v.shape), "dtype": v.dtype, "device": v.device}
-        elif isinstance(v, np.ndarray):
-            summary[k] = {"shape": v.shape, "dtype": v.dtype}
-        else:
-            summary[k] = type(v).__name__
-    pprint.pprint(summary)
-
-
-def show_obs_images_cv2(new_obs):
-    # remove batch dim
-    img_agent = new_obs["video.image"][0]
-    img_agent_bgr = cv2.cvtColor(img_agent, cv2.COLOR_RGB2BGR)
-    cv2.imshow("Agent View", img_agent_bgr)
-
-    # convert RGB -> BGR for OpenCV
-    # img_wrist = new_obs["video.wrist_image"][0]
-    # img_wrist_bgr = cv2.cvtColor(img_wrist, cv2.COLOR_RGB2BGR)
-    # cv2.imshow("Wrist View", img_wrist_bgr)
-    cv2.waitKey(1)
-
-
-def process_observation(obs, lang: str, headless:bool=False):
-    """Convert Libero observation to GR00T format."""
-    xyz = obs["robot0_eef_pos"]
-    rpy = quat2axisangle(obs["robot0_eef_quat"])
-    gripper = obs["robot0_gripper_qpos"]
-    img, wrist_img = get_libero_image(obs)
-    new_obs = {
-        "video.image": np.expand_dims(img, axis=0),
-        "video.wrist_image": np.expand_dims(wrist_img, axis=0),
-        "state.x": np.array([[xyz[0]]]),
-        "state.y": np.array([[xyz[1]]]),
-        "state.z": np.array([[xyz[2]]]),
-        "state.roll": np.array([[rpy[0]]]),
-        "state.pitch": np.array([[rpy[1]]]),
-        "state.yaw": np.array([[rpy[2]]]),
-        "state.gripper": np.expand_dims(gripper, axis=0),
-        "annotation.human.action.task_description": [lang],
-    }
-    # if not headless:
-    #     show_obs_images_cv2(new_obs)
-    return new_obs
-
-def convert_to_libero_action(
-    action_chunk: dict[str, np.array], action_keys, idx: int = 0
-) -> np.ndarray:
-    """Convert GR00T action chunk to Libero format.
-
-    Args:
-        action_chunk: Dictionary of action components from GR00T policy
-        idx: Index of action to extract from chunk (default: 0 for first action)
-
-    Returns:
-        7-dim numpy array: [dx, dy, dz, droll, dpitch, dyaw, gripper]
-    """
-    action_components = [
-        np.atleast_1d(action_chunk[f"action.{key}"][idx])[0] for key in action_keys
-    ]
-    action_array = np.array(action_components, dtype=np.float32)
-    action_array = normalize_gripper_action(action_array, binarize=True)
-    assert len(action_array) == 7, f"Expected 7-dim action, got {len(action_array)}"
-    return action_array
-    
 
 def eval_libero(cfg) -> None:
     # Initialize LIBERO task suite
@@ -196,7 +134,7 @@ def eval_libero(cfg) -> None:
                 elif cfg.task_suite_name == "libero_goal":
                     max_steps = 600  # longest training demo has 270 steps
                 elif cfg.task_suite_name == "libero_10":
-                    max_steps = 1000  # longest training demo has 505 steps
+                    max_steps = 200  # longest training demo has 505 steps
                 elif cfg.task_suite_name == "libero_90":
                     max_steps = 400  # longest training demo has 373 steps
 
@@ -235,7 +173,7 @@ def eval_libero(cfg) -> None:
                         traceback.print_exc()
                         print(f"Caught exception: {e}")
                         log_file.write(f"Caught exception: {e}\n")
-                        # sys.exit(-1)
+                        sys.exit(-1)
                         break
 
                 task_episodes += 1
@@ -254,6 +192,7 @@ def eval_libero(cfg) -> None:
                     f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
                 )
                 log_file.flush()
+                sys.exit(0)
 
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
