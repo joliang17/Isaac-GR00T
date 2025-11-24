@@ -139,9 +139,8 @@ class Gr00tPolicy(BasePolicy):
 
         # ADDED: Load transforms
         # self._load_metadata(Path("/fs/nexus-projects/wilddiffusion/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
-        # self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
         self._load_metadata(self.model_path / "experiment_cfg")
-        self._load_metadata(self.model_path / "experiment_cfg", base=True)
+        self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"), base=True)
         # Load horizons
         self._load_horizons()
 
@@ -185,7 +184,7 @@ class Gr00tPolicy(BasePolicy):
             return self._modality_transform_base.unapply(action)
 
 
-    def get_action(self, observations: Dict[str, Any], img_count: int=1, past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> Dict[str, Any]:
+    def get_action(self, observations: Dict[str, Any], observations_base=None, img_count: int=1, past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> Dict[str, Any]:
         """
         Make a prediction with the model.
         Args:
@@ -217,8 +216,7 @@ class Gr00tPolicy(BasePolicy):
             if not isinstance(v, np.ndarray):
                 observations[k] = np.array(v)
 
-        observations_backup = observations.copy()
-        observations_bs = observations_backup.copy()
+        observations_bs = observations.copy()
         # Apply transforms
         del observations['video.wrist_image']
         normalized_input = self.apply_transforms(observations)
@@ -227,8 +225,21 @@ class Gr00tPolicy(BasePolicy):
         if not is_batch:
             unnormalized_action = squeeze_dict_values(unnormalized_action)
 
+        if observations_base is not None:
+            # let the get_action handles both batch and single input
+            is_batch = self._check_state_is_batched(observations_base)
+            if not is_batch:
+                observations_base = unsqueeze_dict_values(observations_base)
+
+            # NOTE(YL): ensure keys are all in numpy array
+            for k, v in observations_base.items():
+                if not isinstance(v, np.ndarray):
+                    observations_base[k] = np.array(v)
+            observations_bs = observations_base.copy()
+
         unnormalized_action_bs = None
         if call_baseline:
+            import pdb;pdb.set_trace()
             observations_bs['annotation.human.action.task_description'] = np.array([observations_bs['annotation.human.action.task_description'].item().replace('[TRAJ_MODE]', '').replace('[SKILL_MODE]', '')])
             normalized_input_bs = self.apply_transforms(observations_bs, base=True)
 
