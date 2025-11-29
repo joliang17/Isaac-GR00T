@@ -28,11 +28,13 @@ TASK_NAME=libero_training
 python scripts/gr00t_finetune.py \
   --dataset-path "/fs/nexus-projects/wilddiffusion/vla/libero_lerobot/${DATASET}" \
   --num-gpus 1 \
-  --windowing_mode "libero" \
+  --windowing_mode "step" \
   --batch-size 16 \
   --data_config "libero_original" \
   --video_backend "torchvision_av" \
   --save_steps 30000 \
   --max_steps 60000 \
   --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
-  --run_name ${TASK_NAME}
+  --run_name ${TASK_NAME} \
+  --tune_diffusion_model
+  # --dataloader_num_workers 0

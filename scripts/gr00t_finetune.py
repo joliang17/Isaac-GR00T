@@ -172,6 +172,12 @@ class ArgsConfig:
     dataloader_num_workers: int = 8
     """Number of workers for data loading."""
 
+    gradient_accumulation_steps: int = 1
+    """Gradient accumulation steps for training."""
+
+    dataloader_prefetch_factor: int = 4
+    """Prefetch factor for data loading."""
+
     report_to: Literal["wandb", "tensorboard", "azure_ml"] = "wandb"
     """Where to report training metrics (e.g., 'wandb', 'tensorboard', 'azure_ml')."""
 
@@ -179,8 +185,8 @@ class ArgsConfig:
     embodiment_tag: Literal[tuple(EMBODIMENT_TAG_MAPPING.keys())] = "new_embodiment"
     """Embodiment tag to use for training. e.g. 'new_embodiment', 'gr1'"""
 
-    video_backend: Literal["decord", "torchvision_av", "opencv"] = "torchvision_av"
-    """Video backend to use for training. [decord, torchvision_av]"""
+    video_backend: Literal["torchcodec", "decord", "torchvision_av"] = "torchcodec"
+    """Video backend to use for training. [torchcodec, decord, torchvision_av]"""
 
     # Mixture dataset parameters
     balance_dataset_weights: bool = True
@@ -390,9 +396,10 @@ def main(config: ArgsConfig):
         bf16=True,
         tf32=True,
         per_device_train_batch_size=config.batch_size,
-        gradient_accumulation_steps=1,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
         dataloader_num_workers=config.dataloader_num_workers,
         dataloader_pin_memory=False,
+        dataloader_prefetch_factor=config.dataloader_prefetch_factor,
         dataloader_persistent_workers=config.dataloader_num_workers > 0,
         optim="adamw_torch",
         adam_beta1=0.95,
@@ -408,7 +415,7 @@ def main(config: ArgsConfig):
         save_strategy="steps",
         save_steps=config.save_steps,
         # evaluation_strategy="no",
-        save_total_limit=8,
+        save_total_limit=5,
         report_to=config.report_to,
         seed=42,
         do_eval=False,

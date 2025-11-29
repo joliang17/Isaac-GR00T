@@ -299,18 +299,18 @@ class FlowmatchingActionHead(nn.Module):
             num_action = action_input.state.shape[0]
         else:
             vl_embs = backbone_output.backbone_features
-            vl_attn_mask = None
+            vl_attn_mask = backbone_output.backbone_attention_mask
+            # vl_attn_mask = None
             num_action = 0
 
         device = vl_embs.device
 
         # Get embodiment ID.
         embodiment_id = action_input.embodiment_id
+
         if num_action > 0:
             embodiment_id = embodiment_id[:1].repeat(num_action)
         
-        unique_vals = torch.unique(action_input.eagle_action_length)
-
         # Embed state.
         if len(action_input.state.shape) < 3:
             state_input = action_input.state.unsqueeze(1)
@@ -320,7 +320,6 @@ class FlowmatchingActionHead(nn.Module):
         # Embed noised action trajectory.
         actions = action_input.action
         action_mask = action_input.action_mask
-
         padding_value = 0.0
         is_padding_value = (actions == padding_value)
         padding_mask = ~is_padding_value.all(dim=2).all(dim=1)
