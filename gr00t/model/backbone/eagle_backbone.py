@@ -333,7 +333,7 @@ class EagleBackbone(nn.Module):
         self.end_id = self.eagle_tokenizer.convert_tokens_to_ids(self.eagle_tokenizer.eos_token)
 
         self.img_id = self.eagle_tokenizer.convert_tokens_to_ids("<img>")
-        maybe_image_tokens = ["<IMG_CONTEXT>", "<img>", "</img>", ]  # include what your tokenizer actually uses
+        maybe_image_tokens = ["<IMG_CONTEXT>", "<img>", "</img>", 'assistant', '[PAD_A]']  # include what your tokenizer actually uses
         img_ids = []
         for t in maybe_image_tokens:
             tid = self.eagle_tokenizer.convert_tokens_to_ids(t)
@@ -600,6 +600,11 @@ class EagleBackbone(nn.Module):
             # only predict next step
             final_mask = find_last_step(labels, mask_img)
             labels[final_mask] = -100
+
+        # masked_tokens_per_sample = [ids[row == -100] for ids, row in zip(eagle_input['input_ids'], labels)]
+        # masked_text_tokens = [self.eagle_tokenizer.convert_ids_to_tokens(ids.tolist()) for ids in masked_tokens_per_sample]
+        # masked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
+        # masked_text_tokens = [self.eagle_tokenizer.convert_ids_to_tokens(ids.tolist()) for ids in masked_tokens_per_sample]
 
         # We need hidden states if we are tuning the tool head
         need_hidden = self.tune_tool_end

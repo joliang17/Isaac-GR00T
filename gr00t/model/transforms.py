@@ -92,7 +92,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 for k, v in step_ids.items():
                     batch[f"{anno_key}_{k}"] = v
             
-            eagle_inputs = eagle_processor(text=text_list,images=image_inputs, return_tensors="pt", padding=True)
+            eagle_inputs = eagle_processor(text=text_list, images=image_inputs, return_tensors="pt", padding=True)
 
             for k, v in eagle_inputs.items():
                 k = "eagle_" + k
