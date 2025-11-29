@@ -28,6 +28,7 @@ TASK_NAME=libero_training
 python scripts/gr00t_finetune.py \
   --dataset-path "/fs/nexus-projects/wilddiffusion/vla/libero_lerobot/${DATASET}" \
   --num-gpus 1 \
+  --windowing_mode "libero" \
   --batch-size 16 \
   --data_config "libero_original" \
   --video_backend "torchvision_av" \

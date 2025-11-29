@@ -170,7 +170,8 @@ class LeRobotSingleDataset(Dataset):
         self.toolend_upsample_ratio = toolend_upsample_ratio
 
         # --- Windowing Logic Control ---
-        # Options: 'fixed', 'block_prefix', 'sliding_prefix'
+        # Options: 'libero', 'fixed', 'block_prefix', 'sliding_prefix'
+        # "libero": original GR00T settings
         # "fixed": Produces 1-10, 11-20, 21-30 (Fixed length, jumps by length).
         # "block_prefix": Produces 1-2...1-10, 11-12... (Expands prefixes, then jumps to next block).
         # "sliding_prefix": Produces 1-2...1-10, 2-3... (Expands prefixes, slides by 1).
