@@ -58,8 +58,62 @@ def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
     eagle_processor.tokenizer.padding_side = "left"
     return eagle_processor
 
+def print_masked_tokens(input_ids, labels, tokenizer):
+    """
+    input_ids: [seq_len]
+    labels:    [seq_len]
+    tokenizer: tokenizer used to convert ids → tokens
+    """
+
+    tokens = tokenizer.convert_ids_to_tokens(input_ids)
+
+    masked      = [tok for tok, lab in zip(tokens, labels) if lab == -100]
+    unmasked    = [tok for tok, lab in zip(tokens, labels) if lab != -100]
+
+    print("\n=== MASKED TOKENS (labels == -100) ===")
+    print("".join(masked).replace("<IMG_CONTEXT>", ""))
+
+    print("\n=== TRAINED TOKENS (labels != -100) ===")
+    print("".join(unmasked).replace("<|endoftext|>", ""))
+    return 
+
 
 def collate(features: List[dict], eagle_processor) -> dict:
+    def user_input_label(eagle_inputs, tokenizer):
+        pad_a_id    = tokenizer.convert_tokens_to_ids("[PAD_A]")
+        im_start_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
+        im_end_id   = tokenizer.convert_tokens_to_ids("<|im_end|>")
+        user_id     = tokenizer.convert_tokens_to_ids("user")
+        system_id   = tokenizer.convert_tokens_to_ids("system")
+
+        input_ids = eagle_inputs["input_ids"]
+        labels = input_ids.clone()
+
+        # 1) never train on [PAD_A]
+        labels[labels == pad_a_id] = -100
+
+        # 2) mask all user blocks: <|im_start|> user ... <|im_end|>
+        for b in range(input_ids.size(0)):      # over batch
+            ids = input_ids[b]
+            L = ids.size(0)
+            j = 0
+            while j < L - 2:
+                if ids[j].item() == im_start_id and ids[j+1].item() in (user_id, system_id):
+                    start = j
+                    k = j + 2
+                    while k < L and ids[k].item() != im_end_id:
+                        k += 1
+                    if k < L:
+                        # mask header + content + <|im_end|>
+                        labels[b, start:k+1] = -100
+                        j = k + 1
+                    else:
+                        break
+                else:
+                    j += 1
+
+        return labels
+
     batch = {}
     keys = features[0].keys()
 
@@ -100,9 +154,11 @@ def collate(features: List[dict], eagle_processor) -> dict:
 
             # tool-use only
             batch["eagle_num_images"] = torch.tensor(num_images_list, dtype=torch.long)
-            pad_a_id = eagle_processor.tokenizer.convert_tokens_to_ids("[PAD_A]")
-            labels = eagle_inputs["input_ids"].clone()
-            labels[labels == pad_a_id] = -100
+
+            labels = user_input_label(eagle_inputs, eagle_processor.tokenizer)
+            # import pdb;pdb.set_trace()
+            # print_masked_tokens(input_ids=eagle_inputs['input_ids'][0].tolist(), labels=labels[0].tolist(), tokenizer=eagle_processor.tokenizer)
+
             batch["eagle_llm_labels"] = labels
 
         elif key in ("pixel_values", "image_grid_thw", "attention_mask", "input_ids"):

@@ -333,7 +333,7 @@ class EagleBackbone(nn.Module):
         self.end_id = self.eagle_tokenizer.convert_tokens_to_ids(self.eagle_tokenizer.eos_token)
 
         self.img_id = self.eagle_tokenizer.convert_tokens_to_ids("<img>")
-        maybe_image_tokens = ["<IMG_CONTEXT>", "<img>", "</img>", 'assistant', '[PAD_A]']  # include what your tokenizer actually uses
+        maybe_image_tokens = ["<IMG_CONTEXT>", "<img>", "</img>", '[PAD_A]', '<|im_start|>', '<|im_end|>', 'assistant']  # include what your tokenizer actually uses
         img_ids = []
         for t in maybe_image_tokens:
             tid = self.eagle_tokenizer.convert_tokens_to_ids(t)
@@ -603,8 +603,9 @@ class EagleBackbone(nn.Module):
 
         # masked_tokens_per_sample = [ids[row == -100] for ids, row in zip(eagle_input['input_ids'], labels)]
         # masked_text_tokens = [self.eagle_tokenizer.convert_ids_to_tokens(ids.tolist()) for ids in masked_tokens_per_sample]
-        # masked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
-        # masked_text_tokens = [self.eagle_tokenizer.convert_ids_to_tokens(ids.tolist()) for ids in masked_tokens_per_sample]
+        # unmasked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
+        # unmasked_text_tokens = [self.eagle_tokenizer.convert_ids_to_tokens(ids.tolist()) for ids in unmasked_tokens_per_sample]
+        # import pdb;pdb.set_trace()
 
         # We need hidden states if we are tuning the tool head
         need_hidden = self.tune_tool_end
@@ -693,9 +694,9 @@ class EagleBackbone(nn.Module):
                 valid_pred_ids = pred_ids[shift_labels != -100]
                 valid_label_ids = shift_labels[shift_labels != -100]
                 decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
-                print(''.join(decoded_texts))
+                print(''.join(decoded_texts).replace('\n\n', ''))
                 decoded_texts_label = self.eagle_tokenizer.batch_decode(valid_label_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
-                print(''.join(decoded_texts_label))
+                print(''.join(decoded_texts_label).replace('\n\n', ''))
 
                 if special_mask_A.any():
                     pred_sp_ids_A_small = special_logits_A[special_mask_A].argmax(dim=-1)
