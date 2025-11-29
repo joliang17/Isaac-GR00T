@@ -382,9 +382,10 @@ def main(config: ArgsConfig):
             tune_special_B=config.tune_special_B,
             tune_tool_end=config.tune_tool_end,
         )
-    else:
+    elif config.windowing_mode != 'step':
         model.action_head.requires_grad_(train_action_head)
-        _ = list_trainable_parameter_names(model)
+
+    _ = list_trainable_parameter_names(model)
             
     # 2.1 modify training args
     training_args = TrainingArguments(
