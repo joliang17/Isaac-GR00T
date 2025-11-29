@@ -45,6 +45,7 @@ from .schema import (
     DatasetStatisticalValues,
     LeRobotModalityMetadata,
     LeRobotStateActionMetadata,
+    StateActionMetadata,
 )
 from .transform import ComposedModalityTransform
 from tqdm import tqdm
@@ -115,7 +116,7 @@ class LeRobotSingleDataset(Dataset):
         dataset_path: Path | str,
         modality_configs: dict[str, ModalityConfig],
         embodiment_tag: str | EmbodimentTag,
-        video_backend: str = "decord",
+        video_backend: str = "torchcodec",
         video_backend_kwargs: dict | None = None,
         transforms: ComposedModalityTransform | None = None,
         window_length: int | None = None,

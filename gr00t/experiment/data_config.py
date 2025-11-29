@@ -14,6 +14,8 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Optional
 
 from gr00t.data.dataset import ModalityConfig
 from gr00t.data.transform.base import ComposedModalityTransform, ModalityTransform
