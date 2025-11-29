@@ -59,11 +59,11 @@ run_eval () {
     python3 libero_scripts/libero_eval_interleaved.py \
         --task_suite_name libero_10 \
         --num_steps_wait 10 \
-        --num_trials_per_task 5 \
+        --num_trials_per_task 2 \
         --embodiment_tag new_embodiment \
         --data_config libero_traj_arms \
-        --denoising_steps 8 \
         --model_path "${final_model_path}" \
+        --denoising_steps 8 \
         --model_name "${model_ckpt}" \
         --call_baseline
 
@@ -71,17 +71,19 @@ run_eval () {
     echo
 }
 
-# run_eval "stage2_freezeembB_nextstep_skip_action"
-# run_eval "stage2_onlyembA_nextstep_skip_action"
+run_eval "stage3_nextstep_actiononly"
 
-# run_eval "stage2_freezeembB_allstep_skip_action"
+run_eval "stage2_freezeembB_nextstep_skip_action"
+run_eval "stage2_onlyembA_nextstep_skip_action"
+
+run_eval "stage2_freezeembB_allstep_skip_action"
 run_eval "stage2_onlyembA_allstep_skip_action"
 
-# run_eval "stage2_freezeembB_nextstep_skip_action_slicing"
-# run_eval "stage2_onlyembA_nextstep_skip_action_slicing"
+run_eval "stage2_freezeembB_nextstep_skip_action_slicing"
+run_eval "stage2_onlyembA_nextstep_skip_action_slicing"
 
-# run_eval "stage2_freezeembB_nextstep_skip_action_toolhead"
-# run_eval "stage2_onlyembA_nextstep_skip_action_toolhead"
+run_eval "stage2_freezeembB_nextstep_skip_action_toolhead"
+run_eval "stage2_onlyembA_nextstep_skip_action_toolhead"
 
-# run_eval "stage2_freezeembB_nextstep_skip_action_toolus"
-# run_eval "stage2_onlyembA_nextstep_skip_action_toolus"
+run_eval "stage2_freezeembB_nextstep_skip_action_toolus"
+run_eval "stage2_onlyembA_nextstep_skip_action_toolus"

@@ -174,7 +174,7 @@ def eval_libero(cfg) -> None:
                         # task instruction is already included in past_key_values_traj
                         obs_dict = process_observation(obs, cur_instr, headless=cfg.headless)
                         obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
-                        action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
+                        action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
                         if tools_output != '':
                             print(f"Call Tools: {tools_output}")
                             # generated skill instructions
@@ -184,7 +184,7 @@ def eval_libero(cfg) -> None:
                             # for step t, regenerate the action with the new instructions
                             obs_dict_tools = process_observation(obs, '[SKILL_MODE]' + tools_output, headless=cfg.headless)
                             obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
-                            action_chunk, invalid_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict_tools, observations_base=obs_dict_base, past_key_values=past_key_values_tools, mode='interleaved', call_baseline=call_baseline, inside_tool=True)
+                            action_chunk, invalid_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict_tools, observations_base=obs_dict, past_key_values=past_key_values_tools, mode='interleaved', call_baseline=call_baseline, inside_tool=True)
                             
                         if call_baseline:
                             action_chunk = action_chunk_bs
@@ -197,14 +197,14 @@ def eval_libero(cfg) -> None:
                         # inside tools
                         # skill instruction is already included in past_key_values_traj
                         obs_dict = process_observation(obs, '', headless=cfg.headless)
-                        obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
-                        action_chunk, tools_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, past_key_values=past_key_values_tools, mode='interleaved', inside_tool=True, call_baseline=call_baseline, )
+                        obs_dict_base = process_observation(obs, tools_output, headless=cfg.headless)
+                        action_chunk, cur_tools_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, past_key_values=past_key_values_tools, mode='interleaved', inside_tool=True, call_baseline=call_baseline, )
                         if call_baseline:
                             action_chunk = action_chunk_bs
                         else:
                             action_chunk = action_chunk
 
-                        if tools_output == '[TOOLS_END]':
+                        if cur_tools_output == '[TOOLS_END]':
                             # skill finished, no action is needed at the current step
                             inside_tools = False
                             print(f"Tool ended! Back to trajectory")
