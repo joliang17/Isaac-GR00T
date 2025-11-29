@@ -217,6 +217,9 @@ class LeRobotSingleDataset(Dataset):
 
         if self.windowing_mode != 'step':
             self._window_steps = self._get_all_windows()
+            print(f"Loading {len(self._window_steps)} data for tool-use experiments")
+        else:
+            print(f"Loading {len(self._all_steps)} data for original gr00t experiments")
 
         # Check if the dataset is valid
         self._check_integrity()

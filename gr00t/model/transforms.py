@@ -74,10 +74,11 @@ def collate(features: List[dict], eagle_processor) -> dict:
             for v in values:
                 curr_text_list = v["text_list"]
                 curr_image_inputs = v["image_inputs"]
-                curr_step_anno_list = v["step_annotation"]
-                curr_step_anno_list = [item for item in curr_step_anno_list if item is not None]
                 text_list += curr_text_list
                 image_inputs += curr_image_inputs
+                # tool-use only
+                curr_step_anno_list = v["step_annotation"]
+                curr_step_anno_list = [item for item in curr_step_anno_list if item is not None]
                 step_anno_list += curr_step_anno_list
 
                 num_images = [t.count("<image-") for t in v["text_list"]]
@@ -97,9 +98,8 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 k = "eagle_" + k
                 batch[k] = v
 
+            # tool-use only
             batch["eagle_num_images"] = torch.tensor(num_images_list, dtype=torch.long)
-
-            # --- build LM labels and mask <PAD_A> ---
             pad_a_id = eagle_processor.tokenizer.convert_tokens_to_ids("[PAD_A]")
             labels = eagle_inputs["input_ids"].clone()
             labels[labels == pad_a_id] = -100
