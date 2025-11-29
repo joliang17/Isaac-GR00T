@@ -171,8 +171,8 @@ class LeRobotSingleDataset(Dataset):
         self.toolend_upsample_ratio = toolend_upsample_ratio
 
         # --- Windowing Logic Control ---
-        # Options: 'libero', 'fixed', 'block_prefix', 'sliding_prefix'
-        # "libero": original GR00T settings
+        # Options: 'step', 'fixed', 'block_prefix', 'sliding_prefix'
+        # "step": original GR00T settings
         # "fixed": Produces 1-10, 11-20, 21-30 (Fixed length, jumps by length).
         # "block_prefix": Produces 1-2...1-10, 11-12... (Expands prefixes, then jumps to next block).
         # "sliding_prefix": Produces 1-2...1-10, 2-3... (Expands prefixes, slides by 1).
@@ -185,6 +185,21 @@ class LeRobotSingleDataset(Dataset):
         self._all_steps = self._get_all_steps()
         self._modality_keys = self._get_modality_keys()
         self._delta_indices = self._get_delta_indices()
+
+        if self.windowing_mode == 'step':
+            self._max_delta_index = self._get_max_delta_index()
+            # NOTE(YL): method to predict the task progress
+            if "action.task_progress" in self._modality_keys["action"]:
+                print("action.task_progress is in the action modality, task progress will be label")
+                self._modality_keys["action"].append("action.task_progress")
+                self._metadata.modalities.action["task_progress"] = StateActionMetadata(
+                    absolute=True, rotation_type=None, shape=(1,), continuous=True
+                )
+                # assume the task progress is uniformly distributed between 0 and 1
+                self._metadata.statistics.action["task_progress"] = DatasetStatisticalValues(
+                    max=[1.0], min=[0.0], mean=[0.5], std=[0.2887], q01=[0.01], q99=[0.99]
+                )
+
         self.set_transforms_metadata(self.metadata)
         self.set_epoch(0)
 
@@ -200,7 +215,9 @@ class LeRobotSingleDataset(Dataset):
         self.curr_traj_data = None
         self.curr_traj_id = None
 
-        self._window_steps = self._get_all_windows()
+        if self.windowing_mode != 'step':
+            self._window_steps = self._get_all_windows()
+
         # Check if the dataset is valid
         self._check_integrity()
 
@@ -266,6 +283,21 @@ class LeRobotSingleDataset(Dataset):
     def delta_indices(self) -> dict[str, np.ndarray]:
         """The delta indices for the dataset. The keys are the modality.key, and the values are the delta indices for each modality.key."""
         return self._delta_indices
+    
+    def _get_max_delta_index(self) -> int:
+        """Calculate the maximum delta index across all modalities.
+        Returns:
+            int: The maximum delta index value.
+        """
+        max_delta_index = 0
+        for delta_index in self.delta_indices.values():
+            max_delta_index = max(max_delta_index, delta_index.max())
+        return max_delta_index
+
+    @property
+    def max_delta_index(self) -> int:
+        """The maximum delta index across all modalities."""
+        return self._max_delta_index
 
     @property
     def dataset_name(self) -> str:
@@ -420,12 +452,17 @@ class LeRobotSingleDataset(Dataset):
         for episode in episode_metadata:
             trajectory_ids.append(episode["episode_index"])
             trajectory_lengths.append(episode["length"])
-            tasks = episode["tasks"]
-            tool_task = [item for item in tasks if "[TOOLS]" in item]
-            if len(tool_task) > 0:
-                trajectory_type.append(0)
+            if self.windowing_mode != 'step': 
+                # only for tool-usage experiments
+                tasks = episode["tasks"]
+                tool_task = [item for item in tasks if "[TOOLS]" in item]
+                if len(tool_task) > 0:
+                    trajectory_type.append(0)
+                else:
+                    trajectory_type.append(1)
             else:
-                trajectory_type.append(1)
+                # baselines
+                trajectory_type.append(0)
 
         return np.array(trajectory_ids), np.array(trajectory_lengths), np.array(trajectory_type)
 
@@ -647,6 +684,9 @@ class LeRobotSingleDataset(Dataset):
                 if key == "lapa_action" or key == "dream_actions":
                     continue  # no need for any metadata for lapa actions because it comes normalized
                 # Check if the key is valid
+                if self.windowing_mode == 'step' and key == "action.task_progress":
+                    continue
+
                 try:
                     self.lerobot_modality_meta.get_key_meta(key)
                 except Exception as e:
@@ -672,8 +712,11 @@ class LeRobotSingleDataset(Dataset):
         Returns:
             int: the total number of data points in the dataset.
         """
-        # return len(self.all_steps)
-        return len(self._window_steps)
+        if self.windowing_mode == 'step':
+            # step-wise data loading
+            return len(self.all_steps)
+        else:
+            return len(self._window_steps)
 
     def __str__(self) -> str:
         """Get the description of the dataset."""
@@ -700,66 +743,71 @@ class LeRobotSingleDataset(Dataset):
         Returns:
             dict: The data for the step.
         """
-        list_steps = self._window_steps[index]
-        list_step_data = [self.get_step_data(item[0], item[1]) for item in list_steps]  # dict_keys(['video.front_camera', 'state.single_arm', 'state.gripper', 'action.single_arm', 'action.gripper', 'annotation.step_description'])
-        list_step_transform = [self.transforms(item) for item in list_step_data]
-
-        # return result: previous images, instructions, action / tools
-        # predicted: state / action / eagle_content of the last time step
-        # list_transformed_img = [item['eagle_content']['image_inputs'][0] for item in list_step_transform]
-        agg_images = []
-        for t in list_step_transform:
-            imgs = t['eagle_content']['image_inputs']
-            # imgs is already a list produced by eagle_processor.process_vision_info
-            agg_images.extend(imgs)
-
-        # task_instruction: <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>Open the cabinet door<|im_end|>\n<|im_start|>assistant\n
-        task_instruction_postfix = "<|im_end|>\n<|im_start|>assistant\n"
-        task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix, '')
-        list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
-        # version1: [TOOLS]instruction[EOT] or [ACTIONS][PAD_A]
-        # version2: [TOOLS]instruction<|im_end|> or [ACTIONS]
-        list_transformed_steps_added = [
-            item
-            # + ("[EOT]" if "[TOOLS]" in item else "[PAD_A]" if "[ACTIONS]" in item else "")
-            + ("<|im_end|>" if "[TOOLS]" in item else "")
-            + (f"<image-{i+2}>" if i < len(list_transformed_steps) - 1 else "")
-            for i, item in enumerate(list_transformed_steps)
-        ]
-        list_transformed_state = [list_step_transform[i]['state'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
-        list_transformed_state_mask = [list_step_transform[i]['state_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
-        list_transformed_action = [list_step_transform[i]['action'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
-        list_transformed_action_mask = [list_step_transform[i]['action_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
-        if 'Skill-mode' in task_instruction:
-            # only [ACTIONS]
-            # <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>skillinstruction<image-2>[ACTIONS][PAD_A]<image-2>[ACTIONS][PAD_A]..[TOOLS_END]<|im_end|>\n<|im_start|>assistant\n
-            concated_text = task_instruction.replace('Skill-mode: ', "[SKILL_MODE]") + "".join(list_transformed_steps_added) + task_instruction_postfix
+        if self.windowing_mode == 'step':
+            # step-wise data loading
+            trajectory_id, base_index = self.all_steps[index]
+            return self.transforms(self.get_step_data(trajectory_id, base_index))
         else:
-            # [ACTIONS] & [TOOLS]
-            # <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>taskinstruction<image-2>[TOOLS]xx[EOT]<image-2>[ACTIONS][PAD_A].. <|im_end|>\n<|im_start|>assistant\n
-            concated_text = task_instruction.replace('<image-1>', "<image-1>[TRAJ_MODE]") + "".join(list_transformed_steps_added) + task_instruction_postfix
-        
-        dict_output = list_step_transform[-1]
-        
-        # final output result: dict_keys(['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'eagle_content', 'embodiment_id'])
-        # concated_text = concated_text.replace('[ACTIONS]', '').replace('[PAD_A]', '')
+            list_steps = self._window_steps[index]
+            list_step_data = [self.get_step_data(item[0], item[1]) for item in list_steps]  # dict_keys(['video.front_camera', 'state.single_arm', 'state.gripper', 'action.single_arm', 'action.gripper', 'annotation.step_description'])
+            list_step_transform = [self.transforms(item) for item in list_step_data]
 
-        # remove all occurrences like SCENE1, ]SCENE2, SCENE3, etc.
-        new_text = re.sub(r'\bSCENE\d+\b\s*', '', concated_text)
-        # new_text = re.sub(r'\s+', ' ', new_text).strip()
-        if new_text != concated_text:
-            concated_text = new_text
+            # return result: previous images, instructions, action / tools
+            # predicted: state / action / eagle_content of the last time step
+            # list_transformed_img = [item['eagle_content']['image_inputs'][0] for item in list_step_transform]
+            agg_images = []
+            for t in list_step_transform:
+                imgs = t['eagle_content']['image_inputs']
+                # imgs is already a list produced by eagle_processor.process_vision_info
+                agg_images.extend(imgs)
 
-        # add skill special token
-        if '==' in concated_text:
-            concated_text = re.sub(r"\s*==\s*(\d+)\s*==\s*", r"[SKILL_\1]", concated_text)
+            # task_instruction: <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>Open the cabinet door<|im_end|>\n<|im_start|>assistant\n
+            task_instruction_postfix = "<|im_end|>\n<|im_start|>assistant\n"
+            task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix, '')
+            list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
+            # version1: [TOOLS]instruction[EOT] or [ACTIONS][PAD_A]
+            # version2: [TOOLS]instruction<|im_end|> or [ACTIONS]
+            list_transformed_steps_added = [
+                item
+                # + ("[EOT]" if "[TOOLS]" in item else "[PAD_A]" if "[ACTIONS]" in item else "")
+                + ("<|im_end|>" if "[TOOLS]" in item else "")
+                + (f"<image-{i+2}>" if i < len(list_transformed_steps) - 1 else "")
+                for i, item in enumerate(list_transformed_steps)
+            ]
+            list_transformed_state = [list_step_transform[i]['state'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
+            list_transformed_state_mask = [list_step_transform[i]['state_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
+            list_transformed_action = [list_step_transform[i]['action'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
+            list_transformed_action_mask = [list_step_transform[i]['action_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
+            if 'Skill-mode' in task_instruction:
+                # only [ACTIONS]
+                # <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>skillinstruction<image-2>[ACTIONS][PAD_A]<image-2>[ACTIONS][PAD_A]..[TOOLS_END]<|im_end|>\n<|im_start|>assistant\n
+                concated_text = task_instruction.replace('Skill-mode: ', "[SKILL_MODE]") + "".join(list_transformed_steps_added) + task_instruction_postfix
+            else:
+                # [ACTIONS] & [TOOLS]
+                # <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>taskinstruction<image-2>[TOOLS]xx[EOT]<image-2>[ACTIONS][PAD_A].. <|im_end|>\n<|im_start|>assistant\n
+                concated_text = task_instruction.replace('<image-1>', "<image-1>[TRAJ_MODE]") + "".join(list_transformed_steps_added) + task_instruction_postfix
+            
+            dict_output = list_step_transform[-1]
+            
+            # final output result: dict_keys(['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'eagle_content', 'embodiment_id'])
+            # concated_text = concated_text.replace('[ACTIONS]', '').replace('[PAD_A]', '')
 
-        dict_output['eagle_content']['image_inputs'] = agg_images
-        dict_output['eagle_content']['text_list'] = [concated_text]
-        dict_output['state'] = list_transformed_state
-        dict_output['state_mask'] = list_transformed_state_mask
-        dict_output['action'] = list_transformed_action
-        dict_output['action_mask'] = list_transformed_action_mask
+            # remove all occurrences like SCENE1, ]SCENE2, SCENE3, etc.
+            new_text = re.sub(r'\bSCENE\d+\b\s*', '', concated_text)
+            # new_text = re.sub(r'\s+', ' ', new_text).strip()
+            if new_text != concated_text:
+                concated_text = new_text
+
+            # add skill special token
+            if '==' in concated_text:
+                concated_text = re.sub(r"\s*==\s*(\d+)\s*==\s*", r"[SKILL_\1]", concated_text)
+
+            dict_output['eagle_content']['image_inputs'] = agg_images
+            dict_output['eagle_content']['text_list'] = [concated_text]
+            dict_output['state'] = list_transformed_state
+            dict_output['state_mask'] = list_transformed_state_mask
+            dict_output['action'] = list_transformed_action
+            dict_output['action_mask'] = list_transformed_action_mask
         return dict_output
 
 
@@ -960,6 +1008,23 @@ class LeRobotSingleDataset(Dataset):
         trajectory_index = self.get_trajectory_index(trajectory_id)
         # Get the maximum length of the trajectory
         max_length = self.trajectory_lengths[trajectory_index]
+
+        # this handles action.task_progress if specified
+        if self.windowing_mode == "step" and key == "action.task_progress":
+            # Get frame_index array and apply proper bounds checking and padding
+            frame_index_array = self.curr_traj_data["frame_index"].to_numpy()
+            # Use retrieve_data_and_pad to handle out-of-bounds indices
+            frame_index = self.retrieve_data_and_pad(
+                array=frame_index_array,
+                step_indices=step_indices,
+                max_length=max_length,
+                padding_strategy="first_last",  # Use first/last for task progress
+            )
+            # get the task progress by using "frame index / trajectory length"
+            progress = frame_index / max_length
+            progress = progress.reshape(-1, 1)
+            return progress
+
         assert key.startswith(modality + "."), f"{key} must start with {modality + '.'}, got {key}"
         # Get the sub-key, e.g. state.joint_angles -> joint_angles
         key = key.replace(modality + ".", "")
@@ -972,6 +1037,11 @@ class LeRobotSingleDataset(Dataset):
         assert self.curr_traj_data is not None, f"No data found for {trajectory_id=}"
         assert le_key in self.curr_traj_data.columns, f"No {le_key} found in {trajectory_id=}"
         data_array: np.ndarray = np.stack(self.curr_traj_data[le_key])  # type: ignore
+        if data_array.ndim == 1:
+            assert (
+                data_array.shape[0] == max_length
+            ), f"Expected 1D array with length {max_length}, got {data_array.shape} array"
+            data_array = data_array.reshape(-1, 1)
         assert data_array.ndim == 2, f"Expected 2D array, got {data_array.shape} array"
         le_indices = np.arange(
             le_state_or_action_cfg[key].start,

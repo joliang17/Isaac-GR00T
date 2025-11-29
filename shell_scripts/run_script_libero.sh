@@ -22,7 +22,7 @@ module add gcc/11.2.0
 source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 
 export WANDB_PROJECT="vla_tooluse"
-DATASET=libero_10_no_noops_1.0.0_lerobot
+DATASET=libero_10_no_noops_lerobot
 TASK_NAME=libero_training
 
 python scripts/gr00t_finetune.py \

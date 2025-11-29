@@ -69,7 +69,7 @@ class ArgsConfig:
     windowing_mode: str = "sliding_prefix"
     """
     Determines how windows are sliced:
-    - 'libero': original libero settings
+    - 'step': original step-wise settings
     - 'fixed': [1-10], [11-20] (Standard non-overlapping blocks)
     - 'block_prefix': [1-2]..[1-10], [11-12].. (Expand prefixes, then jump block)
     - 'sliding_prefix': [1-2]..[1-10], [2-3]..[2-11] (Expand prefixes, slide by 1)
