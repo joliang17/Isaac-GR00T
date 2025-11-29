@@ -452,7 +452,7 @@ class LeRobotSingleDataset(Dataset):
         trajectory_ids = []
         trajectory_lengths = []
         trajectory_type = []
-        for episode in episode_metadata:
+        for episode in episode_metadata[:10]:
             trajectory_ids.append(episode["episode_index"])
             trajectory_lengths.append(episode["length"])
             if self.windowing_mode != 'step': 
@@ -749,50 +749,83 @@ class LeRobotSingleDataset(Dataset):
         if self.windowing_mode == 'step':
             # step-wise data loading
             trajectory_id, base_index = self.all_steps[index]
-            return self.transforms(self.get_step_data(trajectory_id, base_index))
+            dict_transformed = self.transforms(self.get_step_data(trajectory_id, base_index))
+            # dict_transformed: 'state': (1, 64), 'state_mask': (1, 64), 'segmentation_target': (2,), 'segmentation_target_mask': (1,), 'has_real_action': array(True), 'action': (16, 32), 'action_mask': (16, 32), 'embodiment_id': 31
+            # 'eagle_content': 'image_inputs': [PIL1, PIL2], 'video_inputs': None, 'text_list': ['<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1><image-2>put the yellow and white mug in the microwave and close it<|im_end|>\n<|im_start|>assistant\n'], 'step_annotation': [None]
+            return dict_transformed
         else:
             list_steps = self._window_steps[index]
             list_step_data = [self.get_step_data(item[0], item[1]) for item in list_steps]  # dict_keys(['video.front_camera', 'state.single_arm', 'state.gripper', 'action.single_arm', 'action.gripper', 'annotation.step_description'])
+            # DEBUG: 
             list_step_transform = [self.transforms(item) for item in list_step_data]
 
             # return result: previous images, instructions, action / tools
             # predicted: state / action / eagle_content of the last time step
             # list_transformed_img = [item['eagle_content']['image_inputs'][0] for item in list_step_transform]
             agg_images = []
-            for t in list_step_transform:
+            for i, t in enumerate(list_step_transform):
                 imgs = t['eagle_content']['image_inputs']
+                # [val.shape for x, val in t.items() if not isinstance(val, str) and not isinstance(val, dict) and not isinstance(val, int)]
                 # imgs is already a list produced by eagle_processor.process_vision_info
                 agg_images.extend(imgs)
 
             # task_instruction: <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>Open the cabinet door<|im_end|>\n<|im_start|>assistant\n
             task_instruction_postfix = "<|im_end|>\n<|im_start|>assistant\n"
             task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix, '')
+            if '<image-2>' in task_instruction:
+                # 2 views
+                num_view = 2
+            else:
+                num_view = 1
+
+            # add end of the current instruction
+            task_instruction += "<|im_end|>\n"
+            if 'Skill-mode' in task_instruction:
+                instruct_begin = task_instruction.replace('Skill-mode: ', "[SKILL_MODE]")
+            else:
+                instruct_begin = task_instruction.replace(f'<image-{num_view}>', f"<image-{num_view}>[TRAJ_MODE]")
+
             list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
-            # version1: [TOOLS]instruction[EOT] or [ACTIONS][PAD_A]
-            # version2: [TOOLS]instruction<|im_end|> or [ACTIONS]
-            list_transformed_steps_added = [
-                item
-                # + ("[EOT]" if "[TOOLS]" in item else "[PAD_A]" if "[ACTIONS]" in item else "")
-                + ("<|im_end|>" if "[TOOLS]" in item else "")
-                + (f"<image-{i+2}>" if i < len(list_transformed_steps) - 1 else "")
-                for i, item in enumerate(list_transformed_steps)
-            ]
+            num_steps = len(list_transformed_steps)
+
+            list_transformed_steps_added = [instruct_begin]
+            for i, step_text in enumerate(list_transformed_steps):
+                # <|im_start|>assistant\n[TOOLS] turn on the hot plate<|im_end|> --> i = 0
+                # <|im_start|>user\n<image-3><image-4><|im_end|>\n --> i = 1
+                # <|im_start|>assistant\n[ACTIONS]<|im_end|>\n --> i = 1
+                # <|im_start|>user\n<image-5><image-6><|im_end|>\n --> i = 2
+                # <|im_start|>assistant\n[TOOLS] put the moka pot on the hot plate'<|im_end|>\n --> i = 2
+
+                # for first step: I1, I2, task description --> tools / actions
+                # for other step: I1, I2 --> tools / actions
+                added_item = ''
+                if i > 0:
+                    # add image
+                    if num_view == 2:
+                        image_mid = f"<image-{2*i+1}><image-{2*i+2}>"
+                    else:
+                        image_mid = f"<image-{i+1}>"
+                    image_prefix = f'<|im_start|>user\n{image_mid}<|im_end|>\n'
+                else:
+                    # only add text description
+                    image_prefix = ''
+
+                # add text description
+                added_item = f"{image_prefix}<|im_start|>assistant\n{step_text}<|im_end|>\n"
+                list_transformed_steps_added.append(added_item)
+
+            concated_text = "".join(list_transformed_steps_added)
+            # Original text:    
+            # <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n
+            # <|im_start|>user\n<image-1><image-2>put the yellow and white mug in the microwave and close it<|im_end|>\n
+            # <|im_start|>assistant\n
+
             list_transformed_state = [list_step_transform[i]['state'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_state_mask = [list_step_transform[i]['state_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_action = [list_step_transform[i]['action'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_action_mask = [list_step_transform[i]['action_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
-            if 'Skill-mode' in task_instruction:
-                # only [ACTIONS]
-                # <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>skillinstruction<image-2>[ACTIONS][PAD_A]<image-2>[ACTIONS][PAD_A]..[TOOLS_END]<|im_end|>\n<|im_start|>assistant\n
-                concated_text = task_instruction.replace('Skill-mode: ', "[SKILL_MODE]") + "".join(list_transformed_steps_added) + task_instruction_postfix
-            else:
-                # [ACTIONS] & [TOOLS]
-                # <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>taskinstruction<image-2>[TOOLS]xx[EOT]<image-2>[ACTIONS][PAD_A].. <|im_end|>\n<|im_start|>assistant\n
-                concated_text = task_instruction.replace('<image-1>', "<image-1>[TRAJ_MODE]") + "".join(list_transformed_steps_added) + task_instruction_postfix
-            
+
             dict_output = list_step_transform[-1]
-            
-            # final output result: dict_keys(['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'eagle_content', 'embodiment_id'])
             # concated_text = concated_text.replace('[ACTIONS]', '').replace('[PAD_A]', '')
 
             # remove all occurrences like SCENE1, ]SCENE2, SCENE3, etc.

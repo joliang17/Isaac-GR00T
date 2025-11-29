@@ -967,8 +967,125 @@ class FrankaDataConfig(BaseDataConfig):
 
 class LIEBROTrajDataConfig(BaseDataConfig):
     video_keys = [
-        # "video.front_camera",
         "video.image",
+        # "video.wrist_image",
+    ]
+    state_keys = [
+        "state.x",
+        "state.y",
+        "state.z",
+        "state.roll",
+        "state.pitch",
+        "state.yaw",
+        "state.gripper",
+    ]
+    action_keys = [
+        "action.x",
+        "action.y",
+        "action.z",
+        "action.roll",
+        "action.pitch",
+        "action.yaw",
+        "action.gripper",
+    ]
+    language_keys = ["annotation.step_description", ]
+    observation_indices = [0]
+    action_indices = list(range(16))
+
+    def modality_config(self) -> dict[str, ModalityConfig]:
+        video_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.video_keys,
+        )
+
+        state_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.state_keys,
+        )
+
+        action_modality = ModalityConfig(
+            delta_indices=self.action_indices,
+            modality_keys=self.action_keys,
+        )
+
+        language_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.language_keys,
+        )
+
+        modality_configs = {
+            "video": video_modality,
+            "state": state_modality,
+            "action": action_modality,
+            "language": language_modality,
+        }
+
+        return modality_configs
+
+    def transform(self, action_norm: str = "min_max") -> ModalityTransform:
+        if action_norm == "min_max":
+            action_transform = StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={key: "min_max" for key in self.action_keys},
+            )
+        else:
+            action_transform = StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={
+                    "action.x": "mean_std",
+                    "action.y": "mean_std",
+                    "action.z": "mean_std",
+                    "action.roll": "mean_std",
+                    "action.pitch": "mean_std",
+                    "action.yaw": "mean_std",
+                    "action.gripper": "min_max",
+                },
+            )
+        transforms = [
+            # video transforms
+            VideoToTensor(apply_to=self.video_keys),
+            VideoCrop(apply_to=self.video_keys, scale=0.95),
+            VideoResize(apply_to=self.video_keys, height=224, width=224, interpolation="linear"),
+            VideoColorJitter(
+                apply_to=self.video_keys,
+                brightness=0.3,
+                contrast=0.4,
+                saturation=0.5,
+                hue=0.08,
+            ),
+            VideoToNumpy(apply_to=self.video_keys),
+            # state transforms
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes={key: "min_max" for key in self.state_keys},
+            ),
+            # action transforms
+            StateActionToTensor(apply_to=self.action_keys),
+            action_transform,
+            # concat transforms
+            ConcatTransform(
+                video_concat_order=self.video_keys,
+                state_concat_order=self.state_keys,
+                action_concat_order=self.action_keys,
+            ),
+            # model-specific transform
+            GR00TTransform(
+                state_horizon=len(self.observation_indices),
+                action_horizon=len(self.action_indices),
+                max_state_dim=64,
+                max_action_dim=32,
+            ),
+        ]
+        return ComposedModalityTransform(transforms=transforms)
+
+###########################################################################################
+
+
+class LIEBROTrajData2Config(BaseDataConfig):
+    video_keys = [
+        "video.image",
+        "video.wrist_image",
     ]
     state_keys = [
         "state.x",
@@ -1223,5 +1340,6 @@ DATA_CONFIG_MAP = {
     "agibot_genie1": AgibotGenie1DataConfig(),
     "franka_arms_only": FrankaDataConfig(),
     "libero_traj_arms": LIEBROTrajDataConfig(),
+    "libero_traj_arms_2": LIEBROTrajData2Config(),
     "libero_original": LiberoDataConfig()
 }
