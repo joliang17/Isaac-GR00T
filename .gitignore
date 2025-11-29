@@ -129,3 +129,4 @@ checkpoint/*
 rollouts/*
 
 *.slurm
+slurm_scripts/*

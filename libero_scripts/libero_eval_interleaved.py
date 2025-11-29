@@ -132,8 +132,8 @@ def eval_libero(cfg) -> None:
             elif cfg.task_suite_name == "libero_goal":
                 max_steps = 600  # longest training demo has 270 steps
             elif cfg.task_suite_name == "libero_10":
-                # max_steps = 500  # longest training demo has 505 steps
-                max_steps = 1000  # longest training demo has 505 steps
+                max_steps = 250  # longest training demo has 505 steps
+                # max_steps = 1000  # longest training demo has 505 steps
             elif cfg.task_suite_name == "libero_90":
                 max_steps = 400  # longest training demo has 373 steps
 
