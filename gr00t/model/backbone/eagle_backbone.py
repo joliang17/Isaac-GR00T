@@ -602,13 +602,13 @@ class EagleBackbone(nn.Module):
             final_mask = find_last_step(eagle_input['input_ids'], labels, ignored_tensor)
             labels[final_mask] = -100
 
+        # # import pdb;pdb.set_trace()
+        # masked_tokens_per_sample = [ids[row == -100] for ids, row in zip(eagle_input['input_ids'], labels)]
+        # unmasked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
+        # print(self.eagle_tokenizer.decode(eagle_input['input_ids'][0]))
+        # print(self.eagle_tokenizer.decode(masked_tokens_per_sample[0]))
+        # print(self.eagle_tokenizer.decode(unmasked_tokens_per_sample[0]))
         # import pdb;pdb.set_trace()
-        masked_tokens_per_sample = [ids[row == -100] for ids, row in zip(eagle_input['input_ids'], labels)]
-        unmasked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
-        print(self.eagle_tokenizer.decode(eagle_input['input_ids'][0]))
-        print(self.eagle_tokenizer.decode(masked_tokens_per_sample[0]))
-        print(self.eagle_tokenizer.decode(unmasked_tokens_per_sample[0]))
-        import pdb;pdb.set_trace()
 
         # We need hidden states if we are tuning the tool head
         need_hidden = self.tune_tool_end
