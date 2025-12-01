@@ -412,11 +412,14 @@ class GR00T_N1_5(PreTrainedModel):
             # flatten state / actions
             list_keys = ['state', 'state_mask', 'action', 'action_mask', ]
             for key in list_keys:
-                if inputs[key].numel() != 0:
-                    if len(inputs[key].shape) > 3:
-                        inputs[key] = inputs[key].reshape(-1, inputs[key].size(2), inputs[key].size(3))
+                if key not in inputs:
+                    continue
                 else:
-                    del inputs[key]
+                    if inputs[key].numel() != 0:
+                        if len(inputs[key].shape) > 3:
+                            inputs[key] = inputs[key].reshape(-1, inputs[key].size(2), inputs[key].size(3))
+                    else:
+                        del inputs[key]
         return out, inputs, list_base
 
     def prepare_input(self, inputs) -> Tuple[BatchFeature, BatchFeature]:

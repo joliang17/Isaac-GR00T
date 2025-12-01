@@ -331,15 +331,20 @@ class EagleBackbone(nn.Module):
         
         self.pad_id = self.eagle_tokenizer.convert_tokens_to_ids(self.eagle_tokenizer.pad_token)
         self.end_id = self.eagle_tokenizer.convert_tokens_to_ids(self.eagle_tokenizer.eos_token)
+        self.assistant_id = self.eagle_tokenizer.convert_tokens_to_ids("assistant")
+        # user prefix pattern as persistent buffer
+        user_tokens = self.eagle_tokenizer.encode("<|im_start|>user\n", add_special_tokens=False)
+        self.register_buffer("user_instr_ids", torch.tensor(user_tokens, dtype=torch.long))
 
         self.img_id = self.eagle_tokenizer.convert_tokens_to_ids("<img>")
-        maybe_image_tokens = ["<IMG_CONTEXT>", "<img>", "</img>", '[PAD_A]', '<|im_start|>', '<|im_end|>', 'assistant']  # include what your tokenizer actually uses
-        img_ids = []
+        # maybe_image_tokens = ["<IMG_CONTEXT>", "<img>", "</img>", '[PAD_A]', '<|im_end|>', ]
+        maybe_image_tokens = ["<IMG_CONTEXT>", "<img>", "</img>", '[PAD_A]', '<|im_start|>', 'assistant', ]
+        ignored_id = []
         for t in maybe_image_tokens:
             tid = self.eagle_tokenizer.convert_tokens_to_ids(t)
             if tid is not None and tid != self.eagle_tokenizer.unk_token_id:
-                img_ids.append(tid)
-        self.img_ids = torch.tensor(img_ids)
+                ignored_id.append(tid)
+        self.ignored_id = torch.tensor(ignored_id)
 
         self.special_token_loss_weight = special_token_loss_weight
         self.tool_end_loss_weight = tool_end_loss_weight
@@ -552,33 +557,29 @@ class EagleBackbone(nn.Module):
         - eagle_input_ids / eagle_attention_mask / (pixel_values | video_pixel_values)
         - eagle_labels  (same shape; -100 where we don't supervise, e.g., [PAD_A])
         """
-        def find_last_step(labels, mask_img):
-            # 2. Find the index of the *last* image token in each row
-            seq_len = labels.shape[1]
+        def find_last_step(input_ids, labels, mask_img):
+            B, T = labels.shape
+            final_mask = torch.zeros_like(labels, dtype=torch.bool)
 
-            # We find the *first* True from the right by flipping the tensor
-            # and using argmax.
-            flipped_mask = torch.flip(mask_img, dims=[1])
-            flipped_indices = torch.argmax(flipped_mask.long(), dim=1)
-            # Convert the "flipped" index back to a normal index from the left
-            last_img_indices = seq_len - 1 - flipped_indices
+            for b in range(B):
+                ids = input_ids[b]
 
-            # 3. Correct for rows that have *no* image tokens
-            # For an all-False row, argmax returns 0. This incorrectly points to
-            # seq_len - 1, as if the last token was an image.
-            # We must find rows with no images and set their index to -1.
-            has_any_img = torch.any(mask_img, dim=1)
-            last_img_indices[~has_any_img] = -1
+                # Positions that mark "steps":
+                #  - 'assistant' role tokens
+                #  - any <IMG_CONTEXT> tokens (via mask_img)
+                # step_markers = ((ids == self.assistant_id) | mask_img[b])
+                step_markers = ids == self.assistant_id
 
-            # 4. Create a final mask for all tokens up to and including the last image
-            # Create a tensor of indices: [[0, 1, 2, ..., seq_len-1]]
-            # Shape: [1, seq_len]
-            all_indices = torch.arange(seq_len, device=labels.device).unsqueeze(0)
+                if not step_markers.any():
+                    # No assistant/img markers → do nothing extra
+                    continue
+                
+                # Last index that is either 'assistant' or part of <IMG_CONTEXT>
+                last_idx = torch.nonzero(step_markers, as_tuple=False)[-1, 0].item()
 
-            # Broadcast compare: [batch_size, 1] <= [1, seq_len]
-            # This creates a [batch_size, seq_len] boolean mask where
-            # mask[i, j] is True if j <= last_img_indices[i]
-            final_mask = (all_indices <= last_img_indices.unsqueeze(1))
+                # Mask everything AFTER this last step marker
+                if last_idx + 1 < T:
+                    final_mask[b, last_idx + 1 :] = True
 
             return final_mask
 
@@ -593,19 +594,20 @@ class EagleBackbone(nn.Module):
         eagle_input.pop("image_sizes", None)
         labels = eagle_input.pop("llm_labels")
 
-        mask_img = torch.isin(labels, self.img_ids.to(labels.device))
-        labels[mask_img] = -100
-
+        ignored_tensor = torch.isin(labels, self.ignored_id.to(labels.device))
+        labels[ignored_tensor] = -100
+        
         if self.pred_nextstep:
             # only predict next step
-            final_mask = find_last_step(labels, mask_img)
+            final_mask = find_last_step(eagle_input['input_ids'], labels, ignored_tensor)
             labels[final_mask] = -100
 
-        # masked_tokens_per_sample = [ids[row == -100] for ids, row in zip(eagle_input['input_ids'], labels)]
-        # masked_text_tokens = [self.eagle_tokenizer.convert_ids_to_tokens(ids.tolist()) for ids in masked_tokens_per_sample]
-        # unmasked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
-        # unmasked_text_tokens = [self.eagle_tokenizer.convert_ids_to_tokens(ids.tolist()) for ids in unmasked_tokens_per_sample]
         # import pdb;pdb.set_trace()
+        # masked_tokens_per_sample = [ids[row == -100] for ids, row in zip(eagle_input['input_ids'], labels)]
+        # self.eagle_tokenizer.convert_ids_to_tokens(masked_tokens_per_sample[0].tolist())
+        # unmasked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
+        # self.eagle_tokenizer.convert_ids_to_tokens(eagle_input['input_ids'][0].tolist())
+        # self.eagle_tokenizer.convert_ids_to_tokens(unmasked_tokens_per_sample[0].tolist())
 
         # We need hidden states if we are tuning the tool head
         need_hidden = self.tune_tool_end
@@ -689,6 +691,7 @@ class EagleBackbone(nn.Module):
                 per_token_loss[special_mask_B] = special_loss_B.to(dtype=per_token_loss.dtype)
 
             #######################
+            # DEBUG
             if False:
                 pred_ids = base_logits.argmax(dim=-1)
                 valid_pred_ids = pred_ids[shift_labels != -100]
@@ -789,6 +792,8 @@ class EagleBackbone(nn.Module):
         img_id      = self.img_id
         actions_id  = self.actions_id
         tools_id    = self.tools_id
+        user_pattern = self.user_instr_ids
+        K = user_pattern.numel()
 
         segments: list[torch.Tensor] = []
         segments_mask: list[torch.Tensor] = []
@@ -803,22 +808,36 @@ class EagleBackbone(nn.Module):
             ids_b = input_ids[b]
             mask_b = eagle_mask[b]
             Lb = valid_len[b].item()
-            first_valid = T - Lb  # left padding: valid tokens start here
-            # Positions of <img> among valid tokens; convert to absolute positions
-            img_pos = (ids_b[first_valid:] == img_id).nonzero(as_tuple=False).squeeze(-1)
-            if img_pos.numel() > 0:
-                img_pos = img_pos + first_valid
-            if img_pos.numel() == 0:
+            if Lb <= 0:
                 continue
+            first_valid = T - Lb  # left padding: valid tokens start here
+            last_valid_idx = T - 1
 
-            for i, img_p in enumerate(img_pos.tolist()):
-                # Start at position-1 of <img>, clamped to first_valid
-                start_pos = max(first_valid, img_p - 5)
-                # Segment end boundary: just before the next <img>, or up to last valid index
-                if i + 1 < img_pos.numel():
-                    end_boundary = img_pos[i + 1].item() - 6
+            # Region we actually search in
+            search_start = first_valid
+            search_end_exclusive = T  # last index is T-1
+
+            user_starts: list[int] = []
+            # We can safely do a Python loop here; T is usually not huge relative to GPU
+            max_start_offset = (search_end_exclusive - search_start) - K
+            if max_start_offset >= 0:
+                for offset in range(max_start_offset + 1):
+                    window = ids_b[search_start + offset : search_start + offset + K]
+                    if torch.equal(window, user_pattern):
+                        user_starts.append(search_start + offset)
+
+            if not user_starts:
+                continue
+                
+            # Iterate over each user block
+            for i, u_p in enumerate(user_starts):
+                start_pos = u_p
+
+                # End boundary: just before the next user-start, or last valid token
+                if i + 1 < len(user_starts):
+                    end_boundary = user_starts[i + 1] - 1
                 else:
-                    end_boundary = T - 1
+                    end_boundary = last_valid_idx
 
                 if end_boundary < start_pos:
                     continue  # empty
@@ -844,7 +863,6 @@ class EagleBackbone(nn.Module):
                     continue
                 
                 end_exclusive = end_boundary + 1
-
                 if end_exclusive <= start_pos:
                     continue
 
@@ -907,6 +925,9 @@ class EagleBackbone(nn.Module):
             #########################
             # 2) extract action token hidden states based on action_pad_ids
             list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
+            # self.eagle_tokenizer.decode(vl_input['input_ids'][1][11:553])
+
+            import pdbb;pdb.set_trace()
             embeds_tensor, masks_tensor = self.flatten_actions(list_eagle_emb, list_eagle_mask)
 
             # 3) Compute generated loss

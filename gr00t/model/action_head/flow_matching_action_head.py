@@ -374,24 +374,25 @@ class FlowmatchingActionHead(nn.Module):
 
     @torch.no_grad()
     def get_action(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
-
         backbone_output = self.process_backbone_output(backbone_output)
 
         # Get vision and language embeddings.
-        vl_embs = backbone_output.backbone_features
-        embodiment_id = action_input.embodiment_id
+        if backbone_output.backbone_features_multi is not None:
+            vl_embs = backbone_output.backbone_features_multi
+            num_action = action_input.state.shape[0]
+        else:
+            vl_embs = backbone_output.backbone_features
+            num_action = 0
+
+        device = vl_embs.device
+        batch_size = vl_embs.shape[0]
+        embodiment_id = action_input.embodiment_id       
 
         # Embed state.
         state_features = self.state_encoder(action_input.state, embodiment_id)
 
         # Set initial actions as the sampled noise.
-        batch_size = vl_embs.shape[0]
-        device = vl_embs.device
-        actions = torch.randn(
-            size=(batch_size, self.config.action_horizon, self.config.action_dim),
-            dtype=vl_embs.dtype,
-            device=device,
-        )
+        actions = torch.randn(size=(batch_size, self.config.action_horizon, self.config.action_dim), dtype=vl_embs.dtype, device=device, )
 
         num_steps = self.num_inference_timesteps
         dt = 1.0 / num_steps

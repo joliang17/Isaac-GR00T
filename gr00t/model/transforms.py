@@ -128,6 +128,20 @@ def collate(features: List[dict], eagle_processor) -> dict:
             for v in values:
                 curr_text_list = v["text_list"]
                 curr_image_inputs = v["image_inputs"]
+                in_infer = False
+                for t_id in range(len(curr_text_list)):
+                    if '[INFER_CNT]' in curr_text_list[t_id]: 
+                        # only for inference stage
+                        curr_text_list[t_id] = curr_text_list[t_id].replace('<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n', '').replace('[INFER_CNT]', '')
+                        in_infer = True
+                    if '[INFER]' in curr_text_list[t_id]: 
+                        # only for inference stage
+                        curr_text_list[t_id] = curr_text_list[t_id].replace('[INFER]', '')
+                        in_infer = True
+                        
+                if in_infer:
+                    v["step_annotation"] = curr_text_list
+
                 text_list += curr_text_list
                 image_inputs += curr_image_inputs
                 # tool-use only
