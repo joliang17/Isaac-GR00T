@@ -1104,21 +1104,17 @@ class EagleBackbone(nn.Module):
             if max_token == 1:
                 # only predict special tokens
                 # add additional eos token (self.end_id) at the end
-                import pdb;pdb.set_trace()
-                tokens_to_append = torch.where(
-                    prev_finished.unsqueeze(1),
-                    torch.full_like(next_token_raw.unsqueeze(1), self.end_id),
-                    next_token_raw.unsqueeze(1),
-                )
-                mask_to_append = torch.where(
-                    prev_finished.unsqueeze(1),
-                    torch.zeros_like(tokens_to_append, dtype=attention_mask.dtype),
-                    torch.ones_like(tokens_to_append, dtype=attention_mask.dtype),
-                )
+                if next_token_raw.item() in (self.skills_end, self.actions_id):
+                    tokens_to_append = torch.tensor([next_token_raw.item(), self.end_id], device=next_token_raw.device).unsqueeze(0)
+                else:
+                    tokens_to_append = torch.tensor([next_token_raw.item(), ], device=next_token_raw.device).unsqueeze(0)
+
+                mask_to_append = torch.ones_like(tokens_to_append, dtype=attention_mask.dtype)
                 input_ids = torch.cat([input_ids, tokens_to_append], dim=1)
                 attention_mask = torch.cat([attention_mask, mask_to_append], dim=1)
                 vl_input["eagle_input_ids"] = input_ids
                 vl_input["eagle_attention_mask"] = attention_mask
+                # self.eagle_tokenizer.decode(input_ids[0])
 
                 break
 
