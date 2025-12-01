@@ -21,6 +21,7 @@ os.environ["HF_HOME"] = CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
 os.environ["HF_MODULES_CACHE"] = CACHE_DIR
 os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import subprocess
 import sys

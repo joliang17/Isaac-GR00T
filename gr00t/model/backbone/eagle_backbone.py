@@ -912,26 +912,26 @@ class EagleBackbone(nn.Module):
         # if there is no step information (single instruction input)
         input_keys = vl_input.keys()
         step_input = [item for item in input_keys if 'step' in item]
-        if len(step_input) == 0:
-            #########################
-            # normal input
-            # directly return logits and embd
-            transcript_lm_loss = torch.tensor(0.0, device=eagle_logits.device)
-            base_loss_avg = torch.tensor(0.0, device=eagle_logits.device)
-            special_loss_avg = torch.tensor(0.0, device=eagle_logits.device)
-            embeds_tensor, masks_tensor = None, None
+        #########################
+        # normal input
+        # directly return logits and embd
+        transcript_lm_loss = torch.tensor(0.0, device=eagle_logits.device)
+        base_loss_avg = torch.tensor(0.0, device=eagle_logits.device)
+        special_loss_avg = torch.tensor(0.0, device=eagle_logits.device)
+        embeds_tensor, masks_tensor = None, None
 
-        else:
-            #########################
+        if len(step_input) != 0:
             # 2) extract action token hidden states based on action_pad_ids
-            list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
-            # self.eagle_tokenizer.decode(vl_input['input_ids'][1][11:553])
+            has_actions = (vl_input['eagle_input_ids'] == self.actions_id).any().item()
+            if has_actions:
+                list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
+                # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0])
+                # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0][11:606])
+                embeds_tensor, masks_tensor = self.flatten_actions(list_eagle_emb, list_eagle_mask)
 
-            import pdbb;pdb.set_trace()
-            embeds_tensor, masks_tensor = self.flatten_actions(list_eagle_emb, list_eagle_mask)
-
-            # 3) Compute generated loss
-            transcript_lm_loss, base_loss_avg, special_loss_avg = self._transcript_lm_loss(vl_input)
+            if not (has_actions and 'action' not in vl_input):
+                # 3) Compute generated loss
+                transcript_lm_loss, base_loss_avg, special_loss_avg = self._transcript_lm_loss(vl_input)
 
         out = {
             "transcript_lm_loss": transcript_lm_loss,

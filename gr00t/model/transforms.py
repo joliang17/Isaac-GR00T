@@ -138,7 +138,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
                         # only for inference stage
                         curr_text_list[t_id] = curr_text_list[t_id].replace('[INFER]', '')
                         in_infer = True
-                        
+                
                 if in_infer:
                     v["step_annotation"] = curr_text_list
 
@@ -228,7 +228,6 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 batch[key] = torch.from_numpy(np.stack(values))
                 if key in ('state', 'action', 'state_mask', 'action_mask'):
                     batch['eagle_' + key + '_length'] = torch.tensor([len(item) for item in values], dtype=torch.long)
-
     return batch
 
 
