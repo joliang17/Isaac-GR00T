@@ -578,8 +578,8 @@ class EagleBackbone(nn.Module):
                 last_idx = torch.nonzero(step_markers, as_tuple=False)[-1, 0].item()
 
                 # Mask everything AFTER this last step marker
-                if last_idx + 1 < T:
-                    final_mask[b, last_idx + 1 :] = True
+                if last_idx > 0:
+                    final_mask[b, :last_idx] = True
 
             return final_mask
 
@@ -603,11 +603,12 @@ class EagleBackbone(nn.Module):
             labels[final_mask] = -100
 
         # import pdb;pdb.set_trace()
-        # masked_tokens_per_sample = [ids[row == -100] for ids, row in zip(eagle_input['input_ids'], labels)]
-        # self.eagle_tokenizer.convert_ids_to_tokens(masked_tokens_per_sample[0].tolist())
-        # unmasked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
-        # self.eagle_tokenizer.convert_ids_to_tokens(eagle_input['input_ids'][0].tolist())
-        # self.eagle_tokenizer.convert_ids_to_tokens(unmasked_tokens_per_sample[0].tolist())
+        masked_tokens_per_sample = [ids[row == -100] for ids, row in zip(eagle_input['input_ids'], labels)]
+        unmasked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
+        print(self.eagle_tokenizer.decode(eagle_input['input_ids'][0]))
+        print(self.eagle_tokenizer.decode(masked_tokens_per_sample[0]))
+        print(self.eagle_tokenizer.decode(unmasked_tokens_per_sample[0]))
+        import pdb;pdb.set_trace()
 
         # We need hidden states if we are tuning the tool head
         need_hidden = self.tune_tool_end
@@ -697,9 +698,9 @@ class EagleBackbone(nn.Module):
                 valid_pred_ids = pred_ids[shift_labels != -100]
                 valid_label_ids = shift_labels[shift_labels != -100]
                 decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
-                print(''.join(decoded_texts).replace('\n\n', ''))
+                print(''.join(decoded_texts))
                 decoded_texts_label = self.eagle_tokenizer.batch_decode(valid_label_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
-                print(''.join(decoded_texts_label).replace('\n\n', ''))
+                print(''.join(decoded_texts_label))
 
                 if special_mask_A.any():
                     pred_sp_ids_A_small = special_logits_A[special_mask_A].argmax(dim=-1)
@@ -1100,6 +1101,27 @@ class EagleBackbone(nn.Module):
             )
             generated_tokens.append(recorded_token)
 
+            if max_token == 1:
+                # only predict special tokens
+                # add additional eos token (self.end_id) at the end
+                import pdb;pdb.set_trace()
+                tokens_to_append = torch.where(
+                    prev_finished.unsqueeze(1),
+                    torch.full_like(next_token_raw.unsqueeze(1), self.end_id),
+                    next_token_raw.unsqueeze(1),
+                )
+                mask_to_append = torch.where(
+                    prev_finished.unsqueeze(1),
+                    torch.zeros_like(tokens_to_append, dtype=attention_mask.dtype),
+                    torch.ones_like(tokens_to_append, dtype=attention_mask.dtype),
+                )
+                input_ids = torch.cat([input_ids, tokens_to_append], dim=1)
+                attention_mask = torch.cat([attention_mask, mask_to_append], dim=1)
+                vl_input["eagle_input_ids"] = input_ids
+                vl_input["eagle_attention_mask"] = attention_mask
+
+                break
+
             finished = prev_finished | (next_token_raw == self.end_id)
 
             tokens_to_append = torch.where(
@@ -1118,8 +1140,8 @@ class EagleBackbone(nn.Module):
 
             vl_input["eagle_input_ids"] = input_ids
             vl_input["eagle_attention_mask"] = attention_mask
-
-            if max_token == 1 or finished.all():
+            
+            if finished.all():
                 break
         
         # Cleanup return
