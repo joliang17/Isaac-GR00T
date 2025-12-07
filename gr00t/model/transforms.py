@@ -64,11 +64,11 @@ def print_masked_tokens(input_ids, labels, tokenizer):
     labels:    [seq_len]
     tokenizer: tokenizer used to convert ids → tokens
     """
+    masked      = [ids for ids, lab in zip(input_ids, labels) if lab == -100]
+    unmasked    = [ids for ids, lab in zip(input_ids, labels) if lab != -100]
 
-    tokens = tokenizer.convert_ids_to_tokens(input_ids)
-
-    masked      = [tok for tok, lab in zip(tokens, labels) if lab == -100]
-    unmasked    = [tok for tok, lab in zip(tokens, labels) if lab != -100]
+    masked = tokenizer.decode(masked)
+    unmasked = tokenizer.decode(unmasked)
 
     print("\n=== MASKED TOKENS (labels == -100) ===")
     print("".join(masked).replace("<IMG_CONTEXT>", ""))
@@ -171,7 +171,9 @@ def collate(features: List[dict], eagle_processor) -> dict:
 
             labels = user_input_label(eagle_inputs, eagle_processor.tokenizer)
             # import pdb;pdb.set_trace()
-            # print_masked_tokens(input_ids=eagle_inputs['input_ids'][0].tolist(), labels=labels[0].tolist(), tokenizer=eagle_processor.tokenizer)
+            # if '[TRAJ_MODE]' in text_list:
+            #     import pdb;pdb.set_trace()
+            #     print_masked_tokens(input_ids=eagle_inputs['input_ids'][1].tolist(), labels=labels[1].tolist(), tokenizer=eagle_processor.tokenizer)
 
             batch["eagle_llm_labels"] = labels
 

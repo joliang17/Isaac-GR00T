@@ -75,6 +75,11 @@ class ArgsConfig:
     - 'block_prefix': [1-2]..[1-10], [11-12].. (Expand prefixes, then jump block)
     - 'sliding_prefix': [1-2]..[1-10], [2-3]..[2-11] (Expand prefixes, slide by 1)
     """
+    skill_level: str = "step"
+    """
+    - 'step': step-wise prediction for skill-level only
+    - 'window': window-wise prediction for skill-level only
+    """
 
     min_seq_len: int = 2
     """Minimum sequence length. Set to 2 to generate '1-2' as the smallest window."""
@@ -223,6 +228,7 @@ def main(config: ArgsConfig):
             video_backend=config.video_backend,
             window_length=config.window_length, 
             windowing_mode=config.windowing_mode,
+            skill_level=config.skill_level,
             min_seq_len=config.min_seq_len,
             skill_inclusion_ratio=config.skill_inclusion_ratio,
             action_ds_ratio=config.action_ds_ratio,
@@ -240,6 +246,7 @@ def main(config: ArgsConfig):
                 video_backend=config.video_backend,
                 window_length=config.window_length, 
                 windowing_mode=config.windowing_mode,
+                skill_level=config.skill_level,
                 min_seq_len=config.min_seq_len,
                 skill_inclusion_ratio=config.skill_inclusion_ratio,
                 action_ds_ratio=config.action_ds_ratio,

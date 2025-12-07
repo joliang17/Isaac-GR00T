@@ -124,7 +124,8 @@ class LeRobotSingleDataset(Dataset):
         action_ds_ratio: float = 1.0,
         toolend_upsample_ratio: float = 1.0,
         min_seq_len: int = 2,
-        windowing_mode: str = 'sliding_prefix'
+        windowing_mode: str = 'sliding_prefix',
+        skill_level: str = 'window'
     ):
         """
         Initialize the dataset.
@@ -178,6 +179,7 @@ class LeRobotSingleDataset(Dataset):
         # "sliding_prefix": Produces 1-2...1-10, 2-3... (Expands prefixes, slides by 1).
 
         self.windowing_mode = windowing_mode
+        self.skill_level = skill_level
         self.min_seq_len = min_seq_len
 
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
@@ -505,6 +507,26 @@ class LeRobotSingleDataset(Dataset):
 
             if T <= 0: continue
 
+            if self.skill_level == 'step':
+                # ==========================================
+                # BRANCH A: SKILL DATA (ttype == 1)
+                # Logic: Extract step-wise data (only 1 step per window)
+                # ==========================================
+                if ttype == 1:
+                    for idx in range(T):
+                        # Create a window with a single step
+                        all_windows.append([(tid, idx)])
+                        
+                        if max_windows is not None and len(all_windows) >= max_windows:
+                            self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
+                            return all_windows
+                    continue
+
+            # ==========================================
+            # BRANCH B: TRAJECTORY DATA (ttype == 0)
+            # Logic: Complex windowing (Fixed/Block/Sliding + Action DS + Tool Upsample)
+            # ==========================================
+            
             # --- 2. Step Filtering ---
             available_indices = list(range(T))
             tool_end_indices = set()
@@ -557,18 +579,20 @@ class LeRobotSingleDataset(Dataset):
                     curr += wl
 
             elif mode == 'sliding_prefix':
-                last_start = n_available - min_seq_len
+                # sliding windows of fixed length = min_seq_len
                 curr = 0
+                last_start = n_available - min_seq_len
+                max_len_here = min(wl, n_available - curr)
+
                 while curr <= last_start:
-                    max_len_here = min(wl, n_available - curr)
-                    for length in range(min_seq_len, max_len_here + 1):
-                        windows_to_process.append(available_indices[curr : curr + length])
+                    windows_to_process.append(
+                        available_indices[curr : curr + max_len_here]
+                    )
                     curr += stride
 
             # --- 4. Final Processing ---
             for step_indices in windows_to_process:
-                window = [(tid, s_idx) for s_idx in step_indices]
-                
+                window = [(tid, s_idx) for s_idx in step_indices]                
                 repeats = 1
                 is_tool_end = False
                 
@@ -588,7 +612,7 @@ class LeRobotSingleDataset(Dataset):
                     if max_windows is not None and len(all_windows) >= max_windows:
                         self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
                         return all_windows
-
+                
         self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
         return all_windows
 
@@ -773,6 +797,12 @@ class LeRobotSingleDataset(Dataset):
             # task_instruction: <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>Open the cabinet door<|im_end|>\n<|im_start|>assistant\n
             task_instruction_postfix = "<|im_end|>\n<|im_start|>assistant\n"
             task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix, '')
+
+            # remove all occurrences like SCENE1, ]SCENE2, SCENE3, etc.
+            new_text = re.sub(r'\bSCENE\d+\b\s*', '', task_instruction)
+            if new_text != task_instruction:
+                task_instruction = new_text
+
             if '<image-2>' in task_instruction:
                 # 2 views
                 num_view = 2
@@ -786,6 +816,8 @@ class LeRobotSingleDataset(Dataset):
             else:
                 instruct_begin = task_instruction.replace(f'<image-{num_view}>', f"<image-{num_view}>[TRAJ_MODE]")
 
+            traj_instruction = instruct_begin.split('<image-2>')[-1].split('<|im_end|>')[0].replace('Skill-mode: ', '')
+            
             list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
             num_steps = len(list_transformed_steps)
 
@@ -803,10 +835,12 @@ class LeRobotSingleDataset(Dataset):
                 if i > 0:
                     # add image
                     if num_view == 2:
-                        image_mid = f"<image-{2*i+1}><image-{2*i+2}>"
+                        # image_mid = f"<image-{2*i+1}><image-{2*i+2}>"
+                        image_mid = f"<image-{1}><image-{2}>"
                     else:
-                        image_mid = f"<image-{i+1}>"
-                    image_prefix = f'<|im_start|>user\n{image_mid}<|im_end|>\n'
+                        # image_mid = f"<image-{i+1}>"
+                        image_mid = f"<image-{1}>"
+                    image_prefix = f'<|im_start|>user\n{image_mid}{traj_instruction}<|im_end|>\n'
                 else:
                     # only add text description
                     image_prefix = ''
@@ -821,20 +855,15 @@ class LeRobotSingleDataset(Dataset):
             # <|im_start|>user\n<image-1><image-2>put the yellow and white mug in the microwave and close it<|im_end|>\n
             # <|im_start|>assistant\n
 
+            if 'TOOL_END' in concated_text:
+                import pdb;pdb.set_trace()
+
             list_transformed_state = [list_step_transform[i]['state'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_state_mask = [list_step_transform[i]['state_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_action = [list_step_transform[i]['action'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_action_mask = [list_step_transform[i]['action_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
 
             dict_output = list_step_transform[-1]
-            # concated_text = concated_text.replace('[ACTIONS]', '').replace('[PAD_A]', '')
-
-            # remove all occurrences like SCENE1, ]SCENE2, SCENE3, etc.
-            new_text = re.sub(r'\bSCENE\d+\b\s*', '', concated_text)
-            # new_text = re.sub(r'\s+', ' ', new_text).strip()
-            if new_text != concated_text:
-                concated_text = new_text
-
             # # add skill special token
             # if '==' in concated_text:
             #     concated_text = re.sub(r"\s*==\s*(\d+)\s*==\s*", r"[SKILL_\1]", concated_text)

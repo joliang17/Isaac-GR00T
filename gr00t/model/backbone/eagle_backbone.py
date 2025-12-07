@@ -927,8 +927,9 @@ class EagleBackbone(nn.Module):
             has_actions = (vl_input['eagle_input_ids'] == self.actions_id).any().item()
             if has_actions:
                 list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
+                # import pdb;pdb.set_trace()
                 # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0])
-                # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0][11:606])
+                # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0][14:558])
                 embeds_tensor, masks_tensor = self.flatten_actions(list_eagle_emb, list_eagle_mask)
 
             if not (has_actions and 'action' not in vl_input):
