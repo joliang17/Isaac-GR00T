@@ -1,20 +1,17 @@
 #!/bin/bash
 
-# bash shell_scripts/eval_script.sh
-
-# sbatch nextstep_freezeembB_stage2.slurm  
-# sbatch nextstep_onlyembA_stage2.slurm  
-# sbatch nextstep_freezeembB_stage2_slicing.slurm 
-# sbatch nextstep_onlyembA_stage2_slicing.slurm  
-
-# sbatch nextstep_toolhead_freezeembB_stage2.slurm 
-# sbatch nextstep_toolhead_onlyembA_stage2.slurm  
-
-# sbatch nextstep_toolus_freezeembB_stage2.slurm 
-# sbatch nextstep_toolus_onlyembA_stage2.slurm  
+bash slurm_scripts/nextstep_stage1_onlytext.sh
+bash slurm_scripts/nextstep_frzembB_stage2.sh
+sbatch slurm_scripts/nextstep_frzembB_stage3_action_llm.sh
+bash slurm_scripts/nextstep_frzembB_stage3_action.sh
 
 
-bash allstep_freezeembB_stage2.slurm  
-bash allstep_onlyembA_stage2.slurm   
+bash slurm_scripts/nextstep_onlyembA_stage2.sh
+sbatch slurm_scripts/nextstep_onlyembA_stage3_action.sh
 
-# bash nextstep_onlyembA_stage2.slurm   
+bash slurm_scripts/nextstep_frzembB_stage3_action.sh
+bash slurm_scripts/nextstep_onlyembA_stage3_action.sh
+
+# sbatch slurm_scripts/allstep_stage1_onlytext.sh
+# sbatch slurm_scripts/allstep_frzembB_stage2.sh
+# sbatch slurm_scripts/allstep_onlyembA_stage2.sh

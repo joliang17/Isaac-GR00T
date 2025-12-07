@@ -26,8 +26,8 @@ run_eval () {
     model_ckpt="$1"
     base_dir="/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint"
 
-    merged_dir="${base_dir}/${model_ckpt}_merged/checkpoint-60000"
-    orig_dir="${base_dir}/${model_ckpt}/checkpoint-60000"
+    merged_dir="${base_dir}/${model_ckpt}_merged/checkpoint-6000"
+    orig_dir="${base_dir}/${model_ckpt}/checkpoint-6000"
 
     echo "=============================="
     echo "[INFO] Processing model: ${model_ckpt}"
@@ -61,11 +61,11 @@ run_eval () {
         --num_steps_wait 10 \
         --num_trials_per_task 2 \
         --embodiment_tag new_embodiment \
-        --data_config libero_original \
+        --data_config libero_traj_arms_2 \
         --model_path "${final_model_path}" \
         --denoising_steps 8 \
         --model_name "${model_ckpt}" \
-        # --call_baseline
+        --call_baseline
 
     echo "[INFO] Evaluation finished for ${model_ckpt}"
     echo
@@ -75,7 +75,10 @@ run_eval () {
 
 # run_eval "libero_training"
 
-# run_eval "stage2_freezeembB_nextstep_skip_action"
+run_eval "stage2_mv_frzembB_nextstep_skip_action"
+
+# run_eval "stage3_mv_frzembB_nextstep_actiononly"
+
 # run_eval "stage2_onlyembA_nextstep_skip_action"
 
 # run_eval "stage2_freezeembB_allstep_skip_action"
