@@ -224,6 +224,8 @@ class GR00T_N1_5(PreTrainedModel):
         action_head_outputs["action_head_loss"] = ah_loss
         action_head_outputs.update({k: v for k, v in backbone_outputs.items() if "loss" in k})
         action_head_outputs["loss"] = ah_loss + action_head_outputs['transcript_lm_loss']
+        action_head_outputs["logits"] = backbone_outputs['logits']
+        action_head_outputs["labels"] = backbone_outputs['labels']
         return action_head_outputs
 
     @torch.no_grad()
@@ -235,13 +237,7 @@ class GR00T_N1_5(PreTrainedModel):
         inside_tool: bool=False,
         toolend_head: bool=False
     ) -> BatchFeature:
-        def create_empty_actions(backbone_inputs):
-            token_device = backbone_inputs['eagle_input_ids'].device if 'eagle_input_ids' in backbone_inputs else self.device
-            backbone_outputs['generated_tool_token_ids'] = torch.tensor(
-                decode_tokens, dtype=torch.long, device=token_device
-            )
-
-            batch_size = backbone_outputs[BACKBONE_FEATURE_KEY].shape[0]
+        def create_empty_actions(backbone_inputs, batch_size):
             zero_actions = torch.zeros(
                 (batch_size, self.action_horizon, self.action_dim),
                 dtype=self.action_head.dtype,
@@ -254,6 +250,8 @@ class GR00T_N1_5(PreTrainedModel):
         # Because the behavior of backbones remains the same for training and inference, we can use `forward` for backbones.
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         tools_output = ''
+        max_generation_steps = max(1, getattr(self, 'max_generation_steps', 64))
+        batch_size = backbone_inputs['eagle_input_ids'].size()[0]
 
         if mode == 'baseline':
             backbone_outputs = self.backbone(backbone_inputs)
@@ -261,72 +259,30 @@ class GR00T_N1_5(PreTrainedModel):
             action_head_outputs['action_head_skipped'] = False
             past_key_values = None
         else:
+            # DEBUG: generate text first to see what is the output
+            output_ids, decoded_text = self.backbone.generate_entire_text(backbone_inputs, max_new_tokens=max_generation_steps, )
+
             # self.backbone.eagle_tokenizer.decode(backbone_inputs['eagle_input_ids'][0])
-            generated_ids, backbone_outputs = self.backbone.generate(
-                backbone_inputs, max_token=1, past_key_values=past_key_values, special_token_only=True, inside_tool=inside_tool, toolend_head=toolend_head,
-            )
+            token_id, tools_output, backbone_outputs = self.backbone.generate(backbone_inputs, max_token=max_generation_steps, past_key_values=past_key_values, inside_tool=inside_tool, toolend_head=toolend_head,)
             past_key_values = backbone_outputs.get('past_key_values', None)
 
-            if isinstance(generated_ids, torch.Tensor):
-                if generated_ids.numel() == 0:
-                    raise RuntimeError('Backbone.generate returned no tokens for routing.')
-                token_id = int(generated_ids.view(-1)[-1].item())
-            elif generated_ids is not None:
-                token_id = int(generated_ids)
-            else:
-                raise RuntimeError('Backbone.generate returned an unexpected token payload.')
+            if isinstance(token_id, torch.Tensor):
+                token_id = token_id.item()
                         
             if token_id == self.backbone.actions_id:
                 # Step 2a: use the action head when the route token is [ACTIONS]
+                tools_output = ''
                 action_head_outputs = self.action_head.get_action(backbone_outputs, action_inputs)
                 action_head_outputs['action_head_skipped'] = False
-                # import pdb;pdb.set_trace()
                 
             elif token_id == self.backbone.tools_id:
                 # Step 2b: keep generating tool tokens until we observe [EOT]
-                max_generation_steps = max(1, getattr(self, 'max_generation_steps', 64))
-                tools_tokens = []
-                steps = 0
-                reached_end = False
-
-                while steps < max_generation_steps:
-                    generated_ids, backbone_outputs = self.backbone.generate(
-                        backbone_inputs, max_token=1, past_key_values=past_key_values
-                    )
-                    past_key_values = backbone_outputs.get('past_key_values', None)
-
-                    next_token = None
-                    if isinstance(generated_ids, torch.Tensor) and generated_ids.numel() > 0:
-                        next_token = int(generated_ids.view(-1)[-1].item())
-                    elif generated_ids is not None:
-                        next_token = int(generated_ids)
-
-                    if next_token is None:
-                        break
-                    if next_token == self.backbone.end_id:
-                        reached_end = True
-                        break
-
-                    tools_tokens.append(next_token)
-                    steps += 1
-
-                decode_tokens = [self.backbone.tools_id] + tools_tokens
-                if reached_end:
-                    decode_tokens.append(self.backbone.end_id)
-
-                tools_output = self.backbone.eagle_tokenizer.decode(
-                    decode_tokens, skip_special_tokens=True
-                ).strip()
-
-                action_head_outputs = create_empty_actions(backbone_inputs)
+                action_head_outputs = create_empty_actions(backbone_inputs, batch_size)
 
             elif token_id == self.backbone.skills_end:
                 # Step 2c: refers to the end of a skill execution
-                decode_tokens = [self.backbone.skills_end]
-                tools_output = self.backbone.eagle_tokenizer.decode(
-                    decode_tokens, skip_special_tokens=True
-                ).strip()
-                action_head_outputs = create_empty_actions(backbone_inputs)
+                tools_output = ''
+                action_head_outputs = create_empty_actions(backbone_inputs, batch_size)
 
             else:
                 decode_text = self.backbone.eagle_tokenizer.decode(token_id)

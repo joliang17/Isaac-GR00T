@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Sequence
 import re
 import random
+import pickle
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, ValidationError
@@ -123,7 +124,7 @@ class LeRobotSingleDataset(Dataset):
         skill_inclusion_ratio: float = 0.5, 
         action_ds_ratio: float = 1.0,
         toolend_upsample_ratio: float = 1.0,
-        min_seq_len: int = 2,
+        min_seq_len: int = 1,
         windowing_mode: str = 'sliding_prefix',
         skill_level: str = 'window'
     ):
@@ -580,14 +581,12 @@ class LeRobotSingleDataset(Dataset):
 
             elif mode == 'sliding_prefix':
                 # sliding windows of fixed length = min_seq_len
-                curr = 0
                 last_start = n_available - min_seq_len
-                max_len_here = min(wl, n_available - curr)
-
+                curr = 0
                 while curr <= last_start:
-                    windows_to_process.append(
-                        available_indices[curr : curr + max_len_here]
-                    )
+                    max_len_here = min(wl, n_available - curr)
+                    for length in range(min_seq_len, max_len_here + 1):
+                        windows_to_process.append(available_indices[curr : curr + length])
                     curr += stride
 
             # --- 4. Final Processing ---
@@ -612,7 +611,7 @@ class LeRobotSingleDataset(Dataset):
                     if max_windows is not None and len(all_windows) >= max_windows:
                         self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
                         return all_windows
-                
+                        
         self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
         return all_windows
 
@@ -781,6 +780,8 @@ class LeRobotSingleDataset(Dataset):
         else:
             list_steps = self._window_steps[index]
             list_step_data = [self.get_step_data(item[0], item[1]) for item in list_steps]  # dict_keys(['video.front_camera', 'state.single_arm', 'state.gripper', 'action.single_arm', 'action.gripper', 'annotation.step_description'])
+            image1 = list_step_data[0]['video.image']
+            image2 = list_step_data[0]['video.wrist_image']
             # DEBUG: 
             list_step_transform = [self.transforms(item) for item in list_step_data]
 
@@ -855,25 +856,24 @@ class LeRobotSingleDataset(Dataset):
             # <|im_start|>user\n<image-1><image-2>put the yellow and white mug in the microwave and close it<|im_end|>\n
             # <|im_start|>assistant\n
 
-            if 'TOOL_END' in concated_text:
-                import pdb;pdb.set_trace()
-
             list_transformed_state = [list_step_transform[i]['state'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_state_mask = [list_step_transform[i]['state_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_action = [list_step_transform[i]['action'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_action_mask = [list_step_transform[i]['action_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
 
             dict_output = list_step_transform[-1]
-            # # add skill special token
-            # if '==' in concated_text:
-            #     concated_text = re.sub(r"\s*==\s*(\d+)\s*==\s*", r"[SKILL_\1]", concated_text)
-
+            
             dict_output['eagle_content']['image_inputs'] = agg_images
             dict_output['eagle_content']['text_list'] = [concated_text]
             dict_output['state'] = list_transformed_state
             dict_output['state_mask'] = list_transformed_state_mask
             dict_output['action'] = list_transformed_action
             dict_output['action_mask'] = list_transformed_action_mask
+
+            # import pdb;pdb.set_trace()
+            # dict_output['images'] = [image1, image2]
+            # with open("training_sample_cut4.pkl", 'wb') as f: pickle.dump(dict_output, f)
+
         return dict_output
 
 

@@ -377,7 +377,7 @@ class FlowmatchingActionHead(nn.Module):
         backbone_output = self.process_backbone_output(backbone_output)
 
         # Get vision and language embeddings.
-        if backbone_output.backbone_features_multi is not None:
+        if backbone_output.get('backbone_features_multi', None) is not None:
             vl_embs = backbone_output.backbone_features_multi
             num_action = action_input.state.shape[0]
         else:

@@ -161,6 +161,7 @@ def eval_libero(cfg) -> None:
                     # # Save preprocessed image for replay video
                     top_view.append(img)
                     wrist_view.append(wrist_img)
+                    high_level_instruct = '[TRAJ_MODE]' + task.language
 
                     if not inside_tools:
                         # on trajectory level
@@ -168,10 +169,13 @@ def eval_libero(cfg) -> None:
                             task_instruction = task.language
                             cur_instr = '[TRAJ_MODE]' + task_instruction
                         else:
-                            cur_instr = "[INFER_CNT]"
+                            # not the starting step of the trajectory
+                            # used as a hint for text transform
+                            cur_instr = "[INFER_CNT]" + high_level_instruct
 
                         traj_img_count += 1
                         # task instruction is already included in past_key_values_traj
+                        # [INFER]: refers to our vla: add to step annotation
                         obs_dict = process_observation(obs, "[INFER]" + cur_instr, headless=cfg.headless)
                         obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
                         action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
@@ -196,7 +200,7 @@ def eval_libero(cfg) -> None:
                     else:
                         # inside tools
                         # skill instruction is already included in past_key_values_traj
-                        obs_dict = process_observation(obs, "[INFER]" + '[INFER_CNT]', headless=cfg.headless)
+                        obs_dict = process_observation(obs, "[INFER]" + '[INFER_CNT]' + tools_output, headless=cfg.headless)
                         obs_dict_base = process_observation(obs, tools_output, headless=cfg.headless)
                         action_chunk, cur_tools_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, past_key_values=past_key_values_tools, mode='interleaved', inside_tool=True, call_baseline=call_baseline, )
                         if call_baseline:

@@ -26,8 +26,8 @@ bash shell_scripts/run_slurm_umiacs.sh groot_libero_skip_action  traj_video_both
 bash shell_scripts/run_slurm_umiacs.sh skill_id_textonly  traj_skill_only_v2
 bash shell_scripts/run_slurm_umiacs.sh skill_id_trajall  traj_only_v2
 
-bash shell_scripts/run_slurm_umiacs.sh skill_id_textonly_v2  traj_skill_only_id
-bash shell_scripts/run_slurm_umiacs.sh skill_id_trajall_v2  traj_only_id
+# bash shell_scripts/run_slurm_umiacs.sh skill_id_textonly_v2  traj_skill_only_id
+# bash shell_scripts/run_slurm_umiacs.sh skill_id_trajall_v2  traj_only_id
 
 bash shell_scripts/run_slurm_umiacs.sh skill_noid_textonly  traj_skill_only_noid
 bash shell_scripts/run_slurm_umiacs.sh skill_noid_trajall  traj_only_noid

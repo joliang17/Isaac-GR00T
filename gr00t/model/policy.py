@@ -140,10 +140,8 @@ class Gr00tPolicy(BasePolicy):
         self._load_model(model_path)
 
         # ADDED: Load transforms
-        # self._load_metadata(Path("/fs/nexus-projects/wilddiffusion/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
-        # self._load_metadata(self.model_path / "experiment_cfg")
-        # self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
         self._load_metadata(self.model_path / "experiment_cfg")
+        # self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
         self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"), base=True)
         # Load horizons
         self._load_horizons()
@@ -238,7 +236,67 @@ class Gr00tPolicy(BasePolicy):
         if self.data_config == 'libero_traj_arms':
             del observations['video.wrist_image']
         normalized_input = self.apply_transforms(observations)
-        normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False, inside_tool=inside_tool, )
+        
+        ########################################
+        # DEBUG
+        with open(f"input_ids.pkl", 'rb') as f: 
+            vl_input, prev_logits = pickle.load(f)
+        vl_input_copy = vl_input.copy()
+
+        # call model for logits
+        eagle_input = {k.removeprefix("eagle_"): v for k, v in vl_input.items() if k.startswith("eagle_") and k != "eagle_num_images" and 'length' not in k }
+        eagle_input.pop("image_sizes", None)
+        labels = eagle_input.pop("llm_labels")
+
+        outputs = self.model.backbone.eagle_model(**eagle_input, return_dict=True, output_hidden_states=False)
+        cur_logits = outputs.logits
+
+        diff_mask = cur_logits[0, 561] != prev_logits[0, 561]
+        diff_indices = torch.nonzero(diff_mask, as_tuple=False).squeeze(-1)
+        print(torch.stack([diff_indices, cur_logits[0, 561][diff_indices], prev_logits[0, 561][diff_indices] ], dim=1))
+        import pdb;pdb.set_trace()
+
+        # weight_A = self.model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
+        # head_A = self.model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
+        # weight_B = self.model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_B.weight
+        # head_B = self.model.backbone.eagle_model.language_model.lm_head.special_head_B.weight
+        # with open('training_weight.pkl', 'rb') as f: (weight_A_t, head_A_t, weight_B_t, head_B_t) = pickle.load(f)
+        
+        # with open('saved_weight.pkl', 'wb') as f: pickle.dump((weight_A, weight_B), f)
+
+
+        infer_str = self.model.backbone.eagle_tokenizer.decode(normalized_input['eagle_input_ids'][0]).replace('<IMG_CONTEXT>', '')
+        training_str = self.model.backbone.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0][0:560]).replace('<IMG_CONTEXT>', '')
+
+        vl_input_copy = {key: value for key, value in vl_input_copy.items() if key in normalized_input}
+        seq_len = vl_input["eagle_input_ids"].shape[-1]
+        vl_input_copy_text = { k: v[:1, 0:560] for k, v in vl_input_copy.items() if torch.is_tensor(v) and v.ndim == 2 and v.shape[-1] == seq_len}
+        vl_input_copy_missing = {k: v for k, v in vl_input_copy.items() if k not in vl_input_copy_text}
+
+        vl_input_copy_text['embodiment_id'] = normalized_input['embodiment_id']
+        vl_input_copy_text['eagle_num_images'] = normalized_input['eagle_num_images']
+        vl_input_copy_text['eagle_state_length'] = normalized_input['eagle_state_length']
+        vl_input_copy_text['eagle_state_mask_length'] = normalized_input['eagle_state_mask_length'][:1]
+        vl_input_copy_text['step_input_ids'] = vl_input_copy['step_input_ids'][:1]
+        # vl_input_copy_text['step_input_ids'] = normalized_input['step_input_ids'][:1]
+        vl_input_copy_text['step_attention_mask'] = vl_input_copy['step_attention_mask'][:1]
+        vl_input_copy_text['eagle_pixel_values'] = vl_input_copy['eagle_pixel_values'][:2]
+        vl_input_copy_text['eagle_image_sizes'] = vl_input_copy['eagle_image_sizes'][:2]
+        vl_input_copy_text = {k: v.cpu() for k, v in vl_input_copy_text.items()}
+        vl_input_copy_text.update({k: v for k, v in normalized_input.items() if k not in vl_input_copy_text})
+
+
+        eagle_input_text = {k.removeprefix("eagle_"): v.cuda() for k, v in vl_input_copy_text.items() if k.startswith("eagle_") and k != "eagle_num_images" and 'length' not in k }
+        eagle_input_text.pop("image_sizes", None)
+        eagle_input_text.pop("llm_labels")
+        outputs = self.model.backbone.eagle_model(**eagle_input_text, return_dict=True, output_hidden_states=False)
+        cur_logits_text = outputs.logits
+
+        import pdb;pdb.set_trace()
+        normalized_action, backbone_outputs, tools_output, _ = self._get_action_from_normalized_input(vl_input_copy_text, past_key_values=None, mode=mode, call_baseline=False, inside_tool=inside_tool, )
+
+        import pdb;pdb.set_trace()
+        normalized_action, backbone_outputs, tools_output, _ = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False, inside_tool=inside_tool, )
         unnormalized_action = self._get_unnormalized_action(normalized_action, )
         if not is_batch:
             unnormalized_action = squeeze_dict_values(unnormalized_action)
@@ -254,6 +312,7 @@ class Gr00tPolicy(BasePolicy):
             if not is_batch:
                 unnormalized_action_bs = squeeze_dict_values(unnormalized_action_bs)
             
+        tools_output = tools_output.replace('<|im_end|>', '')
         return unnormalized_action, tools_output, past_key_values, unnormalized_action_bs
 
     def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> torch.Tensor:
@@ -356,6 +415,14 @@ class Gr00tPolicy(BasePolicy):
         model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=COMPUTE_DTYPE, )
         model.eval()  # Set model to eval mode
         model.to(device=self.device)  # type: ignore
+
+        weight_A = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
+        # head_A = model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
+        # weight_B = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_B.weight
+        # head_B = model.backbone.eagle_model.language_model.lm_head.special_head_B.weight
+        # import pdb;pdb.set_trace()
+        model.backbone.eagle_model.language_model.lm_head.special_head_A.weight = weight_A
+        # model.backbone.eagle_model.language_model.lm_head.special_head_A.weight == weight_A
 
         model = check_horizon(model)
         self.model = model

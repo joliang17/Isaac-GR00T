@@ -21,6 +21,7 @@ from math import isclose
 
 import torch  # noqa: F401 # isort: skip
 import torchvision  # noqa: F401 # isort: skip
+import traceback
 
 # Import decord with graceful fallback
 try:
@@ -145,12 +146,16 @@ def get_frames_by_timestamps(
         # load all frames until last requested frame
         loaded_frames = []
         loaded_ts = []
-        for frame in reader:
-            current_ts = frame["pts"]
-            loaded_frames.append(frame["data"].numpy())
-            loaded_ts.append(current_ts)
-            if current_ts > last_ts or isclose(current_ts, last_ts, rel_tol=1e-8, abs_tol=1e-8):
-                break
+        try:
+            for frame in reader:
+                current_ts = frame["pts"]
+                loaded_frames.append(frame["data"].numpy())
+                loaded_ts.append(current_ts)
+                if current_ts > last_ts or isclose(current_ts, last_ts, rel_tol=1e-8, abs_tol=1e-8):
+                    break
+        except:
+            traceback.print_exc()
+            import pdb;pdb.set_trace()
         reader.container.close()
         reader = None
         frames = np.array(loaded_frames)

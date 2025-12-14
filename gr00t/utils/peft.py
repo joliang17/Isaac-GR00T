@@ -28,6 +28,8 @@ def _wrap_forward(model):
         action_head_outputs["action_head_loss"] = ah_loss
         action_head_outputs.update({k: v for k, v in backbone_outputs.items() if "loss" in k})
         action_head_outputs["loss"] = ah_loss + action_head_outputs['transcript_lm_loss']
+        action_head_outputs["logits"] = backbone_outputs['logits']
+        action_head_outputs["labels"] = backbone_outputs['labels']
         return action_head_outputs
 
     model.forward = _forward_improved

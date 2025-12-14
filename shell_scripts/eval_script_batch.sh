@@ -73,9 +73,9 @@ run_eval () {
 
 
 
-# run_eval "libero_training"
+run_eval "libero_training"
 
-run_eval "stage2_mv_frzembB_nextstep_skip_action"
+# run_eval "stage2_mv_frzembB_nextstep_skip_action"
 
 # run_eval "stage3_mv_frzembB_nextstep_actiononly"
 

@@ -32,14 +32,14 @@ from typing import List, Literal
 import torch
 import tyro
 from transformers import TrainingArguments
-
+from torch.utils.data import Subset
 from gr00t.data.dataset import LeRobotMixtureDataset, LeRobotSingleDataset
 from gr00t.data.schema import EmbodimentTag
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from gr00t.experiment.runner import TrainRunner
 from gr00t.model.gr00t_n1 import GR00T_N1_5
 from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING
-from gr00t.utils.peft import get_lora_model, list_trainable_parameter_names
+from gr00t.utils.peft import get_lora_model, list_trainable_parameter_names, tie_all_special_weights
 
 
 @dataclass
@@ -81,7 +81,7 @@ class ArgsConfig:
     - 'window': window-wise prediction for skill-level only
     """
 
-    min_seq_len: int = 2
+    min_seq_len: int = 1
     """Minimum sequence length. Set to 2 to generate '1-2' as the smallest window."""
 
     stride: int = 1
@@ -109,6 +109,9 @@ class ArgsConfig:
 
     save_steps: int = 1000
     """Number of steps between saving checkpoints."""
+
+    do_eval: bool = False
+    """Whether to do sanity check"""
 
     # Model parameters
     base_model_path: str = "nvidia/GR00T-N1.5-3B"
@@ -269,6 +272,12 @@ def main(config: ArgsConfig):
         )
         print(f"Loaded {len(single_datasets)} datasets, with {config.dataset_path} ")
 
+    if config.do_eval:
+        eval_sanity_set = Subset(train_dataset, indices=range(20))
+        import pdb;pdb.set_trace()
+    else:
+        eval_sanity_set = None
+
     # ------------ step 2: load model ------------
     # First, get the data config to determine action horizon
     data_action_horizon = len(data_config_cls.action_indices)
@@ -390,8 +399,13 @@ def main(config: ArgsConfig):
             tune_special_B=config.tune_special_B,
             tune_tool_end=config.tune_tool_end,
         )
-    elif config.windowing_mode != 'step':
-        model.action_head.requires_grad_(train_action_head)
+    else:
+        # tie model weight
+        tie_all_special_weights(model)
+
+        # check wether head & embeddings shared the same weight
+        if config.windowing_mode != 'step':
+            model.action_head.requires_grad_(train_action_head)
 
     _ = list_trainable_parameter_names(model)
             
@@ -427,26 +441,20 @@ def main(config: ArgsConfig):
         save_total_limit=5,
         report_to=config.report_to,
         seed=42,
-        do_eval=False,
+        # do_eval=False,
         ddp_find_unused_parameters=False,
         ddp_bucket_cap_mb=100,
         torch_compile_mode=None,
-        max_grad_norm=config.grad_norm
+        max_grad_norm=config.grad_norm,
+
+        # --- EVALUATION SETTINGS ---
+        do_eval=config.do_eval, 
+        eval_strategy="steps" if config.do_eval else "no", 
+        eval_steps=config.save_steps, 
+        per_device_eval_batch_size=config.batch_size, 
+        eval_accumulation_steps=1,
+        # ---------------------------
     )
-    # zero_params = [n for n,p in model.named_parameters() if p.numel()>0 and torch.count_nonzero(p)==0]
-    # zero_params1 = [item for item in zero_params if 'lora' not in item]
-    # print(zero_params1)
-    if False:
-        model.backbone.eagle_model.language_model.model.embed_tokens.weight
-        model.backbone.eagle_model.language_model.lm_head.weight
-
-        model.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
-        model.backbone.eagle_model.language_model.lm_head.base_head.weight
-
-        model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
-        model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_B.weight
-        model.backbone.eagle_model.language_model.lm_head.special_head_A.weight
-        model.backbone.eagle_model.language_model.lm_head.special_head_B.weight
 
     # 2.2 run experiment
     experiment = TrainRunner(
@@ -454,6 +462,7 @@ def main(config: ArgsConfig):
         model=model,
         training_args=training_args,
         resume_from_checkpoint=config.resume,
+        eval_dataset=eval_sanity_set,
     )
 
     # 2.3 run experiment
