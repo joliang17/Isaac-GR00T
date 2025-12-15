@@ -378,6 +378,14 @@ def main(config: ArgsConfig):
             model.backbone.tool_end_head.bias.data[1] = -5.0 
         print("Initialized tool_end_head with custom weights.")
 
+    # Initialize the tool head so it doesn't output garbage initially
+    if config.tune_tool_end and hasattr(model.backbone, "tool_head") and config.base_model_path == "nvidia/GR00T-N1.5-3B":
+        with torch.no_grad():
+            model.backbone.tool_head.weight.data.normal_(mean=0.0, std=0.02)
+            model.backbone.tool_head.bias.data.zero_()
+            model.backbone.tool_head.bias.data[1] = -5.0 
+        print("Initialized tool_head with custom weights.")
+
     # Set the model's compute_dtype to bfloat16
     model.compute_dtype = "bfloat16"
     model.config.compute_dtype = "bfloat16"

@@ -260,10 +260,13 @@ class GR00T_N1_5(PreTrainedModel):
             past_key_values = None
         else:
             # DEBUG: generate text first to see what is the output
-            output_ids, decoded_text = self.backbone.generate_entire_text(backbone_inputs, max_new_tokens=max_generation_steps, )
+            # self.backbone.eagle_tokenizer.decode(backbone_inputs['eagle_input_ids'][0])
+            # output_ids, decoded_text = self.backbone.generate_entire_text(backbone_inputs, max_new_tokens=max_generation_steps, )
+            # print(decoded_text[0])
 
             # self.backbone.eagle_tokenizer.decode(backbone_inputs['eagle_input_ids'][0])
             token_id, tools_output, backbone_outputs = self.backbone.generate(backbone_inputs, max_token=max_generation_steps, past_key_values=past_key_values, inside_tool=inside_tool, toolend_head=toolend_head,)
+
             past_key_values = backbone_outputs.get('past_key_values', None)
 
             if isinstance(token_id, torch.Tensor):
@@ -271,7 +274,7 @@ class GR00T_N1_5(PreTrainedModel):
                         
             if token_id == self.backbone.actions_id:
                 # Step 2a: use the action head when the route token is [ACTIONS]
-                tools_output = ''
+                # tools_output = ''
                 action_head_outputs = self.action_head.get_action(backbone_outputs, action_inputs)
                 action_head_outputs['action_head_skipped'] = False
                 
@@ -281,7 +284,7 @@ class GR00T_N1_5(PreTrainedModel):
 
             elif token_id == self.backbone.skills_end:
                 # Step 2c: refers to the end of a skill execution
-                tools_output = ''
+                # tools_output = ''
                 action_head_outputs = create_empty_actions(backbone_inputs, batch_size)
 
             else:

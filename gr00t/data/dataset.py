@@ -870,9 +870,6 @@ class LeRobotSingleDataset(Dataset):
             dict_output['action'] = list_transformed_action
             dict_output['action_mask'] = list_transformed_action_mask
 
-            # import pdb;pdb.set_trace()
-            # dict_output['images'] = [image1, image2]
-            # with open("training_sample_cut4.pkl", 'wb') as f: pickle.dump(dict_output, f)
 
         return dict_output
 
