@@ -608,13 +608,13 @@ class EagleBackbone(nn.Module):
             final_mask = find_last_step(eagle_input['input_ids'], labels, ignored_tensor)
             labels[final_mask] = -100
 
-        # # # import pdb;pdb.set_trace()
+        # import pdb;pdb.set_trace()
         # masked_tokens_per_sample = [ids[row == -100] for ids, row in zip(eagle_input['input_ids'], labels)]
         # unmasked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
         # print(self.eagle_tokenizer.decode(eagle_input['input_ids'][0, 2234]))
         # print(self.eagle_tokenizer.decode(masked_tokens_per_sample[0]))
         # print(self.eagle_tokenizer.decode(unmasked_tokens_per_sample[0]))
-        # # import pdb;pdb.set_trace()
+        # import pdb;pdb.set_trace()
 
         # We need hidden states if we are tuning the tool head
         need_hidden = self.tune_tool_end
@@ -641,7 +641,7 @@ class EagleBackbone(nn.Module):
                 selected_hidden = outputs.hidden_states[-1][batch_indices, selected_indices]
                 selected_targets_ids = eagle_input['input_ids'][batch_indices, selected_indices+1]
                 # print(self.eagle_tokenizer.decode(selected_targets_ids))
-                
+
                 # Create classification targets
                 target_tool_end = (selected_targets_ids == self.skills_end).long()
                 target_tool = (selected_targets_ids == self.tools_id).long()
@@ -963,18 +963,20 @@ class EagleBackbone(nn.Module):
         logits, labels = None, None
 
         if len(step_input) != 0:
-            # 2) extract action token hidden states based on action_pad_ids
+
+            # Compute generated loss
+            logits, labels, transcript_lm_loss, base_loss_avg, special_loss_A_avg, special_loss_B_avg = self._transcript_lm_loss(vl_input)
+
+            # extract action token hidden states based on action_pad_ids
             has_actions = (vl_input['eagle_input_ids'] == self.actions_id).any().item()
+
             if has_actions:
                 list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
                 # import pdb;pdb.set_trace()
                 # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0])
-                # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0][15:561])
+                # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0][1668:2208])
                 embeds_tensor, masks_tensor = self.flatten_actions(list_eagle_emb, list_eagle_mask)
 
-            if not (has_actions and 'action' not in vl_input):
-                # 3) Compute generated loss
-                logits, labels, transcript_lm_loss, base_loss_avg, special_loss_A_avg, special_loss_B_avg = self._transcript_lm_loss(vl_input)
 
         out = {
             "transcript_lm_loss": transcript_lm_loss,
