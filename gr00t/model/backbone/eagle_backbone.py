@@ -589,6 +589,9 @@ class EagleBackbone(nn.Module):
 
             return final_mask
         
+        if "eagle_llm_labels" not in vl_input:
+            return torch.tensor(0.0, device=next(self.parameters()).device)
+
         eagle_input = {
             k.removeprefix("eagle_"): v
             for k, v in vl_input.items()
@@ -683,98 +686,122 @@ class EagleBackbone(nn.Module):
             # Get base vocab size from the frozen base head
             base_lm_head = self.eagle_model.get_output_embeddings().base_head
             base_vocab_size = base_lm_head.out_features
-            
-            flat_logits = shift_logits.view(-1, shift_logits.size(-1))
-            flat_labels = shift_labels.view(-1)
-            per_token_losses_flat = F.cross_entropy(flat_logits, flat_labels, reduction='none', ignore_index=-100)
-            per_token_losses = per_token_losses_flat.view(shift_labels.size())
 
-            loss_weights = torch.ones_like(per_token_losses)
-            loss_weights[special_mask_A] = self.special_token_loss_weight
-            loss_weights[special_mask_B] = self.special_token_loss_weight
-            valid_tokens_mask = (shift_labels != -100)
-            weighted_losses = per_token_losses * loss_weights
-
-            loss = weighted_losses[valid_tokens_mask].sum() / valid_tokens_mask.sum()
-
-            # 4. Now you can use your masks as intended
             if base_mask.any():
-                base_loss = per_token_losses[base_mask].mean()
-            else:
-                base_loss = torch.tensor(0.0, device=shift_labels.device)
+                base_logits = shift_logits[..., :base_vocab_size]
+                # Filter logits and labels by the base mask
+                base_loss = F.cross_entropy(base_logits[base_mask], shift_labels[base_mask], reduction="none")
+                per_token_loss[base_mask] = base_loss.to(dtype=per_token_loss.dtype)
 
             if special_mask_A.any():
-                special_loss_A = per_token_losses[special_mask_A].mean()
-            else:
-                special_loss_A = torch.tensor(0.0, device=shift_labels.device)
+                # Select the logits corresponding to group A's vocab positions
+                special_logits_A = shift_logits.index_select(-1, special_ids_A)
+                # Get the lookup table to map full-vocab-ID -> group-A-index
+                lookup_A = self.special_token_lookup_A.to(shift_labels.device)
+                # Map the labels to the small index range [0, num_special_A)
+                target_positions_A = lookup_A[shift_labels[special_mask_A]].to(dtype=torch.long)
+                # Calculate loss
+                special_loss_A = F.cross_entropy(special_logits_A[special_mask_A], target_positions_A, reduction="none")
+                per_token_loss[special_mask_A] = special_loss_A.to(dtype=per_token_loss.dtype)
 
             if special_mask_B.any():
-                special_loss_B = per_token_losses[special_mask_B].mean()
-            else:
-                special_loss_B = torch.tensor(0.0, device=shift_labels.device)
+                # Repeat for group B
+                special_logits_B = shift_logits.index_select(-1, special_ids_B)
+                lookup_B = self.special_token_lookup_B.to(shift_labels.device)
+                target_positions_B = lookup_B[shift_labels[special_mask_B]].to(dtype=torch.long)
+                special_loss_B = F.cross_entropy(special_logits_B[special_mask_B], target_positions_B, reduction="none")
+                per_token_loss[special_mask_B] = special_loss_B.to(dtype=per_token_loss.dtype)
 
-            ######################################
-            # loss avg per type
-            if self.tune_tool_end:
-                loss = loss + (self.tool_end_loss_weight * tool_loss_avg) + (self.tool_end_loss_weight * toolend_loss_avg)
-
-            # #######################
-            # # DEBUG
+            #######################
+            # DEBUG
             if False:
-                # import pickle
-                # with open(f"input_ids.pkl", 'wb') as f:
-                #     pickle.dump((vl_input, logits), f)
-                
-                # 1. Get the predicted IDs for the entire sequence at once
-                # shape: [Batch, Seq]
-                # Since shift_logits is [Batch, Seq, Full_Vocab], the result is already standard Token IDs.
-                global_pred_ids = shift_logits.argmax(dim=-1)
+                pred_ids = base_logits.argmax(dim=-1)
+                valid_pred_ids = pred_ids[shift_labels != -100]
+                valid_label_ids = shift_labels[shift_labels != -100]
+                decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
+                print(''.join(decoded_texts))
+                decoded_texts_label = self.eagle_tokenizer.batch_decode(valid_label_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
+                print(''.join(decoded_texts_label))
 
-                # Helper function to decode and print specific groups
-                def debug_print_group(name, mask):
-                    # Ensure we only look at positions that are in the mask AND have a valid label
-                    valid_mask = mask & (shift_labels != -100)
-                    
-                    if not valid_mask.any():
-                        return
+                if special_mask_A.any():
+                    pred_sp_ids_A_small = special_logits_A[special_mask_A].argmax(dim=-1)
+                    num_special_A = special_ids_A.shape[0]
+                    inverse_lookup_A = torch.full((num_special_A,), -1, dtype=torch.long, device=special_ids_A.device)
+                    inverse_lookup_A[torch.arange(num_special_A, device=special_ids_A.device)] = special_ids_A
 
-                    # Extract IDs
-                    curr_preds = global_pred_ids[valid_mask]
-                    curr_labels = shift_labels[valid_mask]
+                    pred_sp_ids_A_full = inverse_lookup_A[pred_sp_ids_A_small]
+                    label_sp_ids_A = shift_labels[special_mask_A]
 
-                    # Decode
-                    # We use skip_special_tokens=False so we can see the special tokens explicitly
-                    pred_text = self.eagle_tokenizer.batch_decode(curr_preds, skip_special_tokens=False)
-                    label_text = self.eagle_tokenizer.batch_decode(curr_labels, skip_special_tokens=False)
+                    decoded_pred_A = self.eagle_tokenizer.batch_decode(pred_sp_ids_A_full, skip_special_tokens=False)
+                    decoded_label_A = self.eagle_tokenizer.batch_decode(label_sp_ids_A, skip_special_tokens=False)
 
-                    print(f"\n--- [DEBUG] {name} ---")
-                    print(f"Preds:  {''.join(pred_text)}")
-                    print(f"Labels: {''.join(label_text)}")
+                    print("\n--- [DEBUG] SPECIAL Tokens (Group A) ---")
+                    print(f"Preds:  {''.join(decoded_pred_A)}")
+                    print(f"Labels: {''.join(decoded_label_A)}")
+                    import pdb;pdb.set_trace()
 
-                # Print Base (Standard) Tokens
-                debug_print_group("All Tokens", shift_labels != -100)
+                if special_mask_B.any():
+                    pred_sp_ids_B_small = special_logits_B[special_mask_B].argmax(dim=-1)
+                    num_special_B = special_ids_B.shape[0]
+                    inverse_lookup_B = torch.full((num_special_B,), -1, dtype=torch.long, device=special_ids_B.device)
+                    inverse_lookup_B[torch.arange(num_special_B, device=special_ids_B.device)] = special_ids_B
 
-                # # Print Base (Standard) Tokens
-                # if base_mask.any():
-                #     debug_print_group("Base Tokens", base_mask)
+                    pred_sp_ids_B_full = inverse_lookup_B[pred_sp_ids_B_small]
+                    label_sp_ids_B = shift_labels[special_mask_B]
+                    decoded_pred_B = self.eagle_tokenizer.batch_decode(pred_sp_ids_B_full, skip_special_tokens=False)
+                    decoded_label_B = self.eagle_tokenizer.batch_decode(label_sp_ids_B, skip_special_tokens=False)
 
-                # # Print Special Group A
-                # if special_mask_A.any():
-                #     debug_print_group("Special A", special_mask_A)
+                    print("\n--- [DEBUG] SPECIAL Tokens (Group B) ---")
+                    print(f"Preds:  {''.join(decoded_pred_B)}")
+                    print(f"Labels: {''.join(decoded_label_B)}")
 
-                # # Print Special Group B
-                # if special_mask_B.any():
-                #     debug_print_group("Special B", special_mask_B)
+                    import pdb;pdb.set_trace()
 
-                import pdb; pdb.set_trace()
-            
-        return logits, labels, loss, base_loss, special_loss_A, special_loss_B
+        ######################################
+        # loss avg per type
+        if base_loss is not None:
+            base_loss_avg = base_loss.mean()
+        else:
+            base_loss_avg = torch.tensor(0.0, device=shift_labels.device)
+
+        # MODIFIED: Average special loss across both groups
+        special_loss_combined = []
+        special_loss_A_avg = torch.tensor(0.0, device=shift_labels.device)
+        special_loss_B_avg = torch.tensor(0.0, device=shift_labels.device)
+        if special_loss_A is not None:
+            special_loss_A_avg = special_loss_A.mean()
+            special_loss_combined.append(special_loss_A)
+        if special_loss_B is not None:
+            special_loss_B_avg = special_loss_B.mean()
+            special_loss_combined.append(special_loss_B)
+
+        if special_loss_combined:
+            special_loss_avg = torch.cat(special_loss_combined).mean()
+        else:
+            special_loss_avg = torch.tensor(0.0, device=shift_labels.device)
+
+        # MODIFIED: Only add tool loss if tuning is enabled
+        loss = special_loss_avg + base_loss_avg
+        if self.tune_tool_end:
+            loss = loss + (self.tool_end_loss_weight * tool_loss_avg) + (self.tool_end_loss_weight * toolend_loss_avg)
+
+        return logits, labels, loss, base_loss_avg, special_loss_A_avg, special_loss_B_avg
         
 
     def split_by_img_id(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
         """
-        Split sequences into segments based on user instruction patterns.
-        Only keep segments whose next route token is `[ACTIONS]` (skip `[TOOLS]`).
+        Split sequences into per-image segments using the position-1 of the `<img>` token
+        as separators. Only keep segments whose next route token is `[ACTIONS]` (skip `[TOOLS]`).
+
+        For each batch row, this function:
+        - Finds all occurrences of `<img>` in `input_ids`.
+        - Defines segments starting at each `<img>` and ending just before the next `<img>`.
+        - Within each candidate segment, finds the first of `[ACTIONS]` or `[TOOLS]` after the `<img>`.
+          Keeps the segment only if `[ACTIONS]` occurs first, and trims the segment to end before
+          the following `[PAD_A]` token (if found).
+
+        Returns lists of segments and masks as slices of `eagle_logits`/`eagle_mask`, plus index
+        tensors describing (batch, start, end) for each segment.
         """
         eagle_input = {
             k.removeprefix("eagle_"): v
@@ -1004,7 +1031,110 @@ class EagleBackbone(nn.Module):
         )
 
     @torch.no_grad()
-    def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, inside_tool=False, toolend_head=False):
+    def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, special_token_only=False,
+                 inside_tool=False, toolend_head=False):
+        """Greedy token generation for the language backbone."""
+        if max_token is None or max_token < 1:
+            max_token = 1
+
+        if not isinstance(vl_input, BatchFeature):
+            vl_input = BatchFeature(data=dict(vl_input))
+
+        if "eagle_input_ids" not in vl_input or "eagle_attention_mask" not in vl_input:
+            raise KeyError("Expected `eagle_input_ids` and `eagle_attention_mask` in vl_input")
+
+        self.set_frozen_modules_to_eval_mode()
+
+        input_ids = vl_input["eagle_input_ids"]
+        batch_size = input_ids.size(0)
+        device = input_ids.device
+
+        if inside_tool:
+            allowed_ids = torch.tensor([self.actions_id, self.skills_end], device=device, dtype=torch.long)
+        else:
+            allowed_ids = torch.tensor([self.tools_id, self.actions_id, self.skills_end], device=device,
+                dtype=torch.long)
+
+        generated_tokens: list[torch.Tensor] = []
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+
+        # generate the first token (special token)
+        logits, _, eagle_embeds, eagle_masks, step1_cache, raw_hidden_states = self.forward_eagle(vl_input,
+                                                                                                  past_key_values=past_key_values)
+
+        # 2. Masking (Force selection of Action, Tool, or End)
+        next_token_logits = logits[:, -1, :]
+        mask = torch.full_like(next_token_logits, float('-inf'))
+        mask.scatter_(dim=-1, index=allowed_ids.unsqueeze(0).expand(batch_size, -1), value=0)
+        masked_token_logits = next_token_logits + mask
+        router_token_id = masked_token_logits.argmax(dim=-1)
+
+        if toolend_head:
+            # use hidden state to predict toolend or not
+            # raw_hidden_states is [B, T, H]
+            current_hidden = raw_hidden_states[:, -1, :]  # [B, H]
+
+            # 2. Pass through the binary classifier
+            toolend_logits = self.tool_end_head(current_hidden)  # [B, 2]
+            tool_logits = self.tool_head(current_hidden)  # [B, 2]
+
+            # 3. Predict: 0 = Keep Going ([ACTIONS]), 1 = End ([TOOLS_END])
+            toolend_preds = toolend_logits.argmax(dim=-1)  # [B]
+            tool_preds = tool_logits.argmax(dim=-1)  # [B]
+
+            # 4. OVERRIDE Logic
+            router_token_id_head = torch.tensor(self.actions_id, device=device)
+            mask_end = (toolend_preds == 1)
+            if mask_end.any():
+                router_token_id_head = torch.tensor(self.skills_end, device=device)
+
+            mask_tool = (tool_preds == 1)  # Prevent conflict
+            if mask_tool.any():
+                router_token_id_head = torch.tensor(self.tools_id, device=device)
+
+            if router_token_id_head != router_token_id:
+                router_token_id = router_token_id_head.unsqueeze(0)
+
+        token_to_append = router_token_id.unsqueeze(0)
+        vl_input["eagle_input_ids"][:1] = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
+        vl_input["eagle_attention_mask"][:1] = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
+
+        for _ in range(max_token-1):
+            logits, _, _, _, _, _ = self.forward_eagle(vl_input, past_key_values=past_key_values)
+
+            # select the most likely token from the *entire* vocabulary.
+            next_token_raw = logits.argmax(dim=-1)
+            token_to_append = next_token_raw.unsqueeze(0)
+            vl_input["eagle_input_ids"][:1] = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
+            vl_input["eagle_attention_mask"][:1] = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
+
+            prev_finished = finished.clone()
+            finished = prev_finished | (next_token_raw == self.end_id)
+
+            recorded_token = torch.where(prev_finished, torch.full_like(next_token_raw, self.end_id), next_token_raw, )
+            generated_tokens.append(recorded_token)
+
+            if finished.all():
+                break
+
+        # Cleanup return
+        _, _, _, _, final_kv_cache, _ = self.forward_eagle(vl_input, past_key_values=past_key_values)
+
+        backbone_outputs = BatchFeature({
+            "backbone_features": eagle_embeds,
+            "backbone_attention_mask":   eagle_masks,
+            "past_key_values": final_kv_cache,
+        })
+
+        generated_ids = torch.stack(generated_tokens, dim=1)
+        if generated_ids.size(1) == 1:
+            generated_ids = generated_ids.squeeze(1)
+        decoded_text = self.eagle_tokenizer.batch_decode(generated_ids)[0]
+
+        return router_token_id.unsqueeze(1), decoded_text, backbone_outputs
+
+    @torch.no_grad()
+    def generate_v2(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, inside_tool=False, toolend_head=False):
         """
         Two-stage generation:
         1. Router Step: Force pick [TOOL, ACTION, END].

@@ -780,9 +780,7 @@ class LeRobotSingleDataset(Dataset):
         else:
             list_steps = self._window_steps[index]
             list_step_data = [self.get_step_data(item[0], item[1]) for item in list_steps]  # dict_keys(['video.front_camera', 'state.single_arm', 'state.gripper', 'action.single_arm', 'action.gripper', 'annotation.step_description'])
-            image1 = list_step_data[0]['video.image']
-            image2 = list_step_data[0]['video.wrist_image']
-            # DEBUG: 
+            # DEBUG:
             list_step_transform = [self.transforms(item) for item in list_step_data]
 
             # return result: previous images, instructions, action / tools
