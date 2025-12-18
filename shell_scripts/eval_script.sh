@@ -39,8 +39,8 @@ python3 libero_scripts/libero_eval_interleaved.py \
     --num_trials_per_task 2 \
     --embodiment_tag new_embodiment \
     --data_config libero_traj_arms_2 \
-    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage3_onlyembA_nextstep_actiononly_v2/checkpoint-60000" \
-    --model_name "stage3_onlyembA_nextstep_actiononly_v2" \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage3_frzembB_nextstep_actiononly_v1_5/checkpoint-50000" \
+    --model_name "stage3_frzembB_nextstep_actiononly_v1" \
     --denoising_steps 8 \
     # --call_baseline
 

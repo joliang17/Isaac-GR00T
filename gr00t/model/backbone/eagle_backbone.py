@@ -666,6 +666,7 @@ class EagleBackbone(nn.Module):
         
         special_loss_A = None
         special_loss_B = None
+        special_loss_AB = None
         base_loss = None
 
         if num_special_total == 0:
@@ -679,6 +680,7 @@ class EagleBackbone(nn.Module):
             
             special_mask_A = torch.isin(shift_labels, special_ids_A) & valid_mask
             special_mask_B = torch.isin(shift_labels, special_ids_B) & valid_mask
+            special_mask_AB = special_mask_A | special_mask_B
             base_mask = valid_mask & ~special_mask_A & ~special_mask_B
             
             per_token_loss = shift_logits.new_zeros(shift_labels.shape, dtype=shift_logits.dtype)
@@ -693,28 +695,19 @@ class EagleBackbone(nn.Module):
                 base_loss = F.cross_entropy(base_logits[base_mask], shift_labels[base_mask], reduction="none")
                 per_token_loss[base_mask] = base_loss.to(dtype=per_token_loss.dtype)
 
-            if special_mask_A.any():
-                # Select the logits corresponding to group A's vocab positions
-                special_logits_A = shift_logits.index_select(-1, special_ids_A)
-                # Get the lookup table to map full-vocab-ID -> group-A-index
-                lookup_A = self.special_token_lookup_A.to(shift_labels.device)
-                # Map the labels to the small index range [0, num_special_A)
-                target_positions_A = lookup_A[shift_labels[special_mask_A]].to(dtype=torch.long)
-                # Calculate loss
-                special_loss_A = F.cross_entropy(special_logits_A[special_mask_A], target_positions_A, reduction="none")
-                per_token_loss[special_mask_A] = special_loss_A.to(dtype=per_token_loss.dtype)
+            if special_mask_AB.any():
+                special_logits_AB = shift_logits[..., base_vocab_size:]  # follow special token ids order
 
-            if special_mask_B.any():
-                # Repeat for group B
-                special_logits_B = shift_logits.index_select(-1, special_ids_B)
-                lookup_B = self.special_token_lookup_B.to(shift_labels.device)
-                target_positions_B = lookup_B[shift_labels[special_mask_B]].to(dtype=torch.long)
-                special_loss_B = F.cross_entropy(special_logits_B[special_mask_B], target_positions_B, reduction="none")
-                per_token_loss[special_mask_B] = special_loss_B.to(dtype=per_token_loss.dtype)
+                labels_AB = shift_labels[special_mask_AB]
+                target_positions_AB = (labels_AB - base_vocab_size).long()  # in [0, V_appended)
+                special_loss_AB = F.cross_entropy(special_logits_AB[special_mask_AB], target_positions_AB, reduction="none")
+                per_token_loss[special_mask_AB] = special_loss_AB.to(dtype=per_token_loss.dtype)
 
             #######################
             # DEBUG
             if False:
+                # import pickle
+                # with open(f"input_ids.pkl", 'wb') as f: pickle.dump((vl_input, logits), f)
                 pred_ids = base_logits.argmax(dim=-1)
                 valid_pred_ids = pred_ids[shift_labels != -100]
                 valid_label_ids = shift_labels[shift_labels != -100]
@@ -723,38 +716,25 @@ class EagleBackbone(nn.Module):
                 decoded_texts_label = self.eagle_tokenizer.batch_decode(valid_label_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
                 print(''.join(decoded_texts_label))
 
-                if special_mask_A.any():
-                    pred_sp_ids_A_small = special_logits_A[special_mask_A].argmax(dim=-1)
-                    num_special_A = special_ids_A.shape[0]
-                    inverse_lookup_A = torch.full((num_special_A,), -1, dtype=torch.long, device=special_ids_A.device)
-                    inverse_lookup_A[torch.arange(num_special_A, device=special_ids_A.device)] = special_ids_A
+                if special_mask_AB.any():
+                    pred_sp_ids_AB_small = special_logits_AB[special_mask_AB].argmax(dim=-1)
+                    num_special_AB = special_logits_AB.shape[-1]
+                    special_ids_AB = torch.cat([special_ids_A, special_ids_B], dim=0)
+                    special_ids_AB = torch.unique(special_ids_AB)          # optional: remove duplicates
+                    special_ids_AB, _ = torch.sort(special_ids_AB) 
 
-                    pred_sp_ids_A_full = inverse_lookup_A[pred_sp_ids_A_small]
-                    label_sp_ids_A = shift_labels[special_mask_A]
+                    inverse_lookup_AB = torch.full((num_special_AB,), -1, dtype=torch.long, device=special_logits_AB.device)
+                    inverse_lookup_AB[torch.arange(num_special_AB, device=special_logits_AB.device)] = special_ids_AB
 
-                    decoded_pred_A = self.eagle_tokenizer.batch_decode(pred_sp_ids_A_full, skip_special_tokens=False)
-                    decoded_label_A = self.eagle_tokenizer.batch_decode(label_sp_ids_A, skip_special_tokens=False)
+                    pred_sp_ids_AB_full = inverse_lookup_AB[pred_sp_ids_AB_small]
+                    label_sp_ids_A = shift_labels[special_mask_AB]
 
-                    print("\n--- [DEBUG] SPECIAL Tokens (Group A) ---")
-                    print(f"Preds:  {''.join(decoded_pred_A)}")
-                    print(f"Labels: {''.join(decoded_label_A)}")
-                    import pdb;pdb.set_trace()
+                    decoded_pred_AB = self.eagle_tokenizer.batch_decode(pred_sp_ids_AB_full, skip_special_tokens=False)
+                    decoded_label_AB = self.eagle_tokenizer.batch_decode(label_sp_ids_A, skip_special_tokens=False)
 
-                if special_mask_B.any():
-                    pred_sp_ids_B_small = special_logits_B[special_mask_B].argmax(dim=-1)
-                    num_special_B = special_ids_B.shape[0]
-                    inverse_lookup_B = torch.full((num_special_B,), -1, dtype=torch.long, device=special_ids_B.device)
-                    inverse_lookup_B[torch.arange(num_special_B, device=special_ids_B.device)] = special_ids_B
-
-                    pred_sp_ids_B_full = inverse_lookup_B[pred_sp_ids_B_small]
-                    label_sp_ids_B = shift_labels[special_mask_B]
-                    decoded_pred_B = self.eagle_tokenizer.batch_decode(pred_sp_ids_B_full, skip_special_tokens=False)
-                    decoded_label_B = self.eagle_tokenizer.batch_decode(label_sp_ids_B, skip_special_tokens=False)
-
-                    print("\n--- [DEBUG] SPECIAL Tokens (Group B) ---")
-                    print(f"Preds:  {''.join(decoded_pred_B)}")
-                    print(f"Labels: {''.join(decoded_label_B)}")
-
+                    print("\n--- [DEBUG] SPECIAL Tokens ---")
+                    print(f"Preds:  {''.join(decoded_pred_AB)}")
+                    print(f"Labels: {''.join(decoded_label_AB)}")
                     import pdb;pdb.set_trace()
 
         ######################################
@@ -766,11 +746,11 @@ class EagleBackbone(nn.Module):
 
         # MODIFIED: Average special loss across both groups
         special_loss_combined = []
-        special_loss_A_avg = torch.tensor(0.0, device=shift_labels.device)
+        special_loss_AB_avg = torch.tensor(0.0, device=shift_labels.device)
         special_loss_B_avg = torch.tensor(0.0, device=shift_labels.device)
-        if special_loss_A is not None:
-            special_loss_A_avg = special_loss_A.mean()
-            special_loss_combined.append(special_loss_A)
+        if special_loss_AB is not None:
+            special_loss_AB_avg = special_loss_AB.mean()
+            special_loss_combined.append(special_loss_AB)
         if special_loss_B is not None:
             special_loss_B_avg = special_loss_B.mean()
             special_loss_combined.append(special_loss_B)
@@ -785,7 +765,7 @@ class EagleBackbone(nn.Module):
         if self.tune_tool_end:
             loss = loss + (self.tool_end_loss_weight * tool_loss_avg) + (self.tool_end_loss_weight * toolend_loss_avg)
 
-        return logits, labels, loss, base_loss_avg, special_loss_A_avg, special_loss_B_avg
+        return logits, labels, loss, base_loss_avg, special_loss_AB_avg, special_loss_B_avg
         
 
     def split_by_img_id(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
@@ -1042,27 +1022,24 @@ class EagleBackbone(nn.Module):
         if not isinstance(vl_input, BatchFeature):
             vl_input = BatchFeature(data=dict(vl_input))
 
-        if "eagle_input_ids" not in vl_input or "eagle_attention_mask" not in vl_input:
-            raise KeyError("Expected `eagle_input_ids` and `eagle_attention_mask` in vl_input")
-
         self.set_frozen_modules_to_eval_mode()
 
         input_ids = vl_input["eagle_input_ids"]
         batch_size = input_ids.size(0)
         device = input_ids.device
+        base_vocab_size = self.eagle_model.get_output_embeddings().base_head.out_features
 
         if inside_tool:
             allowed_ids = torch.tensor([self.actions_id, self.skills_end], device=device, dtype=torch.long)
         else:
-            allowed_ids = torch.tensor([self.tools_id, self.actions_id, self.skills_end], device=device,
+            allowed_ids = torch.tensor([self.actions_id, self.tools_id, self.skills_end], device=device,
                 dtype=torch.long)
 
         generated_tokens: list[torch.Tensor] = []
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         # generate the first token (special token)
-        logits, _, eagle_embeds, eagle_masks, step1_cache, raw_hidden_states = self.forward_eagle(vl_input,
-                                                                                                  past_key_values=past_key_values)
+        logits, _, eagle_embeds, eagle_masks, step1_cache, raw_hidden_states = self.forward_eagle(vl_input, past_key_values=past_key_values)
 
         # 2. Masking (Force selection of Action, Tool, or End)
         next_token_logits = logits[:, -1, :]
@@ -1070,6 +1047,7 @@ class EagleBackbone(nn.Module):
         mask.scatter_(dim=-1, index=allowed_ids.unsqueeze(0).expand(batch_size, -1), value=0)
         masked_token_logits = next_token_logits + mask
         router_token_id = masked_token_logits.argmax(dim=-1)
+        generated_tokens.append(router_token_id)
 
         if toolend_head:
             # use hidden state to predict toolend or not
@@ -1098,17 +1076,18 @@ class EagleBackbone(nn.Module):
                 router_token_id = router_token_id_head.unsqueeze(0)
 
         token_to_append = router_token_id.unsqueeze(0)
-        vl_input["eagle_input_ids"][:1] = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
-        vl_input["eagle_attention_mask"][:1] = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
+        vl_input["eagle_input_ids"] = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
+        vl_input["eagle_attention_mask"] = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
 
         for _ in range(max_token-1):
             logits, _, _, _, _, _ = self.forward_eagle(vl_input, past_key_values=past_key_values)
 
             # select the most likely token from the *entire* vocabulary.
-            next_token_raw = logits.argmax(dim=-1)
+            # exclude special tokens
+            next_token_raw = logits[:, -1, :base_vocab_size].argmax(dim=-1)
             token_to_append = next_token_raw.unsqueeze(0)
-            vl_input["eagle_input_ids"][:1] = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
-            vl_input["eagle_attention_mask"][:1] = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
+            vl_input["eagle_input_ids"] = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
+            vl_input["eagle_attention_mask"] = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
 
             prev_finished = finished.clone()
             finished = prev_finished | (next_token_raw == self.end_id)

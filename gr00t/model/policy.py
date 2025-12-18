@@ -236,6 +236,38 @@ class Gr00tPolicy(BasePolicy):
         if self.data_config == 'libero_traj_arms':
             del observations['video.wrist_image']
         normalized_input = self.apply_transforms(observations)
+
+        # with open("input_ids.pkl", 'rb') as f:
+        #     vl_input, prev_logits = pickle.load(f)
+        ########################################
+        # DEBUG
+        # with open(f"input_ids.pkl", 'rb') as f: 
+        #     vl_input, prev_logits = pickle.load(f)
+        # vl_input_copy = vl_input.copy()
+
+        # # infer_str = self.model.backbone.eagle_tokenizer.decode(normalized_input['eagle_input_ids'][0]).replace('<IMG_CONTEXT>', '')
+        # training_str = self.model.backbone.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0][0:560]).replace('<IMG_CONTEXT>', '')
+
+        # vl_input_copy = {key: value for key, value in vl_input_copy.items() if key in normalized_input}
+        # seq_len = vl_input["eagle_input_ids"].shape[-1]
+        # vl_input_copy_text = { k: v[:1, 0:560] for k, v in vl_input_copy.items() if torch.is_tensor(v) and v.ndim == 2 and v.shape[-1] == seq_len}
+        # vl_input_copy_missing = {k: v for k, v in vl_input_copy.items() if k not in vl_input_copy_text}
+
+        # vl_input_copy_text['embodiment_id'] = normalized_input['embodiment_id']
+        # vl_input_copy_text['eagle_num_images'] = normalized_input['eagle_num_images']
+        # vl_input_copy_text['eagle_state_length'] = normalized_input['eagle_state_length']
+        # vl_input_copy_text['eagle_state_mask_length'] = normalized_input['eagle_state_mask_length'][:1]
+        # vl_input_copy_text['step_input_ids'] = vl_input_copy['step_input_ids'][:1]
+        # # vl_input_copy_text['step_input_ids'] = normalized_input['step_input_ids'][:1]
+        # vl_input_copy_text['step_attention_mask'] = vl_input_copy['step_attention_mask'][:1]
+        # vl_input_copy_text['eagle_pixel_values'] = vl_input_copy['eagle_pixel_values'][:2]
+        # vl_input_copy_text['eagle_image_sizes'] = vl_input_copy['eagle_image_sizes'][:2]
+        # vl_input_copy_text = {k: v.cpu() for k, v in vl_input_copy_text.items()}
+        # vl_input_copy_text.update({k: v for k, v in normalized_input.items() if k not in vl_input_copy_text})
+
+        # normalized_action, backbone_outputs, tools_output, _ = self._get_action_from_normalized_input(vl_input_copy_text, past_key_values=None, mode=mode, call_baseline=False, inside_tool=inside_tool, )
+        # import pdb;pdb.set_trace()
+
         normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False, inside_tool=inside_tool, )
         unnormalized_action = self._get_unnormalized_action(normalized_action, )
         if not is_batch:

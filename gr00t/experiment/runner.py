@@ -19,7 +19,7 @@ from pathlib import Path
 
 import torch
 from transformers import TrainingArguments, set_seed
-
+from torch.utils.data import Subset
 from gr00t.data.dataset import LeRobotMixtureDataset, LeRobotSingleDataset
 from gr00t.experiment.trainer import DualBrainTrainer
 from gr00t.model.gr00t_n1 import GR00T_N1_5
@@ -28,6 +28,32 @@ from gr00t.utils.experiment import (
     CheckpointFormatCallback,
     safe_save_model_for_hf_trainer,
 )
+from functools import partial
+
+
+def preprocess_logits_for_metrics(logits, labels):
+    """Reduces logits to ID to save RAM."""
+    import pdb;pdb.set_trace()
+    if isinstance(logits, tuple):
+        logits = logits[0]
+    return logits.argmax(dim=-1), labels
+
+
+def compute_metrics(eval_preds, tokenizer):
+    """Decodes and prints predictions."""
+    preds, labels = eval_preds
+    # Log first 3 examples
+    print(f"\n\n{'='*40} EVAL PREDICTIONS {'='*40}")
+    for i in range(min(3, len(preds))):
+        valid_mask = labels[i] != -100
+        pred_text = tokenizer.decode(preds[i][valid_mask], skip_special_tokens=False)
+        label_text = tokenizer.decode(labels[i][valid_mask], skip_special_tokens=False)
+        
+        print(f"\n[Example {i}]")
+        print(f"LABEL: {label_text}")
+        print(f"PRED:  {pred_text}")
+    print(f"{'='*98}\n")
+    return {"samples_logged": 3}
 
 
 class TrainRunner:
@@ -36,6 +62,7 @@ class TrainRunner:
         model: GR00T_N1_5,
         training_args: TrainingArguments,
         train_dataset: LeRobotSingleDataset | LeRobotMixtureDataset,
+        eval_dataset=None,
         resume_from_checkpoint: bool = False,
     ):
         self.training_args = training_args
@@ -44,6 +71,8 @@ class TrainRunner:
         self.exp_cfg_dir.mkdir(parents=True, exist_ok=True)
         self.resume_from_checkpoint = resume_from_checkpoint
         self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+
         # Set up training arguments
         training_args.run_name = (
             training_args.output_dir.split("/")[-1]
@@ -62,6 +91,7 @@ class TrainRunner:
             model=model,
             training_args=training_args,
             train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
             data_collator=data_collator,
             compute_dtype=compute_dtype,
         )
@@ -127,6 +157,7 @@ class TrainRunner:
         train_dataset,
         data_collator,
         compute_dtype,
+        eval_dataset=None,
         global_batch_size=None,
     ):
         # Set the gradient accumulation steps if global_batch_size is provided
@@ -139,13 +170,29 @@ class TrainRunner:
                 f"Set global batch size to {global_batch_size}, set gradient accumulation steps to {grad_acc}"
             )
 
+        # ### NEW: Prepare Metrics Logic
+        compute_metrics_func = None
+        preprocess_logits_func = None
+        
+        # We assume 'model.eagle_tokenizer' exists. 
+        # If your tokenizer is stored differently, adjust 'model.eagle_tokenizer' below.
+        if eval_dataset is not None:
+            backbone = getattr(model, "backbone", None)
+            tokenizer = getattr(backbone, "eagle_tokenizer", None) if backbone is not None else None
+            if tokenizer:
+                compute_metrics_func = partial(compute_metrics, tokenizer=tokenizer)
+                preprocess_logits_func = preprocess_logits_for_metrics
+
         # Create the trainer
         trainer = DualBrainTrainer(
             model=model,
             args=training_args,
             train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
             data_collator=data_collator,
             compute_dtype=compute_dtype,
+            # compute_metrics=compute_metrics_func,          # ### NEW
+            # preprocess_logits_for_metrics=preprocess_logits_func, # ### NEW
         )
 
         # Add checkpoint format callback to ensure experiment_cfg is copied to each checkpoint
