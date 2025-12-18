@@ -41,15 +41,11 @@ from tqdm import tqdm
 from gr00t.utils.video import get_all_frames, get_frames_by_timestamps
 
 from .embodiment_tags import EmbodimentTag
-from .schema import (
-    DatasetMetadata,
-    DatasetStatisticalValues,
-    LeRobotModalityMetadata,
-    LeRobotStateActionMetadata,
-    StateActionMetadata,
-)
+from .schema import (DatasetMetadata, DatasetStatisticalValues, LeRobotModalityMetadata, LeRobotStateActionMetadata,
+                     StateActionMetadata, )
 from .transform import ComposedModalityTransform
 from tqdm import tqdm
+
 LE_ROBOT_MODALITY_FILENAME = "meta/modality.json"
 LE_ROBOT_EPISODE_FILENAME = "meta/episodes.jsonl"
 LE_ROBOT_TASKS_FILENAME = "meta/tasks.jsonl"
@@ -63,10 +59,7 @@ def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
     # Dataset statistics
     all_low_dim_data_list = []
     # Collect all the data
-    for parquet_path in tqdm(
-        sorted(list(parquet_paths)),
-        desc="Collecting all parquet files...",
-    ):
+    for parquet_path in tqdm(sorted(list(parquet_paths)), desc="Collecting all parquet files...", ):
         # Load the parquet file
         parquet_data = pd.read_parquet(parquet_path)
         parquet_data = parquet_data
@@ -84,17 +77,11 @@ def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
             print(f"Skipping {le_modality} because it is a string")
             continue
 
-        np_data = np.vstack(
-            [np.asarray(x, dtype=np.float32) for x in all_low_dim_data[le_modality]]
-        )
-        dataset_statistics[le_modality] = {
-            "mean": np.mean(np_data, axis=0).tolist(),
-            "std": np.std(np_data, axis=0).tolist(),
-            "min": np.min(np_data, axis=0).tolist(),
-            "max": np.max(np_data, axis=0).tolist(),
-            "q01": np.quantile(np_data, 0.01, axis=0).tolist(),
-            "q99": np.quantile(np_data, 0.99, axis=0).tolist(),
-        }
+        np_data = np.vstack([np.asarray(x, dtype=np.float32) for x in all_low_dim_data[le_modality]])
+        dataset_statistics[le_modality] = {"mean": np.mean(np_data, axis=0).tolist(),
+            "std": np.std(np_data, axis=0).tolist(), "min": np.min(np_data, axis=0).tolist(),
+            "max": np.max(np_data, axis=0).tolist(), "q01": np.quantile(np_data, 0.01, axis=0).tolist(),
+            "q99": np.quantile(np_data, 0.99, axis=0).tolist(), }
     return dataset_statistics
 
 
@@ -112,22 +99,12 @@ class LeRobotSingleDataset(Dataset):
     Base dataset class for LeRobot that supports sharding.
     """
 
-    def __init__(
-        self,
-        dataset_path: Path | str,
-        modality_configs: dict[str, ModalityConfig],
-        embodiment_tag: str | EmbodimentTag,
-        video_backend: str = "torchcodec",
-        video_backend_kwargs: dict | None = None,
-        transforms: ComposedModalityTransform | None = None,
-        window_length: int | None = None,
-        skill_inclusion_ratio: float = 0.5, 
-        action_ds_ratio: float = 1.0,
-        toolend_upsample_ratio: float = 1.0,
-        min_seq_len: int = 1,
-        windowing_mode: str = 'sliding_prefix',
-        skill_level: str = 'window'
-    ):
+    def __init__(self, dataset_path: Path | str, modality_configs: dict[str, ModalityConfig],
+            embodiment_tag: str | EmbodimentTag, video_backend: str = "torchcodec",
+            video_backend_kwargs: dict | None = None, transforms: ComposedModalityTransform | None = None,
+            window_length: int | None = None, skill_inclusion_ratio: float = 0.5, action_ds_ratio: float = 1.0,
+            toolend_upsample_ratio: float = 1.0, min_seq_len: int = 1, windowing_mode: str = 'sliding_prefix',
+            skill_level: str = 'window'):
         """
         Initialize the dataset.
 
@@ -147,9 +124,7 @@ class LeRobotSingleDataset(Dataset):
         self.modality_configs = modality_configs
         self.video_backend = video_backend
         self.video_backend_kwargs = video_backend_kwargs if video_backend_kwargs is not None else {}
-        self.transforms = (
-            transforms if transforms is not None else ComposedModalityTransform(transforms=[])
-        )
+        self.transforms = (transforms if transforms is not None else ComposedModalityTransform(transforms=[]))
 
         self._dataset_path = Path(dataset_path)
         self._dataset_name = self._dataset_path.name
@@ -166,7 +141,7 @@ class LeRobotSingleDataset(Dataset):
         self.drop_short = False
         self.include_tail = False
         self.max_windows = None
-        
+
         # --- Sampling Ratios ---
         self.skill_inclusion_ratio = skill_inclusion_ratio
         self.action_ds_ratio = action_ds_ratio
@@ -195,13 +170,11 @@ class LeRobotSingleDataset(Dataset):
             if "action.task_progress" in self._modality_keys["action"]:
                 print("action.task_progress is in the action modality, task progress will be label")
                 self._modality_keys["action"].append("action.task_progress")
-                self._metadata.modalities.action["task_progress"] = StateActionMetadata(
-                    absolute=True, rotation_type=None, shape=(1,), continuous=True
-                )
+                self._metadata.modalities.action["task_progress"] = StateActionMetadata(absolute=True,
+                    rotation_type=None, shape=(1,), continuous=True)
                 # assume the task progress is uniformly distributed between 0 and 1
-                self._metadata.statistics.action["task_progress"] = DatasetStatisticalValues(
-                    max=[1.0], min=[0.0], mean=[0.5], std=[0.2887], q01=[0.01], q99=[0.99]
-                )
+                self._metadata.statistics.action["task_progress"] = DatasetStatisticalValues(max=[1.0], min=[0.0],
+                    mean=[0.5], std=[0.2887], q01=[0.01], q99=[0.99])
 
         self.set_transforms_metadata(self.metadata)
         self.set_epoch(0)
@@ -289,7 +262,7 @@ class LeRobotSingleDataset(Dataset):
     def delta_indices(self) -> dict[str, np.ndarray]:
         """The delta indices for the dataset. The keys are the modality.key, and the values are the delta indices for each modality.key."""
         return self._delta_indices
-    
+
     def _get_max_delta_index(self) -> int:
         """Calculate the maximum delta index across all modalities.
         Returns:
@@ -350,8 +323,7 @@ class LeRobotSingleDataset(Dataset):
         # 1. Modality metadata
         modality_meta_path = self.dataset_path / LE_ROBOT_MODALITY_FILENAME
         assert (
-            modality_meta_path.exists()
-        ), f"Please provide a {LE_ROBOT_MODALITY_FILENAME} file in {self.dataset_path}"
+            modality_meta_path.exists()), f"Please provide a {LE_ROBOT_MODALITY_FILENAME} file in {self.dataset_path}"
 
         # 1.1. State and action modalities
         simplified_modality_meta: dict[str, dict] = {}
@@ -359,29 +331,21 @@ class LeRobotSingleDataset(Dataset):
             le_modality_meta = LeRobotModalityMetadata.model_validate(json.load(f))
         for modality in ["state", "action"]:
             simplified_modality_meta[modality] = {}
-            le_state_action_meta: dict[str, LeRobotStateActionMetadata] = getattr(
-                le_modality_meta, modality
-            )
+            le_state_action_meta: dict[str, LeRobotStateActionMetadata] = getattr(le_modality_meta, modality)
             for subkey in le_state_action_meta:
                 state_action_dtype = np.dtype(le_state_action_meta[subkey].dtype)
                 if np.issubdtype(state_action_dtype, np.floating):
                     continuous = True
                 else:
                     continuous = False
-                simplified_modality_meta[modality][subkey] = {
-                    "absolute": le_state_action_meta[subkey].absolute,
+                simplified_modality_meta[modality][subkey] = {"absolute": le_state_action_meta[subkey].absolute,
                     "rotation_type": le_state_action_meta[subkey].rotation_type,
-                    "shape": [
-                        le_state_action_meta[subkey].end - le_state_action_meta[subkey].start
-                    ],
-                    "continuous": continuous,
-                }
+                    "shape": [le_state_action_meta[subkey].end - le_state_action_meta[subkey].start],
+                    "continuous": continuous, }
 
         # 1.2. Video modalities
         le_info_path = self.dataset_path / LE_ROBOT_INFO_FILENAME
-        assert (
-            le_info_path.exists()
-        ), f"Please provide a {LE_ROBOT_INFO_FILENAME} file in {self.dataset_path}"
+        assert (le_info_path.exists()), f"Please provide a {LE_ROBOT_INFO_FILENAME} file in {self.dataset_path}"
         with open(le_info_path, "r") as f:
             le_info = json.load(f)
         simplified_modality_meta["video"] = {}
@@ -400,11 +364,8 @@ class LeRobotSingleDataset(Dataset):
                 # channels = le_video_meta["shape"][le_video_meta["names"].index("channels")]
                 channels = le_video_meta["info"]["video.channels"]
                 fps = le_video_meta["info"]["video.fps"]
-            simplified_modality_meta["video"][new_key] = {
-                "resolution": [width, height],
-                "channels": channels,
-                "fps": fps,
-            }
+            simplified_modality_meta["video"][new_key] = {"resolution": [width, height], "channels": channels,
+                "fps": fps, }
 
         # 2. Dataset statistics
         stats_path = self.dataset_path / LE_ROBOT_STATS_FILENAME
@@ -430,19 +391,14 @@ class LeRobotSingleDataset(Dataset):
                 assert isinstance(state_action_meta, LeRobotStateActionMetadata)
                 le_modality = state_action_meta.original_key
                 for stat_name in le_statistics[le_modality]:
-                    indices = np.arange(
-                        state_action_meta.start,
-                        state_action_meta.end,
-                    )
+                    indices = np.arange(state_action_meta.start, state_action_meta.end, )
                     stat = np.array(le_statistics[le_modality][stat_name])
                     dataset_statistics[our_modality][subkey][stat_name] = stat[indices].tolist()
 
         # 3. Full dataset metadata
-        metadata = DatasetMetadata(
-            statistics=dataset_statistics,  # type: ignore
+        metadata = DatasetMetadata(statistics=dataset_statistics,  # type: ignore
             modalities=simplified_modality_meta,  # type: ignore
-            embodiment_tag=embodiment_tag,
-        )
+            embodiment_tag=embodiment_tag, )
 
         return metadata
 
@@ -459,7 +415,7 @@ class LeRobotSingleDataset(Dataset):
         for episode in episode_metadata:
             trajectory_ids.append(episode["episode_index"])
             trajectory_lengths.append(episode["length"])
-            if self.windowing_mode != 'step': 
+            if self.windowing_mode != 'step':
                 # only for tool-usage experiments
                 tasks = episode["tasks"]
                 tool_task = [item for item in tasks if "[TOOLS]" in item]
@@ -475,13 +431,14 @@ class LeRobotSingleDataset(Dataset):
 
     def _get_all_windows(self) -> list[list[tuple[int, int]]]:
         wl = int(self.window_length)
-        if wl <= 0: raise ValueError(f"window_length must be > 0, got {wl}")
-        
+        if wl <= 0:
+            raise ValueError(f"window_length must be > 0, got {wl}")
+
         mode = self.windowing_mode
         min_seq_len = int(self.min_seq_len)
         stride = int(self.stride) if self.stride > 0 else 1
         max_windows = self.max_windows
-        
+
         # Ratios
         skill_ratio = float(self.skill_inclusion_ratio)
         action_ratio = float(self.action_ds_ratio)
@@ -490,11 +447,12 @@ class LeRobotSingleDataset(Dataset):
         all_windows: list[list[tuple[int, int]]] = []
         skill_cnt = 0
         traj_cnt = 0
-        
-        # Track stats for tool ends
-        tool_end_window_count = 0 
 
-        for tid, T, ttype in tqdm(zip(self.trajectory_ids, self.trajectory_lengths, self.trajectory_types), total=len(self.trajectory_ids)):
+        # Track stats for tool ends
+        tool_end_window_count = 0
+
+        for tid, T, ttype in tqdm(zip(self.trajectory_ids, self.trajectory_lengths, self.trajectory_types),
+                                  total=len(self.trajectory_ids)):
             if max_windows is not None and len(all_windows) >= max_windows:
                 break
 
@@ -506,7 +464,8 @@ class LeRobotSingleDataset(Dataset):
             else:
                 traj_cnt += 1
 
-            if T <= 0: continue
+            if T <= 0:
+                continue
 
             if self.skill_level == 'step':
                 # ==========================================
@@ -517,9 +476,10 @@ class LeRobotSingleDataset(Dataset):
                     for idx in range(T):
                         # Create a window with a single step
                         all_windows.append([(tid, idx)])
-                        
+
                         if max_windows is not None and len(all_windows) >= max_windows:
-                            self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
+                            self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows),
+                                              toolend_ratio)
                             return all_windows
                     continue
 
@@ -527,14 +487,14 @@ class LeRobotSingleDataset(Dataset):
             # BRANCH B: TRAJECTORY DATA (ttype == 0)
             # Logic: Complex windowing (Fixed/Block/Sliding + Action DS + Tool Upsample)
             # ==========================================
-            
+
             # --- 2. Step Filtering ---
             available_indices = list(range(T))
             tool_end_indices = set()
 
             # Only fetch text if needed for Action DS or Tool Upsampling
             need_text = (ttype == 0 and action_ratio < 1.0) or (toolend_ratio > 1.0)
-            
+
             if need_text:
                 step_descs = [self.get_step_data(tid, idx)['annotation.step_description'] for idx in range(T)]
                 if ttype == 0 and action_ratio < 1.0:
@@ -559,15 +519,16 @@ class LeRobotSingleDataset(Dataset):
                             tool_end_indices.add(idx)
 
             n_available = len(available_indices)
-            if n_available < min_seq_len: continue
+            if n_available < min_seq_len:
+                continue
 
             # --- 3. Window Generation ---
-            windows_to_process = [] 
+            windows_to_process = []
 
             if mode == 'fixed':
                 curr = 0
                 while curr + wl <= n_available:
-                    windows_to_process.append(available_indices[curr : curr + wl])
+                    windows_to_process.append(available_indices[curr: curr + wl])
                     curr += wl
 
             elif mode == 'block_prefix':
@@ -576,7 +537,7 @@ class LeRobotSingleDataset(Dataset):
                     max_len_here = min(wl, n_available - curr)
                     if max_len_here >= min_seq_len:
                         for length in range(min_seq_len, max_len_here + 1):
-                            windows_to_process.append(available_indices[curr : curr + length])
+                            windows_to_process.append(available_indices[curr: curr + length])
                     curr += wl
 
             elif mode == 'sliding_prefix':
@@ -586,15 +547,15 @@ class LeRobotSingleDataset(Dataset):
                 while curr <= last_start:
                     max_len_here = min(wl, n_available - curr)
                     for length in range(min_seq_len, max_len_here + 1):
-                        windows_to_process.append(available_indices[curr : curr + length])
+                        windows_to_process.append(available_indices[curr: curr + length])
                     curr += stride
 
             # --- 4. Final Processing ---
             for step_indices in windows_to_process:
-                window = [(tid, s_idx) for s_idx in step_indices]                
+                window = [(tid, s_idx) for s_idx in step_indices]
                 repeats = 1
                 is_tool_end = False
-                
+
                 # Check Tool End
                 if toolend_ratio > 1.0 and len(tool_end_indices) > 0:
                     if not tool_end_indices.isdisjoint(step_indices):
@@ -602,16 +563,17 @@ class LeRobotSingleDataset(Dataset):
                         base = int(toolend_ratio)
                         remainder = toolend_ratio - base
                         repeats = base + (1 if random.random() < remainder else 0)
-                
+
                 for _ in range(repeats):
                     all_windows.append(window)
                     if is_tool_end:
                         tool_end_window_count += 1
-                        
+
                     if max_windows is not None and len(all_windows) >= max_windows:
-                        self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
+                        self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows),
+                                          toolend_ratio)
                         return all_windows
-                        
+
         self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
         return all_windows
 
@@ -619,12 +581,13 @@ class LeRobotSingleDataset(Dataset):
         # Skill Stats
         total_traj = skill_cnt + traj_cnt
         actual_skill = np.round(skill_cnt / total_traj, 4) if total_traj > 0 else 0.0
-        
+
         # Tool End Stats
         # If tool_conf is 1.0, we might not have tracked tool_win_cnt (it stays 0), so we report N/A or 0
         actual_tool = np.round(tool_win_cnt / total_win, 4) if total_win > 0 else 0.0
-        
-        print(f"Stats | Skill Config: {skill_conf}, Actual: {actual_skill} | ToolEnd Config: {tool_conf}, Actual Window Freq: {actual_tool}")
+
+        print(
+            f"Stats | Skill Config: {skill_conf}, Actual: {actual_skill} | ToolEnd Config: {tool_conf}, Actual Window Freq: {actual_tool}")
 
     def _get_all_steps(self) -> list[tuple[int, int]]:
         """Get the trajectory IDs and base indices for all steps in the dataset.
@@ -669,8 +632,7 @@ class LeRobotSingleDataset(Dataset):
         """Get the metadata for the LeRobot dataset."""
         modality_meta_path = self.dataset_path / LE_ROBOT_MODALITY_FILENAME
         assert (
-            modality_meta_path.exists()
-        ), f"Please provide a {LE_ROBOT_MODALITY_FILENAME} file in {self.dataset_path}"
+            modality_meta_path.exists()), f"Please provide a {LE_ROBOT_MODALITY_FILENAME} file in {self.dataset_path}"
         with open(modality_meta_path, "r") as f:
             modality_meta = LeRobotModalityMetadata.model_validate(json.load(f))
         return modality_meta
@@ -717,9 +679,7 @@ class LeRobotSingleDataset(Dataset):
                 try:
                     self.lerobot_modality_meta.get_key_meta(key)
                 except Exception as e:
-                    raise ValueError(
-                        ERROR_MSG_HEADER + f"Unable to find key {key} in modality metadata:\n{e}"
-                    )
+                    raise ValueError(ERROR_MSG_HEADER + f"Unable to find key {key} in modality metadata:\n{e}")
 
     def set_transforms_metadata(self, metadata: DatasetMetadata):
         """Set the metadata for the transforms. This is useful for transforms that need to know the metadata, such as the normalization values."""
@@ -779,7 +739,8 @@ class LeRobotSingleDataset(Dataset):
             return dict_transformed
         else:
             list_steps = self._window_steps[index]
-            list_step_data = [self.get_step_data(item[0], item[1]) for item in list_steps]  # dict_keys(['video.front_camera', 'state.single_arm', 'state.gripper', 'action.single_arm', 'action.gripper', 'annotation.step_description'])
+            list_step_data = [self.get_step_data(item[0], item[1]) for item in
+                              list_steps]  # dict_keys(['video.front_camera', 'state.single_arm', 'state.gripper', 'action.single_arm', 'action.gripper', 'annotation.step_description'])
             # DEBUG:
             list_step_transform = [self.transforms(item) for item in list_step_data]
 
@@ -795,7 +756,8 @@ class LeRobotSingleDataset(Dataset):
 
             # task_instruction: <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>Open the cabinet door<|im_end|>\n<|im_start|>assistant\n
             task_instruction_postfix = "<|im_end|>\n<|im_start|>assistant\n"
-            task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix, '')
+            task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix,
+                                                                                               '')
 
             # remove all occurrences like SCENE1, ]SCENE2, SCENE3, etc.
             new_text = re.sub(r'\bSCENE\d+\b\s*', '', task_instruction)
@@ -816,7 +778,7 @@ class LeRobotSingleDataset(Dataset):
                 instruct_begin = task_instruction.replace(f'<image-{num_view}>', f"<image-{num_view}>[TRAJ_MODE]")
 
             traj_instruction = instruct_begin.split('<image-2>')[-1].split('<|im_end|>')[0].replace('Skill-mode: ', '')
-            
+
             list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
             num_steps = len(list_transformed_steps)
 
@@ -854,13 +816,17 @@ class LeRobotSingleDataset(Dataset):
             # <|im_start|>user\n<image-1><image-2>put the yellow and white mug in the microwave and close it<|im_end|>\n
             # <|im_start|>assistant\n
 
-            list_transformed_state = [list_step_transform[i]['state'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
-            list_transformed_state_mask = [list_step_transform[i]['state_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
-            list_transformed_action = [list_step_transform[i]['action'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
-            list_transformed_action_mask = [list_step_transform[i]['action_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
+            list_transformed_state = [list_step_transform[i]['state'] for i, item in enumerate(list_transformed_steps)
+                                      if '[ACTIONS]' in item]
+            list_transformed_state_mask = [list_step_transform[i]['state_mask'] for i, item in
+                                           enumerate(list_transformed_steps) if '[ACTIONS]' in item]
+            list_transformed_action = [list_step_transform[i]['action'] for i, item in enumerate(list_transformed_steps)
+                                       if '[ACTIONS]' in item]
+            list_transformed_action_mask = [list_step_transform[i]['action_mask'] for i, item in
+                                            enumerate(list_transformed_steps) if '[ACTIONS]' in item]
 
             dict_output = list_step_transform[-1]
-            
+
             dict_output['eagle_content']['image_inputs'] = agg_images
             dict_output['eagle_content']['text_list'] = [concated_text]
             dict_output['state'] = list_transformed_state
@@ -868,9 +834,7 @@ class LeRobotSingleDataset(Dataset):
             dict_output['action'] = list_transformed_action
             dict_output['action_mask'] = list_transformed_action_mask
 
-
         return dict_output
-
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
         """Get the RAW data for a single step in a trajectory. No transforms are applied.
@@ -913,9 +877,8 @@ class LeRobotSingleDataset(Dataset):
             return self.curr_traj_data
         else:
             chunk_index = self.get_episode_chunk(trajectory_id)
-            parquet_path = self.dataset_path / self.data_path_pattern.format(
-                episode_chunk=chunk_index, episode_index=trajectory_id
-            )
+            parquet_path = self.dataset_path / self.data_path_pattern.format(episode_chunk=chunk_index,
+                episode_index=trajectory_id)
             assert parquet_path.exists(), f"Parquet file not found at {parquet_path}"
             return pd.read_parquet(parquet_path)
 
@@ -931,22 +894,15 @@ class LeRobotSingleDataset(Dataset):
         """
         trajectory_indices = np.where(self.trajectory_ids == trajectory_id)[0]
         if len(trajectory_indices) != 1:
-            raise ValueError(
-                f"Error finding trajectory index for {trajectory_id}, found {trajectory_indices=}"
-            )
+            raise ValueError(f"Error finding trajectory index for {trajectory_id}, found {trajectory_indices=}")
         return trajectory_indices[0]
 
     def get_episode_chunk(self, ep_index: int) -> int:
         """Get the chunk index for an episode index."""
         return ep_index // self.chunk_size
 
-    def retrieve_data_and_pad(
-        self,
-        array: np.ndarray,
-        step_indices: np.ndarray,
-        max_length: int,
-        padding_strategy: str = "first_last",
-    ) -> np.ndarray:
+    def retrieve_data_and_pad(self, array: np.ndarray, step_indices: np.ndarray, max_length: int,
+            padding_strategy: str = "first_last", ) -> np.ndarray:
         """Retrieve the data from the dataset and pad it if necessary.
         Args:
             array (np.ndarray): The array to retrieve the data from.
@@ -992,17 +948,11 @@ class LeRobotSingleDataset(Dataset):
         original_key = self.lerobot_modality_meta.video[key].original_key
         if original_key is None:
             original_key = key
-        video_filename = self.video_path_pattern.format(
-            episode_chunk=chunk_index, episode_index=trajectory_id, video_key=original_key
-        )
+        video_filename = self.video_path_pattern.format(episode_chunk=chunk_index, episode_index=trajectory_id,
+            video_key=original_key)
         return self.dataset_path / video_filename
 
-    def get_video(
-        self,
-        trajectory_id: int,
-        key: str,
-        base_index: int,
-    ) -> np.ndarray:
+    def get_video(self, trajectory_id: int, key: str, base_index: int, ) -> np.ndarray:
         """Get the video frames for a trajectory by a base index.
 
         Args:
@@ -1034,20 +984,10 @@ class LeRobotSingleDataset(Dataset):
         # Get the corresponding video timestamps from the step indices
         video_timestamp = timestamp[step_indices]
 
-        return get_frames_by_timestamps(
-            video_path.as_posix(),
-            video_timestamp,
-            video_backend=self.video_backend,
-            video_backend_kwargs=self.video_backend_kwargs,
-        )
+        return get_frames_by_timestamps(video_path.as_posix(), video_timestamp, video_backend=self.video_backend,
+            video_backend_kwargs=self.video_backend_kwargs, )
 
-    def get_state_or_action(
-        self,
-        trajectory_id: int,
-        modality: str,
-        key: str,
-        base_index: int,
-    ) -> np.ndarray:
+    def get_state_or_action(self, trajectory_id: int, modality: str, key: str, base_index: int, ) -> np.ndarray:
         """Get the state or action data for a trajectory by a base index.
         If the step indices are out of range, pad with the data:
             if the data is stored in absolute format, pad with the first or last step data;
@@ -1075,11 +1015,8 @@ class LeRobotSingleDataset(Dataset):
             # Get frame_index array and apply proper bounds checking and padding
             frame_index_array = self.curr_traj_data["frame_index"].to_numpy()
             # Use retrieve_data_and_pad to handle out-of-bounds indices
-            frame_index = self.retrieve_data_and_pad(
-                array=frame_index_array,
-                step_indices=step_indices,
-                max_length=max_length,
-                padding_strategy="first_last",  # Use first/last for task progress
+            frame_index = self.retrieve_data_and_pad(array=frame_index_array, step_indices=step_indices,
+                max_length=max_length, padding_strategy="first_last",  # Use first/last for task progress
             )
             # get the task progress by using "frame index / trajectory length"
             progress = frame_index / max_length
@@ -1099,33 +1036,20 @@ class LeRobotSingleDataset(Dataset):
         assert le_key in self.curr_traj_data.columns, f"No {le_key} found in {trajectory_id=}"
         data_array: np.ndarray = np.stack(self.curr_traj_data[le_key])  # type: ignore
         if data_array.ndim == 1:
-            assert (
-                data_array.shape[0] == max_length
-            ), f"Expected 1D array with length {max_length}, got {data_array.shape} array"
+            assert (data_array.shape[
+                        0] == max_length), f"Expected 1D array with length {max_length}, got {data_array.shape} array"
             data_array = data_array.reshape(-1, 1)
         assert data_array.ndim == 2, f"Expected 2D array, got {data_array.shape} array"
-        le_indices = np.arange(
-            le_state_or_action_cfg[key].start,
-            le_state_or_action_cfg[key].end,
-        )
+        le_indices = np.arange(le_state_or_action_cfg[key].start, le_state_or_action_cfg[key].end, )
         data_array = data_array[:, le_indices]
         # Get the state or action configuration
         state_or_action_cfg = getattr(self.metadata.modalities, modality)[key]
 
         # Pad the data
-        return self.retrieve_data_and_pad(
-            array=data_array,
-            step_indices=step_indices,
-            max_length=max_length,
-            padding_strategy="first_last" if state_or_action_cfg.absolute else "zero",
-        )
+        return self.retrieve_data_and_pad(array=data_array, step_indices=step_indices, max_length=max_length,
+            padding_strategy="first_last" if state_or_action_cfg.absolute else "zero", )
 
-    def get_language(
-        self,
-        trajectory_id: int,
-        key: str,
-        base_index: int,
-    ) -> list[str]:
+    def get_language(self, trajectory_id: int, key: str, base_index: int, ) -> list[str]:
         """Get the language annotation data for a trajectory by step indices.
 
         Args:
@@ -1149,15 +1073,12 @@ class LeRobotSingleDataset(Dataset):
         step_indices = np.minimum(step_indices, max_length - 1)
         # Get the annotations
         task_indices: list[int] = []
-        assert key.startswith(
-            "annotation."
-        ), f"Language key must start with 'annotation.', got {key}"
+        assert key.startswith("annotation."), f"Language key must start with 'annotation.', got {key}"
         subkey = key.replace("annotation.", "")
         annotation_meta = self.lerobot_modality_meta.annotation
         assert annotation_meta is not None, f"Annotation metadata is None for {subkey}"
         assert (
-            subkey in annotation_meta
-        ), f"Annotation key {subkey} not found in metadata, available annotation keys: {annotation_meta.keys()}"
+                subkey in annotation_meta), f"Annotation key {subkey} not found in metadata, available annotation keys: {annotation_meta.keys()}"
         subkey_meta = annotation_meta[subkey]
         original_key = subkey_meta.original_key
         if original_key is None:
@@ -1166,13 +1087,7 @@ class LeRobotSingleDataset(Dataset):
             task_indices.append(self.curr_traj_data[original_key][step_indices[i]].item())
         return self.tasks.loc[task_indices]["task"].tolist()
 
-    def get_data_by_modality(
-        self,
-        trajectory_id: int,
-        modality: str,
-        key: str,
-        base_index: int,
-    ):
+    def get_data_by_modality(self, trajectory_id: int, modality: str, key: str, base_index: int, ):
         """Get the data corresponding to the modality for a trajectory by a base index.
         This method will call the corresponding helper method based on the modality.
         See the helper methods for more details.
@@ -1217,18 +1132,11 @@ class CachedLeRobotSingleDataset(LeRobotSingleDataset):
         for key in self.modality_keys["video"]:
             all_frames = []
             key = key.replace("video.", "")
-            for trajectory_id, trajectory_length in tqdm(
-                zip(self.trajectory_ids, self.trajectory_lengths),
-                total=len(self.trajectory_ids),
-                desc=f"Caching {key} frames",
-            ):
+            for trajectory_id, trajectory_length in tqdm(zip(self.trajectory_ids, self.trajectory_lengths),
+                    total=len(self.trajectory_ids), desc=f"Caching {key} frames", ):
                 video_path = self.get_video_path(trajectory_id, key)
-                frames = get_all_frames(
-                    video_path.as_posix(),
-                    video_backend=self.video_backend,
-                    video_backend_kwargs=self.video_backend_kwargs,
-                    resize_size=img_resize,
-                )
+                frames = get_all_frames(video_path.as_posix(), video_backend=self.video_backend,
+                    video_backend_kwargs=self.video_backend_kwargs, resize_size=img_resize, )
                 assert frames.ndim == 4, f"Expected 4D array, got {frames.shape} array"
                 assert frames.shape[3] == 3, f"Expected 3 channels, got {frames.shape[3]} channels"
                 # assert (
@@ -1298,10 +1206,8 @@ def safe_hash(input_tuple):
 class MixtureSpecElement(BaseModel):
     dataset_path: list[Path] | Path = Field(..., description="The path to the dataset.")
     dataset_weight: float = Field(..., description="The weight of the dataset in the mixture.")
-    distribute_weights: bool = Field(
-        default=False,
-        description="Whether to distribute the weights of the dataset across all the paths. If True, the weights will be evenly distributed across all the paths.",
-    )
+    distribute_weights: bool = Field(default=False,
+        description="Whether to distribute the weights of the dataset across all the paths. If True, the weights will be evenly distributed across all the paths.", )
 
 
 class LeRobotMixtureDataset(Dataset):
@@ -1310,17 +1216,9 @@ class LeRobotMixtureDataset(Dataset):
     It is recommended to modify the single dataset class instead of this class.
     """
 
-    def __init__(
-        self,
-        data_mixture: Sequence[tuple[LeRobotSingleDataset, float]],
-        mode: str,
-        balance_dataset_weights: bool = True,
-        balance_trajectory_weights: bool = True,
-        seed: int = 42,
-        metadata_config: dict = {
-            "percentile_mixing_method": "min_max",
-        },
-    ):
+    def __init__(self, data_mixture: Sequence[tuple[LeRobotSingleDataset, float]], mode: str,
+            balance_dataset_weights: bool = True, balance_trajectory_weights: bool = True, seed: int = 42,
+            metadata_config: dict = {"percentile_mixing_method": "min_max", }, ):
         """
         Initialize the mixture dataset.
 
@@ -1365,9 +1263,7 @@ class LeRobotMixtureDataset(Dataset):
         # 4. Primary dataset indices
         self._primary_dataset_indices = np.array(dataset_sampling_weights) == 1.0
         if not np.any(self._primary_dataset_indices):
-            raise ValueError(
-                "No primary dataset found, please at least set one dataset's weight to 1.0"
-            )
+            raise ValueError("No primary dataset found, please at least set one dataset's weight to 1.0")
 
         # Set the epoch and sample the first epoch
         self.set_epoch(0)
@@ -1397,10 +1293,7 @@ class LeRobotMixtureDataset(Dataset):
     def __str__(self) -> str:
         dataset_descriptions = []
         for dataset, weight in zip(self.datasets, self.dataset_sampling_weights):
-            dataset_description = {
-                "Dataset": str(dataset),
-                "Sampling weight": float(weight),
-            }
+            dataset_description = {"Dataset": str(dataset), "Sampling weight": float(weight), }
             dataset_descriptions.append(dataset_description)
         return json.dumps({"Mixture dataset": dataset_descriptions}, indent=2)
 
@@ -1410,8 +1303,7 @@ class LeRobotMixtureDataset(Dataset):
         Args:
             epoch (int): The epoch to set.
         """
-        self.epoch = epoch
-        # self.sampled_steps = self.sample_epoch()
+        self.epoch = epoch  # self.sampled_steps = self.sample_epoch()
 
     def sample_step(self, index: int) -> tuple[LeRobotSingleDataset, int, int]:
         """Sample a single step from the dataset."""
@@ -1426,9 +1318,7 @@ class LeRobotMixtureDataset(Dataset):
         dataset = self.datasets[dataset_index]
 
         # Sample trajectory
-        trajectory_index = rng.choice(
-            len(dataset.trajectory_ids), p=self.trajectory_sampling_weights[dataset_index]
-        )
+        trajectory_index = rng.choice(len(dataset.trajectory_ids), p=self.trajectory_sampling_weights[dataset_index])
         trajectory_id = dataset.trajectory_ids[trajectory_index]
 
         # Sample step
@@ -1453,18 +1343,12 @@ class LeRobotMixtureDataset(Dataset):
         Returns:
             int: The length of a single epoch in the mixture.
         """
-        return int(
-            (self.dataset_lengths / self.dataset_sampling_weights)[
-                self.primary_dataset_indices
-            ].max()
-        )
+        return int((self.dataset_lengths / self.dataset_sampling_weights)[self.primary_dataset_indices].max())
 
     @staticmethod
-    def compute_overall_statistics(
-        per_task_stats: list[dict[str, dict[str, list[float] | np.ndarray]]],
-        dataset_sampling_weights: list[float] | np.ndarray,
-        percentile_mixing_method: str = "weighted_average",
-    ) -> dict[str, dict[str, list[float]]]:
+    def compute_overall_statistics(per_task_stats: list[dict[str, dict[str, list[float] | np.ndarray]]],
+            dataset_sampling_weights: list[float] | np.ndarray, percentile_mixing_method: str = "weighted_average", ) -> \
+    dict[str, dict[str, list[float]]]:
         """
         Computes overall statistics from per-task statistics using dataset sample weights.
 
@@ -1520,7 +1404,7 @@ class LeRobotMixtureDataset(Dataset):
 
                 # Update weighted sums for mean and variance
                 weighted_means += w_i * means
-                weighted_squares += w_i * (stds**2 + means**2)
+                weighted_squares += w_i * (stds ** 2 + means ** 2)
 
                 # Collect min, max, q01, q99
                 min_list.append(stats["min"])
@@ -1532,7 +1416,7 @@ class LeRobotMixtureDataset(Dataset):
             overall_mean = weighted_means.tolist()
 
             # Compute overall variance and std deviation
-            overall_variance = weighted_squares - weighted_means**2
+            overall_variance = weighted_squares - weighted_means ** 2
             overall_std = np.sqrt(overall_variance).tolist()
 
             # Compute overall min and max per dimension
@@ -1545,12 +1429,8 @@ class LeRobotMixtureDataset(Dataset):
             q99_array = np.array(q99_list)
             if percentile_mixing_method == "weighted_average":
                 weighted_q01 = np.average(q01_array, axis=0, weights=normalized_weights).tolist()
-                weighted_q99 = np.average(q99_array, axis=0, weights=normalized_weights).tolist()
-                # std_q01 = np.std(q01_array, axis=0).tolist()
-                # std_q99 = np.std(q99_array, axis=0).tolist()
-                # print(modality)
-                # print(f"{std_q01=}, {std_q99=}")
-                # print(f"{weighted_q01=}, {weighted_q99=}")
+                weighted_q99 = np.average(q99_array, axis=0,
+                                          weights=normalized_weights).tolist()  # std_q01 = np.std(q01_array, axis=0).tolist()  # std_q99 = np.std(q99_array, axis=0).tolist()  # print(modality)  # print(f"{std_q01=}, {std_q99=}")  # print(f"{weighted_q01=}, {weighted_q99=}")
             elif percentile_mixing_method == "min_max":
                 weighted_q01 = np.min(q01_array, axis=0).tolist()
                 weighted_q99 = np.max(q99_array, axis=0).tolist()
@@ -1558,23 +1438,14 @@ class LeRobotMixtureDataset(Dataset):
                 raise ValueError(f"Invalid percentile mixing method: {percentile_mixing_method}")
 
             # Store the overall statistics for the modality
-            overall_stats[modality] = {
-                "min": overall_min,
-                "max": overall_max,
-                "mean": overall_mean,
-                "std": overall_std,
-                "q01": weighted_q01,
-                "q99": weighted_q99,
-            }
+            overall_stats[modality] = {"min": overall_min, "max": overall_max, "mean": overall_mean, "std": overall_std,
+                "q01": weighted_q01, "q99": weighted_q99, }
 
         return overall_stats
 
     @staticmethod
-    def merge_metadata(
-        metadatas: list[DatasetMetadata],
-        dataset_sampling_weights: list[float],
-        percentile_mixing_method: str,
-    ) -> DatasetMetadata:
+    def merge_metadata(metadatas: list[DatasetMetadata], dataset_sampling_weights: list[float],
+            percentile_mixing_method: str, ) -> DatasetMetadata:
         """Merge multiple metadata into one."""
         # Convert to dicts
         metadata_dicts = [metadata.model_dump(mode="json") for metadata in metadatas]
@@ -1582,23 +1453,18 @@ class LeRobotMixtureDataset(Dataset):
         merged_metadata = {}
 
         # Check all metadata have the same embodiment tag
-        assert all(
-            metadata.embodiment_tag == metadatas[0].embodiment_tag for metadata in metadatas
-        ), "All metadata must have the same embodiment tag"
+        assert all(metadata.embodiment_tag == metadatas[0].embodiment_tag for metadata in
+                   metadatas), "All metadata must have the same embodiment tag"
         merged_metadata["embodiment_tag"] = metadatas[0].embodiment_tag
 
         # Merge the dataset statistics
         dataset_statistics = {}
         dataset_statistics["state"] = LeRobotMixtureDataset.compute_overall_statistics(
             per_task_stats=[m["statistics"]["state"] for m in metadata_dicts],
-            dataset_sampling_weights=dataset_sampling_weights,
-            percentile_mixing_method=percentile_mixing_method,
-        )
+            dataset_sampling_weights=dataset_sampling_weights, percentile_mixing_method=percentile_mixing_method, )
         dataset_statistics["action"] = LeRobotMixtureDataset.compute_overall_statistics(
             per_task_stats=[m["statistics"]["action"] for m in metadata_dicts],
-            dataset_sampling_weights=dataset_sampling_weights,
-            percentile_mixing_method=percentile_mixing_method,
-        )
+            dataset_sampling_weights=dataset_sampling_weights, percentile_mixing_method=percentile_mixing_method, )
         merged_metadata["statistics"] = dataset_statistics
 
         # Merge the modality configs
@@ -1609,9 +1475,7 @@ class LeRobotMixtureDataset(Dataset):
         merged_metadata["modalities"] = {}
         for modality, configs in modality_configs.items():
             # Check that all modality configs correspond to the same tag matches
-            assert (
-                len(configs) == 1
-            ), f"Multiple modality configs for modality {modality}: {list(configs)}"
+            assert (len(configs) == 1), f"Multiple modality configs for modality {modality}: {list(configs)}"
             merged_metadata["modalities"][modality] = json.loads(configs.pop())
 
         return DatasetMetadata.model_validate(merged_metadata)
@@ -1635,10 +1499,8 @@ class LeRobotMixtureDataset(Dataset):
                 all_metadatas[dataset.tag] = []
             all_metadatas[dataset.tag].append(dataset.metadata)
         for tag, metadatas in all_metadatas.items():
-            self.merged_metadata[tag] = self.merge_metadata(
-                metadatas=metadatas,
+            self.merged_metadata[tag] = self.merge_metadata(metadatas=metadatas,
                 dataset_sampling_weights=self.dataset_sampling_weights.tolist(),
-                percentile_mixing_method=metadata_config["percentile_mixing_method"],
-            )
+                percentile_mixing_method=metadata_config["percentile_mixing_method"], )
         for dataset in self.datasets:
             dataset.set_transforms_metadata(self.merged_metadata[dataset.tag])

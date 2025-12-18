@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+
 CACHE_DIR = "/fs/nexus-projects/wilddiffusion/cache"
 CACHE_DIR = "/fs/nexus-scratch/yliang17/Research/cache"
 
@@ -223,58 +224,32 @@ def main(config: ArgsConfig):
 
     # 1.2 data loader: we will use either single dataset or mixture dataset
     if len(config.dataset_path) == 1:
-        train_dataset = LeRobotSingleDataset(
-            dataset_path=config.dataset_path[0],
-            modality_configs=modality_configs,
-            transforms=transforms,
-            embodiment_tag=embodiment_tag,
-            video_backend=config.video_backend,
-            window_length=config.window_length, 
-            windowing_mode=config.windowing_mode,
-            skill_level=config.skill_level,
-            min_seq_len=config.min_seq_len,
-            skill_inclusion_ratio=config.skill_inclusion_ratio,
-            action_ds_ratio=config.action_ds_ratio,
-            toolend_upsample_ratio=config.toolend_upsample_ratio,
-        )
+        train_dataset = LeRobotSingleDataset(dataset_path=config.dataset_path[0], modality_configs=modality_configs,
+            transforms=transforms, embodiment_tag=embodiment_tag, video_backend=config.video_backend,
+            window_length=config.window_length, windowing_mode=config.windowing_mode, skill_level=config.skill_level,
+            min_seq_len=config.min_seq_len, skill_inclusion_ratio=config.skill_inclusion_ratio,
+            action_ds_ratio=config.action_ds_ratio, toolend_upsample_ratio=config.toolend_upsample_ratio, )
     else:
         single_datasets = []
         for p in config.dataset_path:
             assert os.path.exists(p), f"Dataset path {p} does not exist"
-            dataset = LeRobotSingleDataset(
-                dataset_path=p,
-                modality_configs=modality_configs,
-                transforms=transforms,
-                embodiment_tag=embodiment_tag,
-                video_backend=config.video_backend,
-                window_length=config.window_length, 
-                windowing_mode=config.windowing_mode,
-                skill_level=config.skill_level,
-                min_seq_len=config.min_seq_len,
-                skill_inclusion_ratio=config.skill_inclusion_ratio,
-                action_ds_ratio=config.action_ds_ratio,
-                toolend_upsample_ratio=config.toolend_upsample_ratio,
-            )
+            dataset = LeRobotSingleDataset(dataset_path=p, modality_configs=modality_configs, transforms=transforms,
+                embodiment_tag=embodiment_tag, video_backend=config.video_backend, window_length=config.window_length,
+                windowing_mode=config.windowing_mode, skill_level=config.skill_level, min_seq_len=config.min_seq_len,
+                skill_inclusion_ratio=config.skill_inclusion_ratio, action_ds_ratio=config.action_ds_ratio,
+                toolend_upsample_ratio=config.toolend_upsample_ratio, )
             single_datasets.append(dataset)
 
-        train_dataset = LeRobotMixtureDataset(
-            data_mixture=[
-                (dataset, 1.0)  # we will use equal weights for all datasets
-                for dataset in single_datasets
-            ],
-            mode="train",
-            balance_dataset_weights=config.balance_dataset_weights,
-            balance_trajectory_weights=config.balance_trajectory_weights,
-            seed=42,
-            metadata_config={
-                "percentile_mixing_method": "weighted_average",
-            },
-        )
+        train_dataset = LeRobotMixtureDataset(data_mixture=[(dataset, 1.0)  # we will use equal weights for all datasets
+            for dataset in single_datasets], mode="train", balance_dataset_weights=config.balance_dataset_weights,
+            balance_trajectory_weights=config.balance_trajectory_weights, seed=42,
+            metadata_config={"percentile_mixing_method": "weighted_average", }, )
         print(f"Loaded {len(single_datasets)} datasets, with {config.dataset_path} ")
 
     if config.do_eval:
         eval_sanity_set = Subset(train_dataset, indices=range(20))
-        import pdb;pdb.set_trace()
+        import pdb;
+        pdb.set_trace()
     else:
         eval_sanity_set = None
 
@@ -288,33 +263,27 @@ def main(config: ArgsConfig):
     if 'nextstep' in config.run_name:
         pred_nextstep = True
 
-    model = GR00T_N1_5.from_pretrained(
-        pretrained_model_name_or_path=config.base_model_path,
-        tune_llm=config.tune_llm,  # backbone's LLM
+    model = GR00T_N1_5.from_pretrained(pretrained_model_name_or_path=config.base_model_path, tune_llm=config.tune_llm,
+        # backbone's LLM
         tune_visual=config.tune_visual,  # backbone's vision tower
         tune_projector=config.tune_projector,  # action head's projector
         tune_diffusion_model=config.tune_diffusion_model,  # action head's DiT
         tune_special_A=config.tune_special_A,  # backbone's embedding
         tune_special_B=config.tune_special_B,  # backbone's embedding
-        tune_tool_end=config.tune_tool_end,
-        pred_nextstep=pred_nextstep
-    )
+        tune_tool_end=config.tune_tool_end, pred_nextstep=pred_nextstep)
 
     # Update action_horizon to match data config
     # Need to recreate action head with correct config since it was initialized with old config
     if data_action_horizon != model.action_head.config.action_horizon:
         print(
-            f"Recreating action head with action_horizon {data_action_horizon} (was {model.action_head.config.action_horizon})"
-        )
+            f"Recreating action head with action_horizon {data_action_horizon} (was {model.action_head.config.action_horizon})")
 
         # Update the action head config
         new_action_head_config = model.action_head.config
         new_action_head_config.action_horizon = data_action_horizon
 
         # Import the FlowmatchingActionHead class
-        from gr00t.model.action_head.flow_matching_action_head import (
-            FlowmatchingActionHead,
-        )
+        from gr00t.model.action_head.flow_matching_action_head import (FlowmatchingActionHead, )
 
         # Create new action head with updated config
         new_action_head = FlowmatchingActionHead(new_action_head_config)
@@ -331,33 +300,33 @@ def main(config: ArgsConfig):
         model.config.action_head_cfg["action_horizon"] = data_action_horizon
 
         # Set trainable parameters for the new action head
-        model.action_head.set_trainable_parameters(
-            tune_projector=config.tune_projector, tune_diffusion_model=config.tune_diffusion_model
-        )
+        model.action_head.set_trainable_parameters(tune_projector=config.tune_projector,
+            tune_diffusion_model=config.tune_diffusion_model)
 
     # ADDED: reload special embed after pretrained
     model_emb = model.backbone.eagle_model.language_model.model.embed_tokens
     lm_head = model.backbone.eagle_model.language_model.lm_head
-    if (getattr(model_emb, "special_embedding_A", None) or getattr(model_emb, "special_embedding_B", None)) and config.base_model_path == "nvidia/GR00T-N1.5-3B":
+    if (getattr(model_emb, "special_embedding_A", None) or getattr(model_emb, "special_embedding_B",
+                                                                   None)) and config.base_model_path == "nvidia/GR00T-N1.5-3B":
         # --- Re-init special token embeddings ---
         with torch.no_grad():
             base_weight = model_emb.base_embedding.weight
 
             # compute mean in fp32 for stability
             mean_vec = base_weight.detach().to(torch.float32).mean(dim=0, keepdim=True)
-            
+
             # --- Handle Group A ---
             if hasattr(model_emb, "special_embedding_A") and model_emb.special_embedding_A.weight.size(0) > 0:
                 special_layer_to_init_A = model_emb.special_embedding_A.weight
                 special_head_to_init_A = lm_head.special_head_A.weight
-                
+
                 mean_vec_A = mean_vec.to(special_layer_to_init_A.device, dtype=special_layer_to_init_A.dtype)
                 num_embeddings_A = special_layer_to_init_A.shape[0]
-                
+
                 special_layer_to_init_A.copy_(mean_vec_A.repeat(num_embeddings_A, 1))
                 special_head_to_init_A.copy_(mean_vec_A.repeat(num_embeddings_A, 1))
                 print(f"Re-initialized {num_embeddings_A} special tokens (Group A) with base embedding mean.")
-                
+
             # --- Handle Group B ---
             if hasattr(model_emb, "special_embedding_B") and model_emb.special_embedding_B.weight.size(0) > 0:
                 special_layer_to_init_B = model_emb.special_embedding_B.weight
@@ -369,21 +338,23 @@ def main(config: ArgsConfig):
                 special_layer_to_init_B.copy_(mean_vec_B.repeat(num_embeddings_B, 1))
                 special_head_to_init_B.copy_(mean_vec_B.repeat(num_embeddings_B, 1))
                 print(f"Re-initialized {num_embeddings_B} special tokens (Group B) with base embedding mean.")
-    
+
     # Initialize the tool head so it doesn't output garbage initially
-    if config.tune_tool_end and hasattr(model.backbone, "tool_end_head") and config.base_model_path == "nvidia/GR00T-N1.5-3B":
+    if config.tune_tool_end and hasattr(model.backbone,
+                                        "tool_end_head") and config.base_model_path == "nvidia/GR00T-N1.5-3B":
         with torch.no_grad():
             model.backbone.tool_end_head.weight.data.normal_(mean=0.0, std=0.02)
             model.backbone.tool_end_head.bias.data.zero_()
-            model.backbone.tool_end_head.bias.data[1] = -5.0 
+            model.backbone.tool_end_head.bias.data[1] = -5.0
         print("Initialized tool_end_head with custom weights.")
 
     # Initialize the tool head so it doesn't output garbage initially
-    if config.tune_tool_end and hasattr(model.backbone, "tool_head") and config.base_model_path == "nvidia/GR00T-N1.5-3B":
+    if config.tune_tool_end and hasattr(model.backbone,
+                                        "tool_head") and config.base_model_path == "nvidia/GR00T-N1.5-3B":
         with torch.no_grad():
             model.backbone.tool_head.weight.data.normal_(mean=0.0, std=0.02)
             model.backbone.tool_head.bias.data.zero_()
-            model.backbone.tool_head.bias.data[1] = -5.0 
+            model.backbone.tool_head.bias.data[1] = -5.0
         print("Initialized tool_head with custom weights.")
 
     # Set the model's compute_dtype to bfloat16
@@ -396,17 +367,10 @@ def main(config: ArgsConfig):
 
     if config.lora_rank > 0:
         # normal lora training (only for action_head / full model)
-        model = get_lora_model(
-            model,
-            rank=config.lora_rank,
-            lora_alpha=config.lora_alpha,
-            lora_dropout=config.lora_dropout,
-            freeze_embeddings=config.freeze_embeddings, 
-            train_action_head=train_action_head,
-            tune_special_A=config.tune_special_A,
-            tune_special_B=config.tune_special_B,
-            tune_tool_end=config.tune_tool_end,
-        )
+        model = get_lora_model(model, rank=config.lora_rank, lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout, freeze_embeddings=config.freeze_embeddings,
+            train_action_head=train_action_head, tune_special_A=config.tune_special_A,
+            tune_special_B=config.tune_special_B, tune_tool_end=config.tune_tool_end, )
     else:
         # tie model weight
         tie_all_special_weights(model)
@@ -416,62 +380,29 @@ def main(config: ArgsConfig):
             model.action_head.requires_grad_(train_action_head)
 
     _ = list_trainable_parameter_names(model)
-            
+
     # 2.1 modify training args
-    training_args = TrainingArguments(
-        output_dir=config.output_dir,
-        run_name=config.run_name,
-        remove_unused_columns=False,
-        deepspeed="",
-        gradient_checkpointing=False,
-        bf16=True,
-        tf32=True,
-        per_device_train_batch_size=config.batch_size,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        dataloader_num_workers=config.dataloader_num_workers,
-        dataloader_pin_memory=False,
+    training_args = TrainingArguments(output_dir=config.output_dir, run_name=config.run_name,
+        remove_unused_columns=False, deepspeed="", gradient_checkpointing=False, bf16=True, tf32=True,
+        per_device_train_batch_size=config.batch_size, gradient_accumulation_steps=config.gradient_accumulation_steps,
+        dataloader_num_workers=config.dataloader_num_workers, dataloader_pin_memory=False,
         # dataloader_prefetch_factor=config.dataloader_prefetch_factor,
-        dataloader_persistent_workers=config.dataloader_num_workers > 0,
-        optim="adamw_torch",
-        adam_beta1=0.95,
-        adam_beta2=0.999,
-        adam_epsilon=1e-8,
-        learning_rate=config.learning_rate,
-        weight_decay=config.weight_decay,
-        warmup_ratio=config.warmup_ratio,
-        lr_scheduler_type="cosine",
-        logging_steps=10.0,
-        num_train_epochs=300,
-        max_steps=config.max_steps,
-        save_strategy="steps",
-        save_steps=config.save_steps,
-        # evaluation_strategy="no",
-        save_total_limit=5,
-        report_to=config.report_to,
-        seed=42,
-        # do_eval=False,
-        ddp_find_unused_parameters=False,
-        ddp_bucket_cap_mb=100,
-        torch_compile_mode=None,
+        dataloader_persistent_workers=config.dataloader_num_workers > 0, optim="adamw_torch", adam_beta1=0.95,
+        adam_beta2=0.999, adam_epsilon=1e-8, learning_rate=config.learning_rate, weight_decay=config.weight_decay,
+        warmup_ratio=config.warmup_ratio, lr_scheduler_type="cosine", logging_steps=10.0, num_train_epochs=300,
+        max_steps=config.max_steps, save_strategy="steps", save_steps=config.save_steps, # evaluation_strategy="no",
+        save_total_limit=5, report_to=config.report_to, seed=42, # do_eval=False,
+        ddp_find_unused_parameters=False, ddp_bucket_cap_mb=100, torch_compile_mode=None,
         max_grad_norm=config.grad_norm,
 
         # --- EVALUATION SETTINGS ---
-        do_eval=config.do_eval, 
-        eval_strategy="steps" if config.do_eval else "no", 
-        eval_steps=config.save_steps, 
-        per_device_eval_batch_size=config.batch_size, 
-        eval_accumulation_steps=1,
-        # ---------------------------
+        do_eval=config.do_eval, eval_strategy="steps" if config.do_eval else "no", eval_steps=config.save_steps,
+        per_device_eval_batch_size=config.batch_size, eval_accumulation_steps=1, # ---------------------------
     )
 
     # 2.2 run experiment
-    experiment = TrainRunner(
-        train_dataset=train_dataset,
-        model=model,
-        training_args=training_args,
-        resume_from_checkpoint=config.resume,
-        eval_dataset=eval_sanity_set,
-    )
+    experiment = TrainRunner(train_dataset=train_dataset, model=model, training_args=training_args,
+        resume_from_checkpoint=config.resume, eval_dataset=eval_sanity_set, )
 
     # 2.3 run experiment
     experiment.train()
@@ -493,8 +424,7 @@ if __name__ == "__main__":
 
     # Validate GPU configuration
     assert (
-        config.num_gpus <= available_gpus
-    ), f"Number of GPUs requested ({config.num_gpus}) is greater than the available GPUs ({available_gpus})"
+            config.num_gpus <= available_gpus), f"Number of GPUs requested ({config.num_gpus}) is greater than the available GPUs ({available_gpus})"
     assert config.num_gpus > 0, "Number of GPUs must be greater than 0"
     print(f"Using {config.num_gpus} GPUs")
 
@@ -513,13 +443,9 @@ if __name__ == "__main__":
             if "CUDA_VISIBLE_DEVICES" in os.environ:
                 del os.environ["CUDA_VISIBLE_DEVICES"]
             # Use subprocess.run instead of os.system
-            cmd = [
-                "torchrun",
-                "--standalone",
-                f"--nproc_per_node={config.num_gpus}",
-                "--nnodes=1",  # default to 1 node for now
-                str(script_path),
-            ]
+            cmd = ["torchrun", "--standalone", f"--nproc_per_node={config.num_gpus}", "--nnodes=1",
+                # default to 1 node for now
+                str(script_path), ]
 
             # Convert config to command line arguments
             for key, value in vars(config).items():

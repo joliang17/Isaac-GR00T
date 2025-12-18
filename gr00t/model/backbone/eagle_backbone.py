@@ -24,9 +24,7 @@ import re
 
 import gr00t
 
-DEFAULT_EAGLE_PATH = os.path.join(
-    os.path.dirname(gr00t.__file__), "model", "backbone", "eagle2_hg_model"
-)
+DEFAULT_EAGLE_PATH = os.path.join(os.path.dirname(gr00t.__file__), "model", "backbone", "eagle2_hg_model")
 
 
 @staticmethod
@@ -55,20 +53,16 @@ class HybridEmbedding(nn.Module):
     An embedding module that uses a frozen base embedding table and a new,
     trainable special embedding table.
     """
-    def __init__(self, 
-                base_embedding: nn.Embedding, 
-                num_special_tokens_A: int, 
-                special_id_lookup_A: torch.Tensor,
-                num_special_tokens_B: int,
-                special_id_lookup_B: torch.Tensor
-            ):
+
+    def __init__(self, base_embedding: nn.Embedding, num_special_tokens_A: int, special_id_lookup_A: torch.Tensor,
+                 num_special_tokens_B: int, special_id_lookup_B: torch.Tensor):
         super().__init__()
         self.embedding_dim = base_embedding.embedding_dim
-        
+
         # Keep a reference to the original, and freeze it
         self.base_embedding = base_embedding
         self.base_embedding.requires_grad_(False)
-        
+
         # MODIFIED: Create two new, trainable embedding layers for special tokens
         self.special_embedding_A = nn.Embedding(num_special_tokens_A, self.embedding_dim)
         self.special_embedding_B = nn.Embedding(num_special_tokens_B, self.embedding_dim)
@@ -78,12 +72,12 @@ class HybridEmbedding(nn.Module):
         self.register_buffer("special_id_lookup_B", special_id_lookup_B.clone(), persistent=False)
 
         self.embedding_dim = self.base_embedding.embedding_dim
-        self.num_embeddings = self.special_id_lookup_A.numel() # Total vocab size
+        self.num_embeddings = self.special_id_lookup_A.numel()  # Total vocab size
         self.padding_idx = self.base_embedding.padding_idx
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         # MODIFIED: Updated forward logic for three embedding tables
-        
+
         base_vocab_size = self.base_embedding.num_embeddings
         base_mask = input_ids < base_vocab_size
 
@@ -94,72 +88,60 @@ class HybridEmbedding(nn.Module):
         # Find tokens for group A
         special_indices_A = self.special_id_lookup_A[input_ids]
         special_mask_A = special_indices_A >= 0
-        
+
         if special_mask_A.any():
-            embeddings[special_mask_A] = self.special_embedding_A(special_indices_A[special_mask_A]).to(dtype=embeddings.dtype)
+            embeddings[special_mask_A] = self.special_embedding_A(special_indices_A[special_mask_A]).to(
+                dtype=embeddings.dtype)
 
         # Find tokens for group B
         special_indices_B = self.special_id_lookup_B[input_ids]
         special_mask_B = special_indices_B >= 0
 
         if special_mask_B.any():
-            embeddings[special_mask_B] = self.special_embedding_B(special_indices_B[special_mask_B]).to(dtype=embeddings.dtype)
-            
+            embeddings[special_mask_B] = self.special_embedding_B(special_indices_B[special_mask_B]).to(
+                dtype=embeddings.dtype)
+
         return embeddings
 
-    def _load_from_state_dict(
-        self,
-        state_dict,
-        prefix,
-        local_metadata,
-        strict,
-        missing_keys,
-        unexpected_keys,
-        error_msgs,
-    ):
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
+            error_msgs, ):
         """
         Custom loader to handle loading weights from a standard, non-hybrid GR00T checkpoint.
         """
         # Define the key for the flat weight tensor in the original GR00T checkpoint
         flat_weight_key = prefix + 'weight'
-        
+
         # Define the key for the base embedding in our new hybrid structure
         base_embedding_key = prefix + 'base_embedding.weight'
-        
+
         # If the old flat key exists in the checkpoint, remap it to the new key
         if flat_weight_key in state_dict and base_embedding_key not in state_dict:
             # Get the weight tensor from the checkpoint
             flat_weight = state_dict.pop(flat_weight_key)
-            
+
             # Place it back into the state_dict with the new, correct key
             state_dict[base_embedding_key] = flat_weight
-            
+
         # Let the default PyTorch loader handle the rest with the corrected state_dict
-        super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
-        )
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
+            error_msgs)
 
 
 class HybridLMHead(nn.Module):
     """
     An LM head that uses a frozen base head and a new, trainable special head.
     """
-    def __init__(self, 
-                 base_head: nn.Linear, 
-                 num_special_tokens_A: int, 
-                 special_token_ids_A: torch.Tensor, 
-                 num_special_tokens_B: int,
-                 special_token_ids_B: torch.Tensor,
-                 total_vocab_size: int,
-                ):
+
+    def __init__(self, base_head: nn.Linear, num_special_tokens_A: int, special_token_ids_A: torch.Tensor,
+                 num_special_tokens_B: int, special_token_ids_B: torch.Tensor, total_vocab_size: int, ):
         super().__init__()
         self.in_features = base_head.in_features
         self.out_features = total_vocab_size
-        
+
         # Keep a reference to the original, and freeze it
         self.base_head = base_head
         self.base_head.requires_grad_(False)
-        
+
         # MODIFIED: Create two new, trainable LM heads for special tokens
         self.special_head_A = nn.Linear(self.in_features, num_special_tokens_A, bias=False)
         self.special_head_B = nn.Linear(self.in_features, num_special_tokens_B, bias=False)
@@ -169,11 +151,10 @@ class HybridLMHead(nn.Module):
         self.register_buffer("special_token_ids_B", special_token_ids_B.clone(), persistent=False)
         self.total_vocab_size = total_vocab_size
 
-
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # MODIFIED: Updated forward logic to scatter logits from three heads
         base_logits = self.base_head(hidden_states)
-        
+
         logits_shape = hidden_states.shape[:-1] + (self.total_vocab_size,)
         # Ensure logits tensor is on the same device and dtype as hidden_states
         logits = torch.zeros(logits_shape, dtype=hidden_states.dtype, device=hidden_states.device)
@@ -194,19 +175,11 @@ class HybridLMHead(nn.Module):
             if special_logits_B.dtype != logits.dtype:
                 special_logits_B = special_logits_B.to(logits.dtype)
             logits[..., self.special_token_ids_B] = special_logits_B
-        
+
         return logits
 
-    def _load_from_state_dict(
-        self,
-        state_dict,
-        prefix,
-        local_metadata,
-        strict,
-        missing_keys,
-        unexpected_keys,
-        error_msgs,
-    ):
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
+            error_msgs, ):
         """
         Custom loader to handle loading weights from a standard, non-hybrid GR00T checkpoint.
         """
@@ -214,43 +187,30 @@ class HybridLMHead(nn.Module):
         for suffix in ("weight", "bias"):
             # Define the key for the flat tensor in the original checkpoint (e.g., '...lm_head.weight')
             flat_key = prefix + suffix
-            
+
             # Define the key for the base head in our new hybrid structure (e.g., '...lm_head.base_head.weight')
             nested_key = prefix + f"base_head.{suffix}"
-            
+
             # If the old flat key exists in the checkpoint, remap it to the new key
             if flat_key in state_dict and nested_key not in state_dict:
                 # Get the tensor from the checkpoint
                 flat_tensor = state_dict.pop(flat_key)
-                
+
                 # Place it back into the state_dict with the new, correct key
                 state_dict[nested_key] = flat_tensor
-        
+
         # Let the default PyTorch loader handle the rest with the corrected state_dict
-        super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
-        )
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
+            error_msgs)
 
 
 class EagleBackbone(nn.Module):
 
-    def __init__(
-        self,
-        tune_llm: bool = False,
-        tune_visual: bool = False,
-        tune_special_A: bool = True,
-        tune_special_B: bool = True,
-        tune_tool_end: bool = False,
-        select_layer: int = -1,
-        reproject_vision: bool = False,
-        use_flash_attention: bool = False,
-        load_bf16: bool = False,
-        eagle_path: str | None = None,
-        project_to_dim: int = 1536,
-        special_token_loss_weight: float = 2.0,
-        pred_nextstep: bool = False,
-        tool_end_loss_weight: float = 2.0,
-    ):
+    def __init__(self, tune_llm: bool = False, tune_visual: bool = False, tune_special_A: bool = True,
+            tune_special_B: bool = True, tune_tool_end: bool = False, select_layer: int = -1,
+            reproject_vision: bool = False, use_flash_attention: bool = False, load_bf16: bool = False,
+            eagle_path: str | None = None, project_to_dim: int = 1536, special_token_loss_weight: float = 2.0,
+            pred_nextstep: bool = False, tool_end_loss_weight: float = 2.0, ):
         """
         Args:
             tune_llm: whether to tune the LLM model (default: True)
@@ -265,9 +225,7 @@ class EagleBackbone(nn.Module):
         hidden_size = self.eagle_model.language_model.lm_head.in_features
 
         # ADDED: add special tokens to tokenizer
-        self.eagle_processor = AutoProcessor.from_pretrained(
-            DEFAULT_EAGLE_PATH, trust_remote_code=True, use_fast=True
-        )
+        self.eagle_processor = AutoProcessor.from_pretrained(DEFAULT_EAGLE_PATH, trust_remote_code=True, use_fast=True)
         self.eagle_tokenizer = self.eagle_processor.tokenizer
 
         # MODIFIED: Partition special tokens into group A and B
@@ -278,9 +236,9 @@ class EagleBackbone(nn.Module):
         list_special_A_names = set(["[ACTIONS]", "[TOOLS_END]", "[SKILL_MODE]"])
         # list_special_B_names = set(["[TOOLS]", "[TRAJ_MODE]"] + [f"[SKILL_{i}]" for i in range(1, 42)])
         list_special_B_names = set(["[TOOLS]", "[TRAJ_MODE]"])
-        
+
         existing = set(self.eagle_tokenizer.all_special_tokens)
-        to_add = [t for t in specials["additional_special_tokens"] if t not in existing] 
+        to_add = [t for t in specials["additional_special_tokens"] if t not in existing]
         # Partition the new tokens into their respective groups
         to_add_A = [t for t in to_add if t in list_special_A_names]
         to_add_B = [t for t in to_add if t in list_special_B_names]
@@ -295,9 +253,11 @@ class EagleBackbone(nn.Module):
         base_embeddings = self.eagle_model.get_input_embeddings()
         base_vocab_size = base_embeddings.num_embeddings
 
-         # MODIFIED: Create ID/lookup tensors for both groups
-        special_ids_A, special_lookup_A, num_new_A = self.get_ids_and_lookup(to_add_A, base_vocab_size, total_vocab_size)
-        special_ids_B, special_lookup_B, num_new_B = self.get_ids_and_lookup(to_add_B, base_vocab_size, total_vocab_size)
+        # MODIFIED: Create ID/lookup tensors for both groups
+        special_ids_A, special_lookup_A, num_new_A = self.get_ids_and_lookup(to_add_A, base_vocab_size,
+                                                                             total_vocab_size)
+        special_ids_B, special_lookup_B, num_new_B = self.get_ids_and_lookup(to_add_B, base_vocab_size,
+                                                                             total_vocab_size)
 
         self.register_buffer("special_token_ids_A", special_ids_A, persistent=False)
         self.register_buffer("special_token_ids_B", special_ids_B, persistent=False)
@@ -313,7 +273,8 @@ class EagleBackbone(nn.Module):
 
             # 2. Create your new hybrid layers
             hybrid_embedding = HybridEmbedding(base_embedding, num_new_A, special_lookup_A, num_new_B, special_lookup_B)
-            hybrid_lm_head = HybridLMHead(base_lm_head, num_new_A, self.special_token_ids_A, num_new_B, self.special_token_ids_B, total_vocab_size)
+            hybrid_lm_head = HybridLMHead(base_lm_head, num_new_A, self.special_token_ids_A, num_new_B,
+                                          self.special_token_ids_B, total_vocab_size)
 
             # 3. Replace the model's original layers with the new ones
             self.eagle_model.set_input_embeddings(hybrid_embedding)
@@ -324,12 +285,12 @@ class EagleBackbone(nn.Module):
 
         else:
             self.register_buffer("special_token_ids", torch.empty(0, dtype=torch.long), persistent=False)
-            
+
         # Cache special token ids (single-token by construction)
         self.actions_id = self.eagle_tokenizer.convert_tokens_to_ids("[ACTIONS]")
         self.tools_id = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS]")
         self.skills_end = self.eagle_tokenizer.convert_tokens_to_ids("[TOOLS_END]")
-        
+
         self.pad_id = self.eagle_tokenizer.convert_tokens_to_ids(self.eagle_tokenizer.pad_token)
         self.end_id = self.eagle_tokenizer.convert_tokens_to_ids(self.eagle_tokenizer.eos_token)
         self.assistant_id = self.eagle_tokenizer.convert_tokens_to_ids("assistant")
@@ -353,10 +314,7 @@ class EagleBackbone(nn.Module):
         loss_token_ids = [self.actions_id, self.tools_id, self.skills_end]
         loss_token_ids = [tid for tid in dict.fromkeys(loss_token_ids) if tid is not None and tid >= 0]
         self.special_loss_ids = (
-            torch.tensor(loss_token_ids, dtype=torch.long)
-            if loss_token_ids
-            else torch.empty(0, dtype=torch.long)
-        )
+            torch.tensor(loss_token_ids, dtype=torch.long) if loss_token_ids else torch.empty(0, dtype=torch.long))
 
         if project_to_dim is not None:
             self.eagle_linear = torch.nn.Linear(2048, project_to_dim)
@@ -385,20 +343,19 @@ class EagleBackbone(nn.Module):
             # Only consider tokens that are *actually* new (i.e., outside the base vocab)
             if token_id is not None and token_id >= base_vocab_size:
                 new_special_token_ids.append(token_id)
-        
+
         if not new_special_token_ids:
             ids_tensor = torch.empty(0, dtype=torch.long)
             # Lookup tensor still needs to cover the full vocab
             lookup_tensor = torch.full((total_vocab_size,), -1, dtype=torch.long)
             return ids_tensor, lookup_tensor, 0
-        
+
         ids_tensor = torch.tensor(sorted(new_special_token_ids), dtype=torch.long)
         lookup_tensor = torch.full((total_vocab_size,), -1, dtype=torch.long)
         for idx, token_id in enumerate(ids_tensor.tolist()):
             lookup_tensor[token_id] = idx
-        
-        return ids_tensor, lookup_tensor, len(new_special_token_ids)
 
+        return ids_tensor, lookup_tensor, len(new_special_token_ids)
 
     def initialize_new_token_weights(self):
         """ Initializes the special embedding parts with the mean of the base weights. """
@@ -409,22 +366,23 @@ class EagleBackbone(nn.Module):
             return
 
         base_weights = hybrid_embedding.base_embedding.weight
-        
+
         with torch.no_grad():
             mean_vec = base_weights.detach().to(torch.float32).mean(dim=0)
 
-            if hasattr(hybrid_embedding, 'special_embedding_A') and hybrid_embedding.special_embedding_A.weight.size(0) > 0:
+            if hasattr(hybrid_embedding, 'special_embedding_A') and hybrid_embedding.special_embedding_A.weight.size(
+                    0) > 0:
                 target_weight_A = hybrid_embedding.special_embedding_A.weight
                 mean_vec_A = mean_vec.to(dtype=target_weight_A.dtype, device=target_weight_A.device)
                 target_weight_A.copy_(mean_vec_A.repeat(target_weight_A.size(0), 1))
                 print("Initialized new special token embeddings (Group A) with the mean vector.")
 
-            if hasattr(hybrid_embedding, 'special_embedding_B') and hybrid_embedding.special_embedding_B.weight.size(0) > 0:
+            if hasattr(hybrid_embedding, 'special_embedding_B') and hybrid_embedding.special_embedding_B.weight.size(
+                    0) > 0:
                 target_weight_B = hybrid_embedding.special_embedding_B.weight
                 mean_vec_B = mean_vec.to(dtype=target_weight_B.dtype, device=target_weight_B.device)
                 target_weight_B.copy_(mean_vec_B.repeat(target_weight_B.size(0), 1))
                 print("Initialized new special token embeddings (Group B) with the mean vector.")
-
 
     def tie_special_weights(self):
         """ Ties the new special LM heads to the new special embeddings. """
@@ -439,13 +397,13 @@ class EagleBackbone(nn.Module):
         if hasattr(hybrid_lm_head, 'special_head_A') and hasattr(hybrid_embedding, 'special_embedding_A'):
             hybrid_lm_head.special_head_A.weight = hybrid_embedding.special_embedding_A.weight
             print("Tied special LM head (Group A) to special embeddings (Group A).")
-        
+
         if hasattr(hybrid_lm_head, 'special_head_B') and hasattr(hybrid_embedding, 'special_embedding_B'):
             hybrid_lm_head.special_head_B.weight = hybrid_embedding.special_embedding_B.weight
             print("Tied special LM head (Group B) to special embeddings (Group B).")
 
-
-    def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_special_A: bool, tune_special_B: bool, tune_tool_end: bool=False):
+    def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_special_A: bool, tune_special_B: bool,
+                                 tune_tool_end: bool = False):
         self.tune_llm = tune_llm
         self.tune_visual = tune_visual
         self.tune_special_A = tune_special_A
@@ -456,15 +414,15 @@ class EagleBackbone(nn.Module):
         # This includes eagle_linear and the entire eagle_model
         for p in self.parameters():
             p.requires_grad = True
-        
+
         # Control the Tool End Head explicitly
         self.tool_end_head.requires_grad_(tune_tool_end)
         self.tool_head.requires_grad_(tune_tool_end)
-        
+
         if not tune_llm:
             # This freezes the entire language_model, including all embedding layers
             self.eagle_model.language_model.requires_grad_(False)
-        
+
         if not tune_visual:
             self.eagle_model.vision_model.requires_grad_(False)
             self.eagle_model.mlp1.requires_grad_(False)
@@ -472,7 +430,7 @@ class EagleBackbone(nn.Module):
         # Get hybrid layers
         hybrid_embedding = self.eagle_model.get_input_embeddings()
         hybrid_lm_head = self.eagle_model.get_output_embeddings()
-        
+
         # The base layers are frozen by default in Hybrid* init, so we don't
         # need to re-freeze them if tune_llm=True.
 
@@ -483,35 +441,38 @@ class EagleBackbone(nn.Module):
                 hybrid_embedding.special_embedding_A.requires_grad_(tune_special_A)
             if hasattr(hybrid_embedding, 'special_embedding_B'):
                 hybrid_embedding.special_embedding_B.requires_grad_(tune_special_B)
-        
+
         if isinstance(hybrid_lm_head, HybridLMHead):
             # This should be redundant due to weight tying, but it's good to be explicit.
             if hasattr(hybrid_lm_head, 'special_head_A'):
                 hybrid_lm_head.special_head_A.requires_grad_(tune_special_A)
             if hasattr(hybrid_lm_head, 'special_head_B'):
                 hybrid_lm_head.special_head_B.requires_grad_(tune_special_B)
-        
+
         # If tune_llm=False, all the above layers were already frozen
         # by the self.eagle_model.language_model.requires_grad_(False) call.
 
         print(f"Tune backbone llm: {self.tune_llm}")
         print(f"Tune backbone visual: {self.tune_visual}")
         print(f"Tune tool_end head: {self.tune_tool_end}")
-        
+
         # MODIFIED: Print the *actual* status of the special layers
         if isinstance(hybrid_embedding, HybridEmbedding):
-            status_A = hybrid_embedding.special_embedding_A.weight.requires_grad if hasattr(hybrid_embedding, 'special_embedding_A') and hybrid_embedding.special_embedding_A.weight.size(0) > 0 else 'N/A'
-            status_B = hybrid_embedding.special_embedding_B.weight.requires_grad if hasattr(hybrid_embedding, 'special_embedding_B') and hybrid_embedding.special_embedding_B.weight.size(0) > 0 else 'N/A'
+            status_A = hybrid_embedding.special_embedding_A.weight.requires_grad if hasattr(hybrid_embedding,
+                                                                                            'special_embedding_A') and hybrid_embedding.special_embedding_A.weight.size(
+                0) > 0 else 'N/A'
+            status_B = hybrid_embedding.special_embedding_B.weight.requires_grad if hasattr(hybrid_embedding,
+                                                                                            'special_embedding_B') and hybrid_embedding.special_embedding_B.weight.size(
+                0) > 0 else 'N/A'
             print(f"Tune special tokens A: {status_A}")
             print(f"Tune special tokens B: {status_B}")
-        
+
         if not tune_llm and not tune_visual:
             for name, p in self.named_parameters():
                 if p.requires_grad:
                     print(f"Backbone trainable parameter: {name}")
         if not any(p.requires_grad for p in self.parameters()):
             print("Warning: No backbone trainable parameters found.")
-
 
     def set_frozen_modules_to_eval_mode(self):
         """
@@ -530,31 +491,29 @@ class EagleBackbone(nn.Module):
 
     def forward_eagle(self, vl_input: BatchFeature, past_key_values=None) -> BatchFeature:
         eagle_prefix = "eagle_"
-        eagle_input = {
-            k.removeprefix(eagle_prefix): v
-            for k, v in vl_input.items()
-            if k.startswith(eagle_prefix) and k != 'eagle_num_images' and 'length' not in k
-        }
+        eagle_input = {k.removeprefix(eagle_prefix): v for k, v in vl_input.items() if
+            k.startswith(eagle_prefix) and k != 'eagle_num_images' and 'length' not in k}
         if 'image_sizes' in eagle_input:
             del eagle_input["image_sizes"]
         if 'llm_labels' in eagle_input:
             eagle_input.pop('llm_labels')
 
-        eagle_output = self.eagle_model(**eagle_input, past_key_values=past_key_values, output_hidden_states=True, return_dict=True, use_cache=True)
+        eagle_output = self.eagle_model(**eagle_input, past_key_values=past_key_values, output_hidden_states=True,
+                                        return_dict=True, use_cache=True)
         past_key_values = eagle_output.past_key_values
         eagle_features = eagle_output.hidden_states[self.select_layer]
         eagle_features = self.eagle_linear(eagle_features)
         eagle_logits = eagle_output.logits
 
-        attn = eagle_input.get("attention_mask")   # [B, T]
-        route_pos = attn.sum(dim=1) - 1        # [B]
+        attn = eagle_input.get("attention_mask")  # [B, T]
+        route_pos = attn.sum(dim=1) - 1  # [B]
 
         # Raw Hidden States for Tool Head (Unprojected)
         # Assuming tool_end_head was trained on the last layer
         raw_hidden_states = eagle_output.hidden_states[-1]
 
-        return eagle_logits, route_pos, eagle_features, eagle_input["attention_mask"], past_key_values, raw_hidden_states
-
+        return eagle_logits, route_pos, eagle_features, eagle_input[
+            "attention_mask"], past_key_values, raw_hidden_states
 
     def _transcript_lm_loss(self, vl_input: BatchFeature) -> torch.Tensor:
         """
@@ -563,6 +522,7 @@ class EagleBackbone(nn.Module):
         - eagle_input_ids / eagle_attention_mask / (pixel_values | video_pixel_values)
         - eagle_labels  (same shape; -100 where we don't supervise, e.g., [PAD_A])
         """
+
         def find_last_step(input_ids, labels, mask_img):
             B, T = labels.shape
             final_mask = torch.zeros_like(labels, dtype=torch.bool)
@@ -579,30 +539,27 @@ class EagleBackbone(nn.Module):
                 if not step_markers.any():
                     # No assistant/img markers → do nothing extra
                     continue
-                
+
                 # Last index that is either 'assistant' or part of <IMG_CONTEXT>
                 last_idx = torch.nonzero(step_markers, as_tuple=False)[-1, 0].item()
 
                 # Mask everything AFTER this last step marker
                 if last_idx > 0:
-                    final_mask[b, :last_idx+2] = True
+                    final_mask[b, :last_idx + 2] = True
 
             return final_mask
-        
+
         if "eagle_llm_labels" not in vl_input:
             return torch.tensor(0.0, device=next(self.parameters()).device)
 
-        eagle_input = {
-            k.removeprefix("eagle_"): v
-            for k, v in vl_input.items()
-            if k.startswith("eagle_") and k != "eagle_num_images" and 'length' not in k
-        }
+        eagle_input = {k.removeprefix("eagle_"): v for k, v in vl_input.items() if
+            k.startswith("eagle_") and k != "eagle_num_images" and 'length' not in k}
         eagle_input.pop("image_sizes", None)
         labels = eagle_input.pop("llm_labels")
 
         ignored_tensor = torch.isin(labels, self.ignored_id.to(labels.device))
         labels[ignored_tensor] = -100
-        
+
         if self.pred_nextstep:
             # only predict next step
             final_mask = find_last_step(eagle_input['input_ids'], labels, ignored_tensor)
@@ -627,7 +584,7 @@ class EagleBackbone(nn.Module):
         # --- Tool End Loss Logic (Controlled) ---
         toolend_loss_avg = torch.tensor(0.0, device=shift_labels.device)
         tool_loss_avg = torch.tensor(0.0, device=shift_labels.device)
-        
+
         if self.tune_tool_end and self.pred_nextstep:
             seq_len = final_mask.size(1)
             range_tensor = torch.arange(seq_len, device=final_mask.device).unsqueeze(0)
@@ -639,7 +596,7 @@ class EagleBackbone(nn.Module):
                 batch_indices = torch.arange(logits.size(0), device=logits.device)[valid_rows_mask]
                 selected_indices = last_token_indices[valid_rows_mask]
                 selected_hidden = outputs.hidden_states[-1][batch_indices, selected_indices]
-                selected_targets_ids = eagle_input['input_ids'][batch_indices, selected_indices+1]
+                selected_targets_ids = eagle_input['input_ids'][batch_indices, selected_indices + 1]
                 # print(self.eagle_tokenizer.decode(selected_targets_ids))
 
                 # Create classification targets
@@ -649,21 +606,21 @@ class EagleBackbone(nn.Module):
                 # 4. Compute Predictions
                 tool_end_logits_step = self.tool_end_head(selected_hidden)
                 tool_logits_step = self.tool_head(selected_hidden)
-                
+
                 # 5. Calculate Loss
                 tool_loss_fct = nn.CrossEntropyLoss(reduction='mean')
-                
+
                 toolend_loss_avg = tool_loss_fct(tool_end_logits_step, target_tool_end)
                 tool_loss_avg = tool_loss_fct(tool_logits_step, target_tool)
 
         vocab_size = shift_logits.size(-1)
         valid_mask = shift_labels != -100
-        
+
         # MODIFIED: Get counts for both special groups
         num_special_A = self.special_token_ids_A.numel()
         num_special_B = self.special_token_ids_B.numel()
         num_special_total = num_special_A + num_special_B
-        
+
         special_loss_A = None
         special_loss_B = None
         special_loss_AB = None
@@ -677,12 +634,12 @@ class EagleBackbone(nn.Module):
             # MODIFIED: Handle 3 disjoint groups: base, special_A, special_B
             special_ids_A = self.special_token_ids_A.to(shift_labels.device)
             special_ids_B = self.special_token_ids_B.to(shift_labels.device)
-            
+
             special_mask_A = torch.isin(shift_labels, special_ids_A) & valid_mask
             special_mask_B = torch.isin(shift_labels, special_ids_B) & valid_mask
             special_mask_AB = special_mask_A | special_mask_B
             base_mask = valid_mask & ~special_mask_A & ~special_mask_B
-            
+
             per_token_loss = shift_logits.new_zeros(shift_labels.shape, dtype=shift_logits.dtype)
 
             # Get base vocab size from the frozen base head
@@ -700,7 +657,8 @@ class EagleBackbone(nn.Module):
 
                 labels_AB = shift_labels[special_mask_AB]
                 target_positions_AB = (labels_AB - base_vocab_size).long()  # in [0, V_appended)
-                special_loss_AB = F.cross_entropy(special_logits_AB[special_mask_AB], target_positions_AB, reduction="none")
+                special_loss_AB = F.cross_entropy(special_logits_AB[special_mask_AB], target_positions_AB,
+                                                  reduction="none")
                 per_token_loss[special_mask_AB] = special_loss_AB.to(dtype=per_token_loss.dtype)
 
             #######################
@@ -711,19 +669,22 @@ class EagleBackbone(nn.Module):
                 pred_ids = base_logits.argmax(dim=-1)
                 valid_pred_ids = pred_ids[shift_labels != -100]
                 valid_label_ids = shift_labels[shift_labels != -100]
-                decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
+                decoded_texts = self.eagle_tokenizer.batch_decode(valid_pred_ids[valid_label_ids != self.pad_id],
+                                                                  skip_special_tokens=False)
                 print(''.join(decoded_texts))
-                decoded_texts_label = self.eagle_tokenizer.batch_decode(valid_label_ids[valid_label_ids!=self.pad_id], skip_special_tokens=False)
+                decoded_texts_label = self.eagle_tokenizer.batch_decode(valid_label_ids[valid_label_ids != self.pad_id],
+                                                                        skip_special_tokens=False)
                 print(''.join(decoded_texts_label))
 
                 if special_mask_AB.any():
                     pred_sp_ids_AB_small = special_logits_AB[special_mask_AB].argmax(dim=-1)
                     num_special_AB = special_logits_AB.shape[-1]
                     special_ids_AB = torch.cat([special_ids_A, special_ids_B], dim=0)
-                    special_ids_AB = torch.unique(special_ids_AB)          # optional: remove duplicates
-                    special_ids_AB, _ = torch.sort(special_ids_AB) 
+                    special_ids_AB = torch.unique(special_ids_AB)  # optional: remove duplicates
+                    special_ids_AB, _ = torch.sort(special_ids_AB)
 
-                    inverse_lookup_AB = torch.full((num_special_AB,), -1, dtype=torch.long, device=special_logits_AB.device)
+                    inverse_lookup_AB = torch.full((num_special_AB,), -1, dtype=torch.long,
+                                                   device=special_logits_AB.device)
                     inverse_lookup_AB[torch.arange(num_special_AB, device=special_logits_AB.device)] = special_ids_AB
 
                     pred_sp_ids_AB_full = inverse_lookup_AB[pred_sp_ids_AB_small]
@@ -735,7 +696,8 @@ class EagleBackbone(nn.Module):
                     print("\n--- [DEBUG] SPECIAL Tokens ---")
                     print(f"Preds:  {''.join(decoded_pred_AB)}")
                     print(f"Labels: {''.join(decoded_label_AB)}")
-                    import pdb;pdb.set_trace()
+                    import pdb;
+                    pdb.set_trace()
 
         ######################################
         # loss avg per type
@@ -766,7 +728,6 @@ class EagleBackbone(nn.Module):
             loss = loss + (self.tool_end_loss_weight * tool_loss_avg) + (self.tool_end_loss_weight * toolend_loss_avg)
 
         return logits, labels, loss, base_loss_avg, special_loss_AB_avg, special_loss_B_avg
-        
 
     def split_by_img_id(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
         """
@@ -783,22 +744,19 @@ class EagleBackbone(nn.Module):
         Returns lists of segments and masks as slices of `eagle_logits`/`eagle_mask`, plus index
         tensors describing (batch, start, end) for each segment.
         """
-        eagle_input = {
-            k.removeprefix("eagle_"): v
-            for k, v in vl_input.items()
-            if k.startswith("eagle_") and k != "eagle_num_images"
-        }
+        eagle_input = {k.removeprefix("eagle_"): v for k, v in vl_input.items() if
+            k.startswith("eagle_") and k != "eagle_num_images"}
 
-        input_ids = eagle_input["input_ids"]            # [B, T]
-        attn_mask = eagle_input["attention_mask"]       # [B, T]
+        input_ids = eagle_input["input_ids"]  # [B, T]
+        attn_mask = eagle_input["attention_mask"]  # [B, T]
 
         B, T = input_ids.shape
         device = input_ids.device
 
         # Token ids
-        img_id      = self.img_id
-        actions_id  = self.actions_id
-        tools_id    = self.tools_id
+        img_id = self.img_id
+        actions_id = self.actions_id
+        tools_id = self.tools_id
         user_pattern = self.user_instr_ids
         K = user_pattern.numel()
 
@@ -829,13 +787,13 @@ class EagleBackbone(nn.Module):
             max_start_offset = (search_end_exclusive - search_start) - K
             if max_start_offset >= 0:
                 for offset in range(max_start_offset + 1):
-                    window = ids_b[search_start + offset : search_start + offset + K]
+                    window = ids_b[search_start + offset: search_start + offset + K]
                     if torch.equal(window, user_pattern):
                         user_starts.append(search_start + offset)
 
             if not user_starts:
                 continue
-                
+
             # Iterate over each user block
             for i, u_p in enumerate(user_starts):
                 start_pos = u_p
@@ -864,10 +822,10 @@ class EagleBackbone(nn.Module):
                     continue  # empty
 
                 # Within [start_pos, end_boundary], find the first route token: [ACTIONS] or [TOOLS]
-                window_ids = ids_b[start_pos : end_boundary + 1]
+                window_ids = ids_b[start_pos: end_boundary + 1]
                 # Find first occurrence indices relative to the window
-                act_rel = (ids_b[start_pos : end_boundary + 2] == actions_id).nonzero(as_tuple=False)
-                tol_rel = (ids_b[start_pos : end_boundary + 2] == tools_id).nonzero(as_tuple=False)
+                act_rel = (ids_b[start_pos: end_boundary + 2] == actions_id).nonzero(as_tuple=False)
+                tol_rel = (ids_b[start_pos: end_boundary + 2] == tools_id).nonzero(as_tuple=False)
 
                 # Helper to get scalar position or None
                 def first_pos(rel_idx):
@@ -881,7 +839,7 @@ class EagleBackbone(nn.Module):
                     continue
                 if tol_first is not None and tol_first < act_first:
                     continue
-                
+
                 end_exclusive = end_boundary + 1
                 if end_exclusive <= start_pos:
                     continue
@@ -896,22 +854,13 @@ class EagleBackbone(nn.Module):
                 seg_ends.append(end_exclusive)
 
         if len(segments) == 0:
-            return (
-                [],
-                [],
-                torch.empty((0,), dtype=torch.long, device=device),
-                torch.empty((0,), dtype=torch.long, device=device),
-                torch.empty((0,), dtype=torch.long, device=device),
-            )
+            return ([], [], torch.empty((0,), dtype=torch.long, device=device),
+                    torch.empty((0,), dtype=torch.long, device=device),
+                    torch.empty((0,), dtype=torch.long, device=device),)
 
-        return (
-            segments,
-            segments_mask,
-            torch.tensor(seg_batch, dtype=torch.long, device=device),
-            torch.tensor(seg_starts, dtype=torch.long, device=device),
-            torch.tensor(seg_ends, dtype=torch.long, device=device),
-        )
-
+        return (segments, segments_mask, torch.tensor(seg_batch, dtype=torch.long, device=device),
+                torch.tensor(seg_starts, dtype=torch.long, device=device),
+                torch.tensor(seg_ends, dtype=torch.long, device=device),)
 
     def flatten_actions(self, list_embeds, list_masks):
         if len(list_embeds) > 0:
@@ -923,11 +872,11 @@ class EagleBackbone(nn.Module):
             masks_tensor = None
         return embeds_tensor, masks_tensor
 
-
     def forward_route(self, vl_input: BatchFeature, past_key_values=None):
         # vl_input: ['state', 'state_mask', 'segmentation_target', 'segmentation_target_mask', 'has_real_action', 'action', 'action_mask', 'step_input_ids', 'step_attention_mask', 'eagle_input_ids', 'eagle_attention_mask', 'eagle_pixel_values', 'eagle_image_sizes', 'embodiment_id']
         # 1) Run backbone once
-        eagle_logits, route_pos, eagle_embeds, eagle_mask, past_key_values, _ = self.forward_eagle(vl_input, past_key_values=past_key_values)
+        eagle_logits, route_pos, eagle_embeds, eagle_mask, past_key_values, _ = self.forward_eagle(vl_input,
+                                                                                                   past_key_values=past_key_values)
 
         # if there is no step information (single instruction input)
         input_keys = vl_input.keys()
@@ -945,32 +894,25 @@ class EagleBackbone(nn.Module):
         if len(step_input) != 0:
 
             # Compute generated loss
-            logits, labels, transcript_lm_loss, base_loss_avg, special_loss_A_avg, special_loss_B_avg = self._transcript_lm_loss(vl_input)
+            logits, labels, transcript_lm_loss, base_loss_avg, special_loss_A_avg, special_loss_B_avg = self._transcript_lm_loss(
+                vl_input)
 
             # extract action token hidden states based on action_pad_ids
             has_actions = (vl_input['eagle_input_ids'] == self.actions_id).any().item()
 
             if has_actions:
-                list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
+                list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end = self.split_by_img_id(vl_input,
+                                                                                                      eagle_embeds,
+                                                                                                      eagle_mask)
                 # import pdb;pdb.set_trace()
                 # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0])
                 # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0][1668:2208])
                 embeds_tensor, masks_tensor = self.flatten_actions(list_eagle_emb, list_eagle_mask)
 
-
-        out = {
-            "transcript_lm_loss": transcript_lm_loss,
-            "text_token_loss": base_loss_avg, 
-            "special_token_A_loss": special_loss_A_avg, 
-            "special_token_B_loss": special_loss_B_avg, 
-            "eagle_embeds": eagle_embeds,
-            "eagle_mask":   eagle_mask,
-            "eagle_embeds_multi": embeds_tensor,
-            "eagle_mask_multi": masks_tensor,
-            "past_key_values": past_key_values,
-            "logits": logits,
-            "labels": labels
-        }
+        out = {"transcript_lm_loss": transcript_lm_loss, "text_token_loss": base_loss_avg,
+            "special_token_A_loss": special_loss_A_avg, "special_token_B_loss": special_loss_B_avg,
+            "eagle_embeds": eagle_embeds, "eagle_mask": eagle_mask, "eagle_embeds_multi": embeds_tensor,
+            "eagle_mask_multi": masks_tensor, "past_key_values": past_key_values, "logits": logits, "labels": labels}
 
         return out
 
@@ -978,39 +920,29 @@ class EagleBackbone(nn.Module):
         self.set_frozen_modules_to_eval_mode()
         out = self.forward_route(vl_input, past_key_values=past_key_values)
         eagle_embeds = out["eagle_embeds"]
-        eagle_mask   = out["eagle_mask"]
-        eagle_embeds_multi   = out["eagle_embeds_multi"]
-        eagle_mask_multi     = out["eagle_mask_multi"]
+        eagle_mask = out["eagle_mask"]
+        eagle_embeds_multi = out["eagle_embeds_multi"]
+        eagle_mask_multi = out["eagle_mask_multi"]
 
         # YL (TODO HACK): to resolve DDP issue when tune_visual=True
         # Ensure all trainable parameters in vision_model are used in the forward pass for DDP compatibility
         if self.training and self.tune_visual:
-            dummy_term = torch.tensor(
-                0.0, device=eagle_embeds.device, dtype=eagle_embeds.dtype, requires_grad=True
-            )
+            dummy_term = torch.tensor(0.0, device=eagle_embeds.device, dtype=eagle_embeds.dtype, requires_grad=True)
             for param in self.eagle_model.vision_model.parameters():
                 if param.requires_grad:
                     dummy_term = dummy_term + 0.0 * param.sum()
             eagle_embeds = eagle_embeds + dummy_term
-        
-        return BatchFeature(
-            data={
-                # Already filtered to ACTION rows
-                "backbone_features":       eagle_embeds,      # [Bd, T, H]
-                "backbone_attention_mask": eagle_mask,        # [Bd, T]
-                "backbone_features_multi":       eagle_embeds_multi,       # [A, Lmax, H]
-                "backbone_attention_mask_multi": eagle_mask_multi, # [A, Lmax]
 
-                "transcript_lm_loss":      out["transcript_lm_loss"],
-                "text_token_loss":         out["text_token_loss"],
-                "special_token_A_loss":      out["special_token_A_loss"],
-                "special_token_B_loss":      out["special_token_B_loss"],
-                "orig_batch_size":         out["eagle_embeds"].size(0),
-                "past_key_values":         past_key_values,
-                "logits": out["logits"], 
-                "labels": out["labels"], 
-            }
-        )
+        return BatchFeature(data={# Already filtered to ACTION rows
+            "backbone_features": eagle_embeds,  # [Bd, T, H]
+            "backbone_attention_mask": eagle_mask,  # [Bd, T]
+            "backbone_features_multi": eagle_embeds_multi,  # [A, Lmax, H]
+            "backbone_attention_mask_multi": eagle_mask_multi,  # [A, Lmax]
+
+            "transcript_lm_loss": out["transcript_lm_loss"], "text_token_loss": out["text_token_loss"],
+            "special_token_A_loss": out["special_token_A_loss"], "special_token_B_loss": out["special_token_B_loss"],
+            "orig_batch_size": out["eagle_embeds"].size(0), "past_key_values": past_key_values, "logits": out["logits"],
+            "labels": out["labels"], })
 
     @torch.no_grad()
     def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, special_token_only=False,
@@ -1033,13 +965,14 @@ class EagleBackbone(nn.Module):
             allowed_ids = torch.tensor([self.actions_id, self.skills_end], device=device, dtype=torch.long)
         else:
             allowed_ids = torch.tensor([self.actions_id, self.tools_id, self.skills_end], device=device,
-                dtype=torch.long)
+                                       dtype=torch.long)
 
         generated_tokens: list[torch.Tensor] = []
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         # generate the first token (special token)
-        logits, _, eagle_embeds, eagle_masks, step1_cache, raw_hidden_states = self.forward_eagle(vl_input, past_key_values=past_key_values)
+        logits, _, eagle_embeds, eagle_masks, step1_cache, raw_hidden_states = self.forward_eagle(vl_input,
+                                                                                                  past_key_values=past_key_values)
 
         # 2. Masking (Force selection of Action, Tool, or End)
         next_token_logits = logits[:, -1, :]
@@ -1077,9 +1010,10 @@ class EagleBackbone(nn.Module):
 
         token_to_append = router_token_id.unsqueeze(0)
         vl_input["eagle_input_ids"] = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
-        vl_input["eagle_attention_mask"] = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
+        vl_input["eagle_attention_mask"] = torch.cat(
+            [vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
 
-        for _ in range(max_token-1):
+        for _ in range(max_token - 1):
             logits, _, _, _, _, _ = self.forward_eagle(vl_input, past_key_values=past_key_values)
 
             # select the most likely token from the *entire* vocabulary.
@@ -1087,7 +1021,8 @@ class EagleBackbone(nn.Module):
             next_token_raw = logits[:, -1, :base_vocab_size].argmax(dim=-1)
             token_to_append = next_token_raw.unsqueeze(0)
             vl_input["eagle_input_ids"] = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
-            vl_input["eagle_attention_mask"] = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
+            vl_input["eagle_attention_mask"] = torch.cat(
+                [vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
 
             prev_finished = finished.clone()
             finished = prev_finished | (next_token_raw == self.end_id)
@@ -1101,11 +1036,8 @@ class EagleBackbone(nn.Module):
         # Cleanup return
         _, _, _, _, final_kv_cache, _ = self.forward_eagle(vl_input, past_key_values=past_key_values)
 
-        backbone_outputs = BatchFeature({
-            "backbone_features": eagle_embeds,
-            "backbone_attention_mask":   eagle_masks,
-            "past_key_values": final_kv_cache,
-        })
+        backbone_outputs = BatchFeature({"backbone_features": eagle_embeds, "backbone_attention_mask": eagle_masks,
+            "past_key_values": final_kv_cache, })
 
         generated_ids = torch.stack(generated_tokens, dim=1)
         if generated_ids.size(1) == 1:
@@ -1115,7 +1047,8 @@ class EagleBackbone(nn.Module):
         return router_token_id.unsqueeze(1), decoded_text, backbone_outputs
 
     @torch.no_grad()
-    def generate_v2(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, inside_tool=False, toolend_head=False):
+    def generate_v2(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, inside_tool=False,
+                    toolend_head=False):
         """
         Two-stage generation:
         1. Router Step: Force pick [TOOL, ACTION, END].
@@ -1123,31 +1056,22 @@ class EagleBackbone(nn.Module):
            - TOOL: Generate full text explanation.
            - ACTION: Return hidden states for policy head.
         """
+
         def generate_text_kvcache(input_ids, attention_mask, token_to_append):
-            generation_inputs = {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "past_key_values": past_key_values,
-                "use_cache": True
-            }
-            
+            generation_inputs = {"input_ids": input_ids, "attention_mask": attention_mask,
+                "past_key_values": past_key_values, "use_cache": True}
+
             if "eagle_pixel_values" in vl_input and vl_input["eagle_pixel_values"] is not None:
                 generation_inputs["pixel_values"] = vl_input["eagle_pixel_values"]
             if "eagle_image_sizes" in vl_input:
                 generation_inputs["image_sizes"] = vl_input["eagle_image_sizes"]
-            
+
             # 2. Run Generation
             # return_dict_in_generate=True is REQUIRED to get the new past_key_values back
-            gen_output = self.eagle_model.generate(
-                **generation_inputs,
-                max_new_tokens=max_token-1,
-                pad_token_id=self.pad_id,
-                eos_token_id=self.end_id,
-                do_sample=False, 
-                return_dict_in_generate=True,
-                output_hidden_states=True,
-            )
-            
+            gen_output = self.eagle_model.generate(**generation_inputs, max_new_tokens=max_token - 1,
+                pad_token_id=self.pad_id, eos_token_id=self.end_id, do_sample=False, return_dict_in_generate=True,
+                output_hidden_states=True, )
+
             # 3. Package Outputs
             full_ids = gen_output.sequences
             full_ids = torch.concat([token_to_append, full_ids], dim=1)
@@ -1163,26 +1087,22 @@ class EagleBackbone(nn.Module):
             vl_input = BatchFeature(data=dict(vl_input))
 
         self.set_frozen_modules_to_eval_mode()
-        
+
         input_ids = vl_input["eagle_input_ids"]
         attention_mask = vl_input["eagle_attention_mask"]
         batch_size = input_ids.size(0)
         device = input_ids.device
 
         if inside_tool:
-            allowed_ids = torch.tensor(
-                        [self.actions_id, self.skills_end], 
-                        device=device, dtype=torch.long
-                    )
+            allowed_ids = torch.tensor([self.actions_id, self.skills_end], device=device, dtype=torch.long)
         else:
-            allowed_ids = torch.tensor(
-                        [self.tools_id, self.actions_id, self.skills_end], 
-                        device=device, dtype=torch.long
-                    )
-        
+            allowed_ids = torch.tensor([self.tools_id, self.actions_id, self.skills_end], device=device,
+                dtype=torch.long)
+
         # 1. Forward Pass (Single Step)
         # We use your custom forward to get logits AND hidden states
-        logits, _, eagle_embeds, eagle_masks, step1_cache, raw_hidden_states = self.forward_eagle(vl_input, past_key_values=past_key_values)
+        logits, _, eagle_embeds, eagle_masks, step1_cache, raw_hidden_states = self.forward_eagle(vl_input,
+                                                                                                  past_key_values=past_key_values)
 
         # 2. Masking (Force selection of Action, Tool, or End)
         next_token_logits = logits[:, -1, :]
@@ -1196,15 +1116,15 @@ class EagleBackbone(nn.Module):
         if toolend_head:
             # use hidden state to predict toolend or not
             # raw_hidden_states is [B, T, H]
-            current_hidden = raw_hidden_states[:1, -1, :] # [B, H]
-            
+            current_hidden = raw_hidden_states[:1, -1, :]  # [B, H]
+
             # 2. Pass through the binary classifier
-            toolend_logits = self.tool_end_head(current_hidden) # [B, 2]
-            tool_logits = self.tool_head(current_hidden) # [B, 2]
-            
+            toolend_logits = self.tool_end_head(current_hidden)  # [B, 2]
+            tool_logits = self.tool_head(current_hidden)  # [B, 2]
+
             # 3. Predict: 0 = Keep Going ([ACTIONS]), 1 = End ([TOOLS_END])
-            toolend_preds = toolend_logits.argmax(dim=-1) # [B]
-            tool_preds = tool_logits.argmax(dim=-1) # [B]
+            toolend_preds = toolend_logits.argmax(dim=-1)  # [B]
+            tool_preds = tool_logits.argmax(dim=-1)  # [B]
 
             # 4. OVERRIDE Logic
             router_token_id_head = torch.tensor(self.actions_id, device=device)
@@ -1215,7 +1135,7 @@ class EagleBackbone(nn.Module):
             mask_tool = (tool_preds == 1)  # Prevent conflict
             if mask_tool.any():
                 router_token_id_head = torch.tensor(self.tools_id, device=device)
-        
+
             if router_token_id_head != router_token_id:
                 router_token_id = router_token_id_head.unsqueeze(0)
 
@@ -1224,17 +1144,21 @@ class EagleBackbone(nn.Module):
             # append router_token_id_head to current input
             token_to_append = router_token_id.unsqueeze(0)
             input_ids_action = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
-            attention_mask_action = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
-            final_kv_cache, decoded_text = generate_text_kvcache(input_ids_action, attention_mask_action, token_to_append)
+            attention_mask_action = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)],
+                                              dim=1)
+            final_kv_cache, decoded_text = generate_text_kvcache(input_ids_action, attention_mask_action,
+                                                                 token_to_append)
             # print(self.eagle_tokenizer.decode(input_ids_action[0]))
 
             router_token_id_tool = torch.tensor([self.tools_id], device=device)
             token_to_append = router_token_id_tool.unsqueeze(0)
             input_ids_tool = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
-            attention_mask_tool = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
-            tool_kv_cache, decoded_text_tool = generate_text_kvcache(input_ids_tool, attention_mask_tool, token_to_append)
+            attention_mask_tool = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)],
+                                            dim=1)
+            tool_kv_cache, decoded_text_tool = generate_text_kvcache(input_ids_tool, attention_mask_tool,
+                                                                     token_to_append)
             # print(self.eagle_tokenizer.decode(input_ids_tool[0]))
-            
+
             if decoded_text != decoded_text_tool:
                 print(f"Original: {decoded_text}")
                 print(f"TOOLS: {decoded_text_tool}")
@@ -1247,20 +1171,18 @@ class EagleBackbone(nn.Module):
             # router_token_id = torch.tensor([self.actions_id], device=device)
             token_to_append = router_token_id.unsqueeze(0)
             input_ids_action = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
-            attention_mask_action = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
-            final_kv_cache, decoded_text = generate_text_kvcache(input_ids_action, attention_mask_action, token_to_append)
+            attention_mask_action = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)],
+                                              dim=1)
+            final_kv_cache, decoded_text = generate_text_kvcache(input_ids_action, attention_mask_action,
+                                                                 token_to_append)
 
-            if '[ACTIONS]' not in decoded_text :
+            if '[ACTIONS]' not in decoded_text:
                 print(f"in tools: {decoded_text}")
 
-        backbone_outputs = BatchFeature({
-            "backbone_features": eagle_embeds,
-            "backbone_attention_mask":   eagle_masks,
-            "past_key_values": final_kv_cache,
-        })
+        backbone_outputs = BatchFeature({"backbone_features": eagle_embeds, "backbone_attention_mask": eagle_masks,
+            "past_key_values": final_kv_cache, })
 
         return router_token_id.unsqueeze(1), decoded_text, backbone_outputs
-
 
     @torch.no_grad()
     def generate_entire_text(self, vl_input: BatchFeature, max_new_tokens: int = 50):
@@ -1269,27 +1191,20 @@ class EagleBackbone(nn.Module):
         Automatically handles KV-Caching and Vision encoding.
         """
         self.set_frozen_modules_to_eval_mode()
-        
-        generation_inputs = {
-            "input_ids": vl_input["eagle_input_ids"],
-            "attention_mask": vl_input["eagle_attention_mask"]
-        }
-        
+
+        generation_inputs = {"input_ids": vl_input["eagle_input_ids"],
+            "attention_mask": vl_input["eagle_attention_mask"]}
+
         if "eagle_pixel_values" in vl_input and vl_input["eagle_pixel_values"] is not None:
             generation_inputs["pixel_values"] = vl_input["eagle_pixel_values"]
         if "eagle_image_sizes" in vl_input:
             generation_inputs["image_sizes"] = vl_input["eagle_image_sizes"]
 
         # 3. Configure Generation Parameters
-        gen_kwargs = {
-            "max_new_tokens": max_new_tokens,
-            "pad_token_id": self.pad_id,
-            "eos_token_id": self.end_id,
-            "use_cache": True,
-            "do_sample": False
-        }
+        gen_kwargs = {"max_new_tokens": max_new_tokens, "pad_token_id": self.pad_id, "eos_token_id": self.end_id,
+            "use_cache": True, "do_sample": False}
 
         new_tokens = self.eagle_model.generate(**generation_inputs, **gen_kwargs)
         decoded_text = self.eagle_tokenizer.batch_decode(new_tokens)
-        
+
         return new_tokens, decoded_text

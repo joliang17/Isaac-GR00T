@@ -30,7 +30,9 @@ from gr00t.data.schema import DatasetMetadata
 from gr00t.data.transform.base import ComposedModalityTransform
 from gr00t.model.gr00t_n1 import GR00T_N1_5
 from peft import PeftModel
+
 COMPUTE_DTYPE = torch.bfloat16
+
 
 def compare_dicts(d1, d2, atol=1e-6):
     for k in d1.keys():
@@ -78,19 +80,11 @@ class Gr00tPolicy(BasePolicy):
     in the Gr00t model.
     """
 
-    def __init__(
-        self,
-        model_path: str,
-        embodiment_tag: Union[str, EmbodimentTag],
-        modality_config: Dict[str, ModalityConfig],
-        modality_transform: ComposedModalityTransform,
-        modality_config_base = None,
-        modality_transform_base = None,
-        denoising_steps: Optional[int] = None,
-        device: Union[int, str] = "cuda" if torch.cuda.is_available() else "cpu",
-        data_config: str='libero_original',
-        call_baseline: bool=False,
-    ):
+    def __init__(self, model_path: str, embodiment_tag: Union[str, EmbodimentTag],
+            modality_config: Dict[str, ModalityConfig], modality_transform: ComposedModalityTransform,
+            modality_config_base=None, modality_transform_base=None, denoising_steps: Optional[int] = None,
+            device: Union[int, str] = "cuda" if torch.cuda.is_available() else "cpu",
+            data_config: str = 'libero_original', call_baseline: bool = False, ):
         """
         Initialize the Gr00tPolicy.
 
@@ -105,12 +99,9 @@ class Gr00tPolicy(BasePolicy):
         try:
             # NOTE(YL) this returns the local path to the model which is normally
             # saved in ~/.cache/huggingface/hub/
-            model_path = snapshot_download(model_path, repo_type="model")
-            # HFValidationError, RepositoryNotFoundError
+            model_path = snapshot_download(model_path, repo_type="model")  # HFValidationError, RepositoryNotFoundError
         except (HFValidationError, RepositoryNotFoundError):
-            print(
-                f"Model not found or avail in the huggingface hub. Loading from local path: {model_path}"
-            )
+            print(f"Model not found or avail in the huggingface hub. Loading from local path: {model_path}")
 
         self.data_config = data_config
         self._modality_config = modality_config
@@ -142,18 +133,18 @@ class Gr00tPolicy(BasePolicy):
         # ADDED: Load transforms
         self._load_metadata(self.model_path / "experiment_cfg")
         # self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
-        self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"), base=True)
+        self._load_metadata(Path(
+            "/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"),
+                            base=True)
         # Load horizons
         self._load_horizons()
 
         if denoising_steps is not None:
-            if hasattr(self.model, "action_head") and hasattr(
-                self.model.action_head, "num_inference_timesteps"
-            ):
+            if hasattr(self.model, "action_head") and hasattr(self.model.action_head, "num_inference_timesteps"):
                 self.model.action_head.num_inference_timesteps = denoising_steps
                 print(f"Set action denoising steps to {denoising_steps}")
 
-    def apply_transforms(self, obs: Dict[str, Any], base: bool=False) -> Dict[str, Any]:
+    def apply_transforms(self, obs: Dict[str, Any], base: bool = False) -> Dict[str, Any]:
         """
         Apply transforms to the observation.
 
@@ -169,8 +160,7 @@ class Gr00tPolicy(BasePolicy):
         else:
             return self._modality_transform_base(obs)
 
-
-    def unapply_transforms(self, action: Dict[str, Any], base: bool=False) -> Dict[str, Any]:
+    def unapply_transforms(self, action: Dict[str, Any], base: bool = False) -> Dict[str, Any]:
         """
         Unapply transforms to the action.
 
@@ -185,8 +175,8 @@ class Gr00tPolicy(BasePolicy):
         else:
             return self._modality_transform_base.unapply(action)
 
-
-    def get_action(self, observations: Dict[str, Any], observations_base=None, img_count: int=1, past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> Dict[str, Any]:
+    def get_action(self, observations: Dict[str, Any], observations_base=None, img_count: int = 1, past_key_values=None,
+                   mode: str = 'baseline', inside_tool: bool = False, call_baseline: bool = False, ) -> Dict[str, Any]:
         """
         Make a prediction with the model.
         Args:
@@ -237,38 +227,9 @@ class Gr00tPolicy(BasePolicy):
             del observations['video.wrist_image']
         normalized_input = self.apply_transforms(observations)
 
-        # with open("input_ids.pkl", 'rb') as f:
-        #     vl_input, prev_logits = pickle.load(f)
-        ########################################
-        # DEBUG
-        # with open(f"input_ids.pkl", 'rb') as f: 
-        #     vl_input, prev_logits = pickle.load(f)
-        # vl_input_copy = vl_input.copy()
-
-        # # infer_str = self.model.backbone.eagle_tokenizer.decode(normalized_input['eagle_input_ids'][0]).replace('<IMG_CONTEXT>', '')
-        # training_str = self.model.backbone.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0][0:560]).replace('<IMG_CONTEXT>', '')
-
-        # vl_input_copy = {key: value for key, value in vl_input_copy.items() if key in normalized_input}
-        # seq_len = vl_input["eagle_input_ids"].shape[-1]
-        # vl_input_copy_text = { k: v[:1, 0:560] for k, v in vl_input_copy.items() if torch.is_tensor(v) and v.ndim == 2 and v.shape[-1] == seq_len}
-        # vl_input_copy_missing = {k: v for k, v in vl_input_copy.items() if k not in vl_input_copy_text}
-
-        # vl_input_copy_text['embodiment_id'] = normalized_input['embodiment_id']
-        # vl_input_copy_text['eagle_num_images'] = normalized_input['eagle_num_images']
-        # vl_input_copy_text['eagle_state_length'] = normalized_input['eagle_state_length']
-        # vl_input_copy_text['eagle_state_mask_length'] = normalized_input['eagle_state_mask_length'][:1]
-        # vl_input_copy_text['step_input_ids'] = vl_input_copy['step_input_ids'][:1]
-        # # vl_input_copy_text['step_input_ids'] = normalized_input['step_input_ids'][:1]
-        # vl_input_copy_text['step_attention_mask'] = vl_input_copy['step_attention_mask'][:1]
-        # vl_input_copy_text['eagle_pixel_values'] = vl_input_copy['eagle_pixel_values'][:2]
-        # vl_input_copy_text['eagle_image_sizes'] = vl_input_copy['eagle_image_sizes'][:2]
-        # vl_input_copy_text = {k: v.cpu() for k, v in vl_input_copy_text.items()}
-        # vl_input_copy_text.update({k: v for k, v in normalized_input.items() if k not in vl_input_copy_text})
-
-        # normalized_action, backbone_outputs, tools_output, _ = self._get_action_from_normalized_input(vl_input_copy_text, past_key_values=None, mode=mode, call_baseline=False, inside_tool=inside_tool, )
-        # import pdb;pdb.set_trace()
-
-        normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False, inside_tool=inside_tool, )
+        normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(
+            normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False,
+            inside_tool=inside_tool, )
         unnormalized_action = self._get_unnormalized_action(normalized_action, )
         if not is_batch:
             unnormalized_action = squeeze_dict_values(unnormalized_action)
@@ -276,29 +237,39 @@ class Gr00tPolicy(BasePolicy):
         unnormalized_action_bs = None
         if call_baseline:
             observations_backup = observations_bs.copy()
-            observations_bs['annotation.human.action.task_description'] = np.array([observations_bs['annotation.human.action.task_description'].item().replace('[TRAJ_MODE]', '').replace('[SKILL_MODE]', '')])
+            observations_bs['annotation.human.action.task_description'] = np.array([observations_bs[
+                                                                                        'annotation.human.action.task_description'].item().replace(
+                '[TRAJ_MODE]', '').replace('[SKILL_MODE]', '')])
             normalized_input_bs = self.apply_transforms(observations_bs, base=True)
 
-            normalized_action_bs, _, _, _ = self._get_action_from_normalized_input(normalized_input_bs, mode="baseline", call_baseline=True)
+            normalized_action_bs, _, _, _ = self._get_action_from_normalized_input(normalized_input_bs, mode="baseline",
+                                                                                   call_baseline=True)
             unnormalized_action_bs = self._get_unnormalized_action(normalized_action_bs, base=True)
             if not is_batch:
                 unnormalized_action_bs = squeeze_dict_values(unnormalized_action_bs)
-            
+
         tools_output = tools_output.replace('<|im_end|>', '')
         return unnormalized_action, tools_output, past_key_values, unnormalized_action_bs
 
-    def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> torch.Tensor:
+    def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None,
+                                          mode: str = 'baseline', inside_tool: bool = False,
+                                          call_baseline: bool = False, ) -> torch.Tensor:
         # Set up autocast context if needed
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=COMPUTE_DTYPE):
             if call_baseline:
-                model_pred, backbone_outputs, tools_output, past_key_values = self.base_model.get_action(normalized_input, mode='baseline')
+                model_pred, backbone_outputs, tools_output, past_key_values = self.base_model.get_action(
+                    normalized_input, mode='baseline')
             else:
-                model_pred, backbone_outputs, tools_output, past_key_values = self.model.get_action(normalized_input, past_key_values=past_key_values, mode=mode, inside_tool=inside_tool, toolend_head=self.toolend_head)
+                model_pred, backbone_outputs, tools_output, past_key_values = self.model.get_action(normalized_input,
+                                                                                                    past_key_values=past_key_values,
+                                                                                                    mode=mode,
+                                                                                                    inside_tool=inside_tool,
+                                                                                                    toolend_head=self.toolend_head)
 
         normalized_action = model_pred["action_pred"].float()
         return normalized_action, backbone_outputs, tools_output, past_key_values
 
-    def _get_unnormalized_action(self, normalized_action: torch.Tensor, base: bool=False) -> Dict[str, Any]:
+    def _get_unnormalized_action(self, normalized_action: torch.Tensor, base: bool = False) -> Dict[str, Any]:
         return self.unapply_transforms({"action": normalized_action.cpu()}, base=base)
 
     def get_modality_config(self) -> Dict[str, ModalityConfig]:
@@ -342,7 +313,7 @@ class Gr00tPolicy(BasePolicy):
         return True
 
     def _load_model(self, model_path):
-        def check_horizon(cur_model, base: bool=False):
+        def check_horizon(cur_model, base: bool = False):
 
             # Update action_horizon to match modality config
             # Get the expected action horizon from the modality config
@@ -353,17 +324,14 @@ class Gr00tPolicy(BasePolicy):
 
             if expected_action_horizon != cur_model.action_head.config.action_horizon:
                 print(
-                    f"Policy: Recreating action head with action_horizon {expected_action_horizon} (was {cur_model.action_head.config.action_horizon})"
-                )
+                    f"Policy: Recreating action head with action_horizon {expected_action_horizon} (was {cur_model.action_head.config.action_horizon})")
 
                 # Update the action head config
                 new_action_head_config = cur_model.action_head.config
                 new_action_head_config.action_horizon = expected_action_horizon
 
                 # Import the FlowmatchingActionHead class
-                from gr00t.model.action_head.flow_matching_action_head import (
-                    FlowmatchingActionHead,
-                )
+                from gr00t.model.action_head.flow_matching_action_head import (FlowmatchingActionHead, )
 
                 # Create new action head with updated config
                 new_action_head = FlowmatchingActionHead(new_action_head_config)
@@ -396,29 +364,28 @@ class Gr00tPolicy(BasePolicy):
         model = check_horizon(model)
         self.model = model
 
-        if model_path != "youliangtan/gr00t-n1.5-libero-long-posttrain" and self.call_baseline: 
+        if model_path != "youliangtan/gr00t-n1.5-libero-long-posttrain" and self.call_baseline:
             # load baseline model
             print(f"load libero baseline model")
-            base_model = GR00T_N1_5.from_pretrained("youliangtan/gr00t-n1.5-libero-long-posttrain", torch_dtype=COMPUTE_DTYPE, )
+            base_model = GR00T_N1_5.from_pretrained("youliangtan/gr00t-n1.5-libero-long-posttrain",
+                                                    torch_dtype=COMPUTE_DTYPE, )
             base_model.eval()  # Set model to eval mode
             base_model.to(device=self.device)  # type: ignore
             base_model = check_horizon(base_model, base=True)
             self.base_model = base_model
 
-    def _load_metadata(self, exp_cfg_dir: Path, base: bool=False):
+    def _load_metadata(self, exp_cfg_dir: Path, base: bool = False):
         """Load the transforms for the model."""
         # Load metadata for normalization stats
         metadata_path = exp_cfg_dir / "metadata.json"
         with open(metadata_path, "r") as f:
             metadatas = json.load(f)
-        
+
         # Get metadata for the specific embodiment
         metadata_dict = metadatas.get(self.embodiment_tag.value)
         if metadata_dict is None:
-            raise ValueError(
-                f"No metadata found for embodiment tag: {self.embodiment_tag.value}",
-                f"make sure the metadata.json file is present at {metadata_path}",
-            )
+            raise ValueError(f"No metadata found for embodiment tag: {self.embodiment_tag.value}",
+                f"make sure the metadata.json file is present at {metadata_path}", )
 
         metadata = DatasetMetadata.model_validate(metadata_dict)
 
@@ -453,9 +420,7 @@ class Gr00tPolicy(BasePolicy):
         assert delta_indices[-1] == 0, f"{delta_indices=}"
         if len(delta_indices) > 1:
             # The step is consistent
-            assert np.all(
-                np.diff(delta_indices) == delta_indices[1] - delta_indices[0]
-            ), f"{delta_indices=}"
+            assert np.all(np.diff(delta_indices) == delta_indices[1] - delta_indices[0]), f"{delta_indices=}"
             # And the step is positive
             assert (delta_indices[1] - delta_indices[0]) > 0, f"{delta_indices=}"
 

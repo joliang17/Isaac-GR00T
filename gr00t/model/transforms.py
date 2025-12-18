@@ -45,9 +45,7 @@ def formalize_language(language: str) -> str:
 
 
 def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
-    eagle_processor = AutoProcessor.from_pretrained(
-        eagle_path, trust_remote_code=True, use_fast=True
-    )
+    eagle_processor = AutoProcessor.from_pretrained(eagle_path, trust_remote_code=True, use_fast=True)
     # ADDED: add special tokens to tokenizer
     # specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
     list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]
@@ -58,14 +56,15 @@ def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
     eagle_processor.tokenizer.padding_side = "left"
     return eagle_processor
 
+
 def print_masked_tokens(input_ids, labels, tokenizer):
     """
     input_ids: [seq_len]
     labels:    [seq_len]
     tokenizer: tokenizer used to convert ids → tokens
     """
-    masked      = [ids for ids, lab in zip(input_ids, labels) if lab == -100]
-    unmasked    = [ids for ids, lab in zip(input_ids, labels) if lab != -100]
+    masked = [ids for ids, lab in zip(input_ids, labels) if lab == -100]
+    unmasked = [ids for ids, lab in zip(input_ids, labels) if lab != -100]
 
     masked = tokenizer.decode(masked)
     unmasked = tokenizer.decode(unmasked)
@@ -75,16 +74,16 @@ def print_masked_tokens(input_ids, labels, tokenizer):
 
     print("\n=== TRAINED TOKENS (labels != -100) ===")
     print("".join(unmasked).replace("<|endoftext|>", ""))
-    return 
+    return
 
 
 def collate(features: List[dict], eagle_processor) -> dict:
     def user_input_label(eagle_inputs, tokenizer):
-        pad_a_id    = tokenizer.convert_tokens_to_ids("[PAD_A]")
+        pad_a_id = tokenizer.convert_tokens_to_ids("[PAD_A]")
         im_start_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
-        im_end_id   = tokenizer.convert_tokens_to_ids("<|im_end|>")
-        user_id     = tokenizer.convert_tokens_to_ids("user")
-        system_id   = tokenizer.convert_tokens_to_ids("system")
+        im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+        user_id = tokenizer.convert_tokens_to_ids("user")
+        system_id = tokenizer.convert_tokens_to_ids("system")
 
         input_ids = eagle_inputs["input_ids"]
         labels = input_ids.clone()
@@ -93,19 +92,19 @@ def collate(features: List[dict], eagle_processor) -> dict:
         labels[labels == pad_a_id] = -100
 
         # 2) mask all user blocks: <|im_start|> user ... <|im_end|>
-        for b in range(input_ids.size(0)):      # over batch
+        for b in range(input_ids.size(0)):  # over batch
             ids = input_ids[b]
             L = ids.size(0)
             j = 0
             while j < L - 2:
-                if ids[j].item() == im_start_id and ids[j+1].item() in (user_id, system_id):
+                if ids[j].item() == im_start_id and ids[j + 1].item() in (user_id, system_id):
                     start = j
                     k = j + 2
                     while k < L and ids[k].item() != im_end_id:
                         k += 1
                     if k < L:
                         # mask header + content + <|im_end|>
-                        labels[b, start:k+1] = -100
+                        labels[b, start:k + 1] = -100
                         j = k + 1
                     else:
                         break
@@ -130,15 +129,17 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 curr_image_inputs = v["image_inputs"]
                 in_infer = False
                 for t_id in range(len(curr_text_list)):
-                    if '[INFER_CNT]' in curr_text_list[t_id]: 
+                    if '[INFER_CNT]' in curr_text_list[t_id]:
                         # only for inference stage
-                        curr_text_list[t_id] = curr_text_list[t_id].replace('<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n', '').replace('[INFER_CNT]', '')
+                        curr_text_list[t_id] = curr_text_list[t_id].replace(
+                            '<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n', '').replace('[INFER_CNT]',
+                                                                                                        '')
                         in_infer = True
-                    if '[INFER]' in curr_text_list[t_id]: 
+                    if '[INFER]' in curr_text_list[t_id]:
                         # only for inference stage
                         curr_text_list[t_id] = curr_text_list[t_id].replace('[INFER]', '')
                         in_infer = True
-                
+
                 if in_infer:
                     v["step_annotation"] = curr_text_list
 
@@ -159,7 +160,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 step_ids = eagle_processor.tokenizer(step_anno_list, padding=True, truncation=True, return_tensors="pt")
                 for k, v in step_ids.items():
                     batch[f"{anno_key}_{k}"] = v
-            
+
             eagle_inputs = eagle_processor(text=text_list, images=image_inputs, return_tensors="pt", padding=True)
 
             for k, v in eagle_inputs.items():
@@ -184,7 +185,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
             # key in state / state_mask / action / action_mask
             try:
                 uniq_len = len(set([len(item) for item in values]))
-            except: 
+            except:
                 uniq_len = 1
 
             if uniq_len != 1:
@@ -204,16 +205,17 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 for val in values:
                     if len(val) == 0:
                         # (0, 16, 32) empty sequence for this sample
-                        t = torch.zeros((0, seg_len, feat_dim), dtype=torch.from_numpy(np.empty((), dtype=np_dtype)).dtype)
+                        t = torch.zeros((0, seg_len, feat_dim),
+                                        dtype=torch.from_numpy(np.empty((), dtype=np_dtype)).dtype)
                         seqs.append(t)
                         lengths.append(0)
                     else:
                         # stack segments -> (Ti, 16, 32)
                         arr = np.stack(val, axis=0)  # NOT concatenate
-                        t = torch.from_numpy(arr)    # shape (Ti, 16, 32)
+                        t = torch.from_numpy(arr)  # shape (Ti, 16, 32)
                         seqs.append(t)
                         lengths.append(t.size(0))
-                        
+
                 # pad to max length (will handle 0-length safely)
                 if len(seqs) > 0:
                     padded = torch.nn.utils.rnn.pad_sequence(seqs, batch_first=True, padding_value=0.0)
@@ -222,7 +224,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 else:
                     batch[key] = torch.empty(0)
                     batch['eagle_' + key + '_length'] = torch.empty(0, dtype=torch.long)
-                
+
             else:
                 # values have the same length for all samples
                 # state, state_mask, action and action_mask.
@@ -245,21 +247,12 @@ class DefaultDataCollator(DataCollatorMixin):
 class GR00TTransform(InvertibleModalityTransform):
 
     # -- We inherit from ModalityTransform, so we keep apply_to as well --
-    apply_to: list[str] = Field(
-        default_factory=list, description="Not used in this transform, kept for compatibility."
-    )
-    training: bool = Field(
-        default=True, description="Whether to apply the transform in training mode."
-    )
+    apply_to: list[str] = Field(default_factory=list, description="Not used in this transform, kept for compatibility.")
+    training: bool = Field(default=True, description="Whether to apply the transform in training mode.")
     formalize_language: bool = Field(default=False, description="Formalize language if True.")
-    embodiment_tag_mapping: dict[str, int] = Field(
-        description="The projector index of each embodiment tag.",
-        default=EMBODIMENT_TAG_MAPPING,
-    )
-    language_dropout_prob: float = Field(
-        default=0.0,
-        description="Dropout probability for language.",
-    )
+    embodiment_tag_mapping: dict[str, int] = Field(description="The projector index of each embodiment tag.",
+        default=EMBODIMENT_TAG_MAPPING, )
+    language_dropout_prob: float = Field(default=0.0, description="Dropout probability for language.", )
 
     # Private attributes to keep track of shapes/dimensions across apply/unapply
     _language_key: Optional[list[str]] = PrivateAttr(default=None)
@@ -283,9 +276,7 @@ class GR00TTransform(InvertibleModalityTransform):
 
     def get_embodiment_tag(self) -> int:
         """Get the embodiment tag from the data."""
-        assert (
-            self.embodiment_tag is not None
-        ), "Embodiment tag not set. Please call set_metadata first."
+        assert (self.embodiment_tag is not None), "Embodiment tag not set. Please call set_metadata first."
         return self.embodiment_tag_mapping[self.embodiment_tag.value]
 
     def check_keys_and_batch_size(self, data):
@@ -351,24 +342,12 @@ class GR00TTransform(InvertibleModalityTransform):
 
         eagle_images = [Image.fromarray(np.transpose(v, (1, 2, 0))) for v in np_images]
         eagle_image = [{"type": "image", "image": img} for img in eagle_images]
-        eagle_conversation = [
-            {
-                "role": "user",
-                "content": eagle_image + text_content,
-            }
-        ]
+        eagle_conversation = [{"role": "user", "content": eagle_image + text_content, }]
         text_list = [
-            self.eagle_processor.apply_chat_template(
-                eagle_conversation, tokenize=False, add_generation_prompt=True
-            )
-        ]
+            self.eagle_processor.apply_chat_template(eagle_conversation, tokenize=False, add_generation_prompt=True)]
         image_inputs, video_inputs = self.eagle_processor.process_vision_info(eagle_conversation)
-        eagle_content = {
-            "image_inputs": image_inputs,
-            "video_inputs": video_inputs,
-            "text_list": text_list,
-            "step_annotation": [step_lang]
-        }
+        eagle_content = {"image_inputs": image_inputs, "video_inputs": video_inputs, "text_list": text_list,
+            "step_annotation": [step_lang]}
         inputs = {}
         inputs["eagle_content"] = eagle_content
         return inputs
@@ -376,10 +355,7 @@ class GR00TTransform(InvertibleModalityTransform):
     def _prepare_video(self, data: dict):
         """Process, stack, and pad images from data['video']."""
         ## TODO(YL, FH): check if this is correct
-        images = rearrange(
-            data["video"],
-            "t v h w c -> v t c h w",
-        )
+        images = rearrange(data["video"], "t v h w c -> v t c h w", )
         return images
 
     def _prepare_language(self, data: dict):
@@ -446,8 +422,7 @@ class GR00TTransform(InvertibleModalityTransform):
         n_action_dims = actions.shape[1]
 
         assert (
-            n_action_dims <= self.max_action_dim
-        ), f"Action dim {n_action_dims} exceeds max allowed {self.max_action_dim}."
+                n_action_dims <= self.max_action_dim), f"Action dim {n_action_dims} exceeds max allowed {self.max_action_dim}."
 
         # Pad the channel dimension
         actions = np.pad(actions, ((0, 0), (0, self.max_action_dim - n_action_dims)), "constant")
@@ -490,10 +465,8 @@ class GR00TTransform(InvertibleModalityTransform):
 
         if self.training:
             action_and_mask_keys = ["action", "action_mask"]
-            assert all(
-                transformed_data[key].shape == transformed_data["action"].shape
-                for key in action_and_mask_keys
-            ), f"Shape mismatch: {[(key, transformed_data[key].shape) for key in action_and_mask_keys]}"
+            assert all(transformed_data[key].shape == transformed_data["action"].shape for key in
+                       action_and_mask_keys), f"Shape mismatch: {[(key, transformed_data[key].shape) for key in action_and_mask_keys]}"
 
         return transformed_data
 

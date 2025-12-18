@@ -17,9 +17,7 @@ for p in (str(_GR00T_ROOT), str(_LIBERO_ROOT)):
         sys.path.insert(0, p)
 
 # Optional: propagate to children processes
-os.environ["PYTHONPATH"] = os.pathsep.join(
-    [str(_GR00T_ROOT), str(_LIBERO_ROOT), os.environ.get("PYTHONPATH", "")]
-)
+os.environ["PYTHONPATH"] = os.pathsep.join([str(_GR00T_ROOT), str(_LIBERO_ROOT), os.environ.get("PYTHONPATH", "")])
 
 # Quick sanity check (prints once; remove if noisy)
 if importlib.util.find_spec("libero") is None:
@@ -42,30 +40,21 @@ import torch
 import tqdm
 import tyro
 
-from libero_scripts.utils import (
-    get_libero_dummy_action,
-    get_libero_env,
-    get_libero_image,
-    normalize_gripper_action,
-    quat2axisangle,
-    save_rollout_video,
-    process_observation,
-    show_obs_images_cv2,
-    convert_to_libero_action,
-    summarize_obs,
-    set_seed
-)
+from libero_scripts.utils import (get_libero_dummy_action, get_libero_env, get_libero_image, normalize_gripper_action,
+                                  quat2axisangle, save_rollout_video, process_observation, show_obs_images_cv2,
+                                  convert_to_libero_action, summarize_obs, set_seed)
 from gr00t.model.policy import Gr00tPolicy
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from libero.libero import benchmark
+
 set_seed(42)
 log_dir = "logs/"
 os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
 
 
 def eval_libero(cfg) -> None:
-    call_baseline = cfg.call_baseline 
-    
+    call_baseline = cfg.call_baseline
+
     # Initialize LIBERO task suite
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[cfg.task_suite_name]()
@@ -96,18 +85,11 @@ def eval_libero(cfg) -> None:
         env, task_description = get_libero_env(task, resolution=256)
 
         # gr00t_policy = GR00TPolicy(host="localhost", port=cfg.port, headless=cfg.headless)
-        gr00t_policy = Gr00tPolicy(
-            model_path=cfg.model_path,
-            modality_config=modality_config,
-            modality_transform=modality_transform,
-            modality_config_base=modality_config_base,
-            modality_transform_base=modality_transform_base,
-            embodiment_tag=cfg.embodiment_tag,
-            denoising_steps=cfg.denoising_steps,
-            device="cuda" if torch.cuda.is_available() else "cpu",
-            data_config=cfg.data_config, 
-            call_baseline=call_baseline,
-        )
+        gr00t_policy = Gr00tPolicy(model_path=cfg.model_path, modality_config=modality_config,
+            modality_transform=modality_transform, modality_config_base=modality_config_base,
+            modality_transform_base=modality_transform_base, embodiment_tag=cfg.embodiment_tag,
+            denoising_steps=cfg.denoising_steps, device="cuda" if torch.cuda.is_available() else "cpu",
+            data_config=cfg.data_config, call_baseline=call_baseline, )
 
         # Start episodes
         task_episodes, task_successes = 0, 0
@@ -132,13 +114,12 @@ def eval_libero(cfg) -> None:
             elif cfg.task_suite_name == "libero_goal":
                 max_steps = 600  # longest training demo has 270 steps
             elif cfg.task_suite_name == "libero_10":
-                max_steps = 250  # longest training demo has 505 steps
-                # max_steps = 1000  # longest training demo has 505 steps
+                max_steps = 250  # longest training demo has 505 steps  # max_steps = 1000  # longest training demo has 505 steps
             elif cfg.task_suite_name == "libero_90":
                 max_steps = 400  # longest training demo has 373 steps
 
-            print(f"Starting episode {task_episodes+1}...")
-            log_file.write(f"Starting episode {task_episodes+1}...\n")
+            print(f"Starting episode {task_episodes + 1}...")
+            log_file.write(f"Starting episode {task_episodes + 1}...\n")
             past_key_values_traj = None
             past_key_values_tools = None
             inside_tools = False
@@ -180,7 +161,9 @@ def eval_libero(cfg) -> None:
                         obs_dict = process_observation(obs, "[INFER]" + cur_instr, headless=cfg.headless)
                         obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
 
-                        action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
+                        action_chunk, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(
+                            obs_dict, observations_base=obs_dict_base, img_count=traj_img_count,
+                            past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
 
                         if tools_output != '' and tools_output != '[ACTIONS]':
                             print(f"Call Tools: {tools_output}")
@@ -189,11 +172,14 @@ def eval_libero(cfg) -> None:
                             inside_tools = True
                             past_key_values_tools = None
                             # for step t, regenerate the action with the new instructions
-                            obs_dict_tools = process_observation(obs, "[INFER]" + '[SKILL_MODE]' + tools_output, headless=cfg.headless)
+                            obs_dict_tools = process_observation(obs, "[INFER]" + '[SKILL_MODE]' + tools_output,
+                                                                 headless=cfg.headless)
                             obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
 
-                            action_chunk, invalid_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict_tools, observations_base=obs_dict_base, past_key_values=past_key_values_tools, mode='interleaved', call_baseline=call_baseline, inside_tool=True)
-                            
+                            action_chunk, invalid_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(
+                                obs_dict_tools, observations_base=obs_dict_base, past_key_values=past_key_values_tools,
+                                mode='interleaved', call_baseline=call_baseline, inside_tool=True)
+
                         if call_baseline:
                             action_chunk = action_chunk_bs
                         else:
@@ -205,11 +191,14 @@ def eval_libero(cfg) -> None:
                     else:
                         # inside tools
                         # skill instruction is already included in past_key_values_traj
-                        obs_dict = process_observation(obs, "[INFER]" + '[SKILL_MODE]' + tools_output, headless=cfg.headless)
+                        obs_dict = process_observation(obs, "[INFER]" + '[SKILL_MODE]' + tools_output,
+                                                       headless=cfg.headless)
                         # obs_dict = process_observation(obs, "[INFER]" + '[INFER_CNT]' + tools_output, headless=cfg.headless)
                         obs_dict_base = process_observation(obs, tools_output, headless=cfg.headless)
 
-                        action_chunk, cur_tools_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, past_key_values=past_key_values_tools, mode='interleaved', inside_tool=True, call_baseline=call_baseline, )
+                        action_chunk, cur_tools_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(
+                            obs_dict, observations_base=obs_dict_base, past_key_values=past_key_values_tools,
+                            mode='interleaved', inside_tool=True, call_baseline=call_baseline, )
                         if call_baseline:
                             action_chunk = action_chunk_bs
                         else:
@@ -248,7 +237,8 @@ def eval_libero(cfg) -> None:
             total_episodes += 1
 
             # Save a replay video of the episode
-            save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, model_name=args.model_name)
+            save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description,
+                               log_file=log_file, model_name=args.model_name)
 
             # Log current results
             print(f"Success: {done}")
@@ -256,21 +246,15 @@ def eval_libero(cfg) -> None:
             print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
-            log_file.write(
-                f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
-            )
+            log_file.write(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n")
             log_file.flush()
             sys.exit(0)
 
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
         print(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
-        log_file.write(
-            f"Current task success rate: {float(task_successes) / float(task_episodes)}\n"
-        )
-        log_file.write(
-            f"Current total success rate: {float(total_successes) / float(total_episodes)}\n"
-        )
+        log_file.write(f"Current task success rate: {float(task_successes) / float(task_episodes)}\n")
+        log_file.write(f"Current total success rate: {float(total_successes) / float(total_episodes)}\n")
         log_file.flush()
 
     # Save local log file
@@ -280,21 +264,15 @@ def eval_libero(cfg) -> None:
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--task_suite_name",
-        type=str,
-        choices=[
-            "libero_90", "libero_10",
-        ],
-        default="libero_10",
-        help="Choose the embodiment for data processing"
-    )
+    parser.add_argument("--task_suite_name", type=str, choices=["libero_90", "libero_10", ], default="libero_10",
+        help="Choose the embodiment for data processing")
     parser.add_argument("--num_steps_wait", type=int, default=10)
     parser.add_argument("--num_trials_per_task", type=int, default=5)
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--headless", type=bool, default=True)
     parser.add_argument("--call_baseline", action="store_true", help="Enable baseline mode")
-    parser.add_argument("--model_path", type=str, default="/fs/nexus-scratch/yliang17/Research/VLA/GR00T/checkpoint/groot_libero_traj/checkpoint-6000")
+    parser.add_argument("--model_path", type=str,
+                        default="/fs/nexus-scratch/yliang17/Research/VLA/GR00T/checkpoint/groot_libero_traj/checkpoint-6000")
     parser.add_argument("--embodiment_tag", type=str, default="new_embodiment")
     parser.add_argument("--data_config", type=str, default="libero_traj_arms")
     parser.add_argument("--denoising_steps", type=int, default=8)
