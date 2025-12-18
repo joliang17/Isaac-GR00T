@@ -225,25 +225,31 @@ def main(config: ArgsConfig):
     # 1.2 data loader: we will use either single dataset or mixture dataset
     if len(config.dataset_path) == 1:
         train_dataset = LeRobotSingleDataset(dataset_path=config.dataset_path[0], modality_configs=modality_configs,
-            transforms=transforms, embodiment_tag=embodiment_tag, video_backend=config.video_backend,
-            window_length=config.window_length, windowing_mode=config.windowing_mode, skill_level=config.skill_level,
-            min_seq_len=config.min_seq_len, skill_inclusion_ratio=config.skill_inclusion_ratio,
-            action_ds_ratio=config.action_ds_ratio, toolend_upsample_ratio=config.toolend_upsample_ratio, )
+                                             transforms=transforms, embodiment_tag=embodiment_tag,
+                                             video_backend=config.video_backend, window_length=config.window_length,
+                                             windowing_mode=config.windowing_mode, skill_level=config.skill_level,
+                                             min_seq_len=config.min_seq_len,
+                                             skill_inclusion_ratio=config.skill_inclusion_ratio,
+                                             action_ds_ratio=config.action_ds_ratio,
+                                             toolend_upsample_ratio=config.toolend_upsample_ratio, )
     else:
         single_datasets = []
         for p in config.dataset_path:
             assert os.path.exists(p), f"Dataset path {p} does not exist"
             dataset = LeRobotSingleDataset(dataset_path=p, modality_configs=modality_configs, transforms=transforms,
-                embodiment_tag=embodiment_tag, video_backend=config.video_backend, window_length=config.window_length,
-                windowing_mode=config.windowing_mode, skill_level=config.skill_level, min_seq_len=config.min_seq_len,
-                skill_inclusion_ratio=config.skill_inclusion_ratio, action_ds_ratio=config.action_ds_ratio,
-                toolend_upsample_ratio=config.toolend_upsample_ratio, )
+                                           embodiment_tag=embodiment_tag, video_backend=config.video_backend,
+                                           window_length=config.window_length, windowing_mode=config.windowing_mode,
+                                           skill_level=config.skill_level, min_seq_len=config.min_seq_len,
+                                           skill_inclusion_ratio=config.skill_inclusion_ratio,
+                                           action_ds_ratio=config.action_ds_ratio,
+                                           toolend_upsample_ratio=config.toolend_upsample_ratio, )
             single_datasets.append(dataset)
 
         train_dataset = LeRobotMixtureDataset(data_mixture=[(dataset, 1.0)  # we will use equal weights for all datasets
-            for dataset in single_datasets], mode="train", balance_dataset_weights=config.balance_dataset_weights,
-            balance_trajectory_weights=config.balance_trajectory_weights, seed=42,
-            metadata_config={"percentile_mixing_method": "weighted_average", }, )
+                                                            for dataset in single_datasets], mode="train",
+                                              balance_dataset_weights=config.balance_dataset_weights,
+                                              balance_trajectory_weights=config.balance_trajectory_weights, seed=42,
+                                              metadata_config={"percentile_mixing_method": "weighted_average", }, )
         print(f"Loaded {len(single_datasets)} datasets, with {config.dataset_path} ")
 
     if config.do_eval:
@@ -264,13 +270,13 @@ def main(config: ArgsConfig):
         pred_nextstep = True
 
     model = GR00T_N1_5.from_pretrained(pretrained_model_name_or_path=config.base_model_path, tune_llm=config.tune_llm,
-        # backbone's LLM
-        tune_visual=config.tune_visual,  # backbone's vision tower
-        tune_projector=config.tune_projector,  # action head's projector
-        tune_diffusion_model=config.tune_diffusion_model,  # action head's DiT
-        tune_special_A=config.tune_special_A,  # backbone's embedding
-        tune_special_B=config.tune_special_B,  # backbone's embedding
-        tune_tool_end=config.tune_tool_end, pred_nextstep=pred_nextstep)
+                                       # backbone's LLM
+                                       tune_visual=config.tune_visual,  # backbone's vision tower
+                                       tune_projector=config.tune_projector,  # action head's projector
+                                       tune_diffusion_model=config.tune_diffusion_model,  # action head's DiT
+                                       tune_special_A=config.tune_special_A,  # backbone's embedding
+                                       tune_special_B=config.tune_special_B,  # backbone's embedding
+                                       tune_tool_end=config.tune_tool_end, pred_nextstep=pred_nextstep)
 
     # Update action_horizon to match data config
     # Need to recreate action head with correct config since it was initialized with old config
@@ -301,7 +307,7 @@ def main(config: ArgsConfig):
 
         # Set trainable parameters for the new action head
         model.action_head.set_trainable_parameters(tune_projector=config.tune_projector,
-            tune_diffusion_model=config.tune_diffusion_model)
+                                                   tune_diffusion_model=config.tune_diffusion_model)
 
     # ADDED: reload special embed after pretrained
     model_emb = model.backbone.eagle_model.language_model.model.embed_tokens
@@ -368,9 +374,9 @@ def main(config: ArgsConfig):
     if config.lora_rank > 0:
         # normal lora training (only for action_head / full model)
         model = get_lora_model(model, rank=config.lora_rank, lora_alpha=config.lora_alpha,
-            lora_dropout=config.lora_dropout, freeze_embeddings=config.freeze_embeddings,
-            train_action_head=train_action_head, tune_special_A=config.tune_special_A,
-            tune_special_B=config.tune_special_B, tune_tool_end=config.tune_tool_end, )
+                               lora_dropout=config.lora_dropout, freeze_embeddings=config.freeze_embeddings,
+                               train_action_head=train_action_head, tune_special_A=config.tune_special_A,
+                               tune_special_B=config.tune_special_B, tune_tool_end=config.tune_tool_end, )
     else:
         # tie model weight
         tie_all_special_weights(model)
@@ -383,26 +389,30 @@ def main(config: ArgsConfig):
 
     # 2.1 modify training args
     training_args = TrainingArguments(output_dir=config.output_dir, run_name=config.run_name,
-        remove_unused_columns=False, deepspeed="", gradient_checkpointing=False, bf16=True, tf32=True,
-        per_device_train_batch_size=config.batch_size, gradient_accumulation_steps=config.gradient_accumulation_steps,
-        dataloader_num_workers=config.dataloader_num_workers, dataloader_pin_memory=False,
-        # dataloader_prefetch_factor=config.dataloader_prefetch_factor,
-        dataloader_persistent_workers=config.dataloader_num_workers > 0, optim="adamw_torch", adam_beta1=0.95,
-        adam_beta2=0.999, adam_epsilon=1e-8, learning_rate=config.learning_rate, weight_decay=config.weight_decay,
-        warmup_ratio=config.warmup_ratio, lr_scheduler_type="cosine", logging_steps=10.0, num_train_epochs=300,
-        max_steps=config.max_steps, save_strategy="steps", save_steps=config.save_steps, # evaluation_strategy="no",
-        save_total_limit=5, report_to=config.report_to, seed=42, # do_eval=False,
-        ddp_find_unused_parameters=False, ddp_bucket_cap_mb=100, torch_compile_mode=None,
-        max_grad_norm=config.grad_norm,
+                                      remove_unused_columns=False, deepspeed="", gradient_checkpointing=False,
+                                      bf16=True, tf32=True, per_device_train_batch_size=config.batch_size,
+                                      gradient_accumulation_steps=config.gradient_accumulation_steps,
+                                      dataloader_num_workers=config.dataloader_num_workers, dataloader_pin_memory=False,
+                                      # dataloader_prefetch_factor=config.dataloader_prefetch_factor,
+                                      dataloader_persistent_workers=config.dataloader_num_workers > 0,
+                                      optim="adamw_torch", adam_beta1=0.95, adam_beta2=0.999, adam_epsilon=1e-8,
+                                      learning_rate=config.learning_rate, weight_decay=config.weight_decay,
+                                      warmup_ratio=config.warmup_ratio, lr_scheduler_type="cosine", logging_steps=10.0,
+                                      num_train_epochs=300, max_steps=config.max_steps, save_strategy="steps",
+                                      save_steps=config.save_steps,  # evaluation_strategy="no",
+                                      save_total_limit=5, report_to=config.report_to, seed=42,  # do_eval=False,
+                                      ddp_find_unused_parameters=False, ddp_bucket_cap_mb=100, torch_compile_mode=None,
+                                      max_grad_norm=config.grad_norm,
 
-        # --- EVALUATION SETTINGS ---
-        do_eval=config.do_eval, eval_strategy="steps" if config.do_eval else "no", eval_steps=config.save_steps,
-        per_device_eval_batch_size=config.batch_size, eval_accumulation_steps=1, # ---------------------------
-    )
+                                      # --- EVALUATION SETTINGS ---
+                                      do_eval=config.do_eval, eval_strategy="steps" if config.do_eval else "no",
+                                      eval_steps=config.save_steps, per_device_eval_batch_size=config.batch_size,
+                                      eval_accumulation_steps=1,  # ---------------------------
+                                      )
 
     # 2.2 run experiment
     experiment = TrainRunner(train_dataset=train_dataset, model=model, training_args=training_args,
-        resume_from_checkpoint=config.resume, eval_dataset=eval_sanity_set, )
+                             resume_from_checkpoint=config.resume, eval_dataset=eval_sanity_set, )
 
     # 2.3 run experiment
     experiment.train()
@@ -444,8 +454,8 @@ if __name__ == "__main__":
                 del os.environ["CUDA_VISIBLE_DEVICES"]
             # Use subprocess.run instead of os.system
             cmd = ["torchrun", "--standalone", f"--nproc_per_node={config.num_gpus}", "--nnodes=1",
-                # default to 1 node for now
-                str(script_path), ]
+                   # default to 1 node for now
+                   str(script_path), ]
 
             # Convert config to command line arguments
             for key, value in vars(config).items():
