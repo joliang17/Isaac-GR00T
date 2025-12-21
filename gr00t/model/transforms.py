@@ -49,8 +49,8 @@ def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
         eagle_path, trust_remote_code=True, use_fast=True
     )
     # ADDED: add special tokens to tokenizer
-    # specials = {"additional_special_tokens": ["[ACTIONS]", "[TOOLS]", "[EOT]", "[PAD_A]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]}
-    list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]
+    # list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]
+    list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", ]
     # list_special.extend([f"[SKILL_{i}]" for i in range(1, 42)])
     specials = {"additional_special_tokens": list_special}
     eagle_processor.tokenizer.add_special_tokens(specials)
@@ -80,7 +80,6 @@ def print_masked_tokens(input_ids, labels, tokenizer):
 
 def collate(features: List[dict], eagle_processor) -> dict:
     def user_input_label(eagle_inputs, tokenizer):
-        pad_a_id    = tokenizer.convert_tokens_to_ids("[PAD_A]")
         im_start_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
         im_end_id   = tokenizer.convert_tokens_to_ids("<|im_end|>")
         user_id     = tokenizer.convert_tokens_to_ids("user")
@@ -88,9 +87,6 @@ def collate(features: List[dict], eagle_processor) -> dict:
 
         input_ids = eagle_inputs["input_ids"]
         labels = input_ids.clone()
-
-        # 1) never train on [PAD_A]
-        labels[labels == pad_a_id] = -100
 
         # 2) mask all user blocks: <|im_start|> user ... <|im_end|>
         for b in range(input_ids.size(0)):      # over batch

@@ -30,6 +30,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Sequence
 import re
+from math import isclose
+import torchvision
 import random
 import pickle
 import numpy as np
@@ -37,6 +39,7 @@ import pandas as pd
 from pydantic import BaseModel, Field, ValidationError
 from torch.utils.data import Dataset
 from tqdm import tqdm
+import traceback
 
 from gr00t.utils.video import get_all_frames, get_frames_by_timestamps
 
@@ -56,6 +59,59 @@ LE_ROBOT_TASKS_FILENAME = "meta/tasks.jsonl"
 LE_ROBOT_INFO_FILENAME = "meta/info.json"
 LE_ROBOT_STATS_FILENAME = "meta/stats.json"
 LE_ROBOT_DATA_FILENAME = "data/*/*.parquet"
+
+
+
+def check_video_with_videoreader(
+    video_path: str,
+    *,
+    backend: str = "pyav",
+    verbose: bool = True,
+):
+    """
+    Fully decode an entire video using torchvision VideoReader (pyav backend)
+    to check whether it is broken.
+
+    Returns:
+        ok (bool), info (dict)
+    """
+    info = {
+        "video_path": video_path,
+        "frames_read": 0,
+        "last_loaded_pts": None,
+    }
+    reader = None
+
+    try:
+        torchvision.set_video_backend(backend)
+        reader = torchvision.io.VideoReader(video_path, "video")
+
+        for frame in reader:
+            # Force actual decode
+            _ = frame["data"].numpy()
+            info["last_loaded_pts"] = frame.get("pts", None)
+            info["frames_read"] += 1
+
+        if info["frames_read"] == 0:
+            info["error"] = "decoded 0 frames"
+            return False, info
+
+        return True, info
+
+    except Exception as e:
+        info["error"] = f"{type(e).__name__}: {e}"
+        if verbose:
+            print(f"[BROKEN VIDEO] {video_path}")
+            traceback.print_exc()
+        return False, info
+
+    finally:
+        # Critical: PyAV container must be closed safely
+        try:
+            if reader is not None and getattr(reader, "container", None) is not None:
+                reader.container.close()
+        except Exception:
+            pass
 
 
 def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
@@ -184,10 +240,21 @@ class LeRobotSingleDataset(Dataset):
         self.min_seq_len = min_seq_len
 
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
-        self._trajectory_ids, self._trajectory_lengths, self._trajectory_types = self._get_trajectories()
-        self._all_steps = self._get_all_steps()
         self._modality_keys = self._get_modality_keys()
         self._delta_indices = self._get_delta_indices()
+
+        # LeRobot-specific config
+        self._lerobot_modality_meta = self._get_lerobot_modality_meta()
+        self._lerobot_info_meta = self._get_lerobot_info_meta()
+        self._data_path_pattern = self._get_data_path_pattern()
+        self._video_path_pattern = self._get_video_path_pattern()
+        self._chunk_size = self._get_chunk_size()
+        self._tasks = self._get_tasks()
+        self.curr_traj_data = None
+        self.curr_traj_id = None
+
+        self._trajectory_ids, self._trajectory_lengths, self._trajectory_types = self._get_trajectories()
+        self._all_steps = self._get_all_steps()
 
         if self.windowing_mode == 'step':
             self._max_delta_index = self._get_max_delta_index()
@@ -207,16 +274,6 @@ class LeRobotSingleDataset(Dataset):
         self.set_epoch(0)
 
         print(f"Initialized dataset {self.dataset_name} with {embodiment_tag}")
-
-        # LeRobot-specific config
-        self._lerobot_modality_meta = self._get_lerobot_modality_meta()
-        self._lerobot_info_meta = self._get_lerobot_info_meta()
-        self._data_path_pattern = self._get_data_path_pattern()
-        self._video_path_pattern = self._get_video_path_pattern()
-        self._chunk_size = self._get_chunk_size()
-        self._tasks = self._get_tasks()
-        self.curr_traj_data = None
-        self.curr_traj_id = None
 
         if self.windowing_mode != 'step':
             self._window_steps = self._get_all_windows()
@@ -457,6 +514,18 @@ class LeRobotSingleDataset(Dataset):
         trajectory_type = []
         # DEBUG
         for episode in episode_metadata:
+            video_path = str(self.get_video_path(episode["episode_index"], 'image'))
+            okay, msg = check_video_with_videoreader(video_path)
+            if not okay:
+                print(f"{video_path} broken")
+                continue
+
+            video_path = str(self.get_video_path(episode["episode_index"], 'wrist_image'))
+            okay, msg = check_video_with_videoreader(video_path)
+            if not okay:
+                print(f"{video_path} broken")
+                continue
+
             trajectory_ids.append(episode["episode_index"])
             trajectory_lengths.append(episode["length"])
             if self.windowing_mode != 'step': 
@@ -474,6 +543,22 @@ class LeRobotSingleDataset(Dataset):
         return np.array(trajectory_ids), np.array(trajectory_lengths), np.array(trajectory_type)
 
     def _get_all_windows(self) -> list[list[tuple[int, int]]]:
+        """
+        Generates training windows (sequences of frame indices) from the dataset trajectories.
+
+        This function handles:
+        1. Data Balancing:
+           - Downsampling 'Skill' trajectories based on `skill_inclusion_ratio`.
+           - Downsampling specific 'Action' steps within trajectories based on `action_ds_ratio`.
+           - Upsampling windows containing 'Tool End' events based on `toolend_upsample_ratio`.
+        2. Windowing Strategies: Supports 'fixed', 'block_prefix', and 'sliding_prefix' slicing.
+        3. Skill Handling: Special handling for single-step skill extraction.
+
+        Returns:
+            list[list[tuple[int, int]]]: A list of windows. Each window is a list of
+            (trajectory_id, step_index) tuples.
+        """
+
         wl = int(self.window_length)
         if wl <= 0: raise ValueError(f"window_length must be > 0, got {wl}")
         
@@ -498,7 +583,9 @@ class LeRobotSingleDataset(Dataset):
             if max_windows is not None and len(all_windows) >= max_windows:
                 break
 
-            # --- 1. Skill Downsampling ---
+            #########################################
+            # --- 1. Skill Downsampling (Global Trajectory Level) ---
+            # ttype 1 represents skill-level data (include [ACTIONS] / [TOOL_END] only).
             if ttype == 1:
                 if random.random() > skill_ratio:
                     continue
@@ -509,10 +596,10 @@ class LeRobotSingleDataset(Dataset):
             if T <= 0: continue
 
             if self.skill_level == 'step':
-                # ==========================================
+                #########################################
                 # BRANCH A: SKILL DATA (ttype == 1)
                 # Logic: Extract step-wise data (only 1 step per window)
-                # ==========================================
+                 #########################################
                 if ttype == 1:
                     for idx in range(T):
                         # Create a window with a single step
@@ -523,12 +610,13 @@ class LeRobotSingleDataset(Dataset):
                             return all_windows
                     continue
 
-            # ==========================================
+            #########################################
             # BRANCH B: TRAJECTORY DATA (ttype == 0)
             # Logic: Complex windowing (Fixed/Block/Sliding + Action DS + Tool Upsample)
-            # ==========================================
+            #########################################
             
-            # --- 2. Step Filtering ---
+            #########################################
+            # --- 2. Step Filtering (Action Downsampling) ---
             available_indices = list(range(T))
             tool_end_indices = set()
 
@@ -544,13 +632,13 @@ class LeRobotSingleDataset(Dataset):
                             desc = desc[0]
                         list_act.append((idx, 1 if '[ACTIONS]' in desc else 0))
 
-                    # list_act = [(idx, 1 if '[ACTIONS]' in desc[0] else 0) for idx, desc in enumerate(step_descs)]
                     action_steps = [x[0] for x in list_act if x[1] == 1]
                     other_steps = [x[0] for x in list_act if x[1] == 0]
                     n_keep = int(len(action_steps) * action_ratio)
                     random.shuffle(action_steps)
                     available_indices = sorted(other_steps + action_steps[:n_keep])
 
+                # Logic: Identify indices where tool use ends for later upsampling
                 if toolend_ratio > 1.0:
                     for idx, desc in enumerate(step_descs):
                         if isinstance(desc, list) and len(desc) == 1:
@@ -561,16 +649,19 @@ class LeRobotSingleDataset(Dataset):
             n_available = len(available_indices)
             if n_available < min_seq_len: continue
 
-            # --- 3. Window Generation ---
+            #########################################
+            # --- 3. Window Generation (Slicing Strategies) ---
             windows_to_process = [] 
 
             if mode == 'fixed':
+                # Non-overlapping windows of length `wl`
                 curr = 0
                 while curr + wl <= n_available:
                     windows_to_process.append(available_indices[curr : curr + wl])
                     curr += wl
 
             elif mode == 'block_prefix':
+                # Generates windows of increasing length (prefix modeling) starting from intervals of `wl`.
                 curr = 0
                 while curr < n_available:
                     max_len_here = min(wl, n_available - curr)
@@ -580,7 +671,7 @@ class LeRobotSingleDataset(Dataset):
                     curr += wl
 
             elif mode == 'sliding_prefix':
-                # sliding windows of fixed length = min_seq_len
+                # Sliding window approach: shift by `stride`, then generate prefixes up to `wl`.
                 last_start = n_available - min_seq_len
                 curr = 0
                 while curr <= last_start:
@@ -589,13 +680,14 @@ class LeRobotSingleDataset(Dataset):
                         windows_to_process.append(available_indices[curr : curr + length])
                     curr += stride
 
-            # --- 4. Final Processing ---
+            #########################################
+            # --- 4. Final Processing & Upsampling ---
             for step_indices in windows_to_process:
                 window = [(tid, s_idx) for s_idx in step_indices]                
                 repeats = 1
                 is_tool_end = False
                 
-                # Check Tool End
+                # Logic: Upsample windows containing '[TOOLS_END]' to emphasize tool completion logic.
                 if toolend_ratio > 1.0 and len(tool_end_indices) > 0:
                     if not tool_end_indices.isdisjoint(step_indices):
                         is_tool_end = True
@@ -762,109 +854,136 @@ class LeRobotSingleDataset(Dataset):
         return self.transforms(self.get_step_data(trajectory_id, base_index))
 
     def __getitem__(self, index: int) -> dict:
-        """Get the data for a single step in a trajectory.
+        """
+        Retrieves a data sample for training.
+
+        Supports two modes:
+        1. 'step': Legacy mode returning a single step (standard LIBERO training).
+        2. 'trajectory' (default): Returns a sequence of steps formatted as a multi-turn
+           conversation history for VLM training.
 
         Args:
-            index (int): The index of the step to get.
+            index (int): Index of the window/step in the dataset.
 
         Returns:
-            dict: The data for the step.
+            dict: A dictionary containing:
+                - 'eagle_content': Nested dict with 'image_inputs' (list of tensors) and 'text_list' (prompt string).
+                - 'state', 'action': Lists of tensors for physical states/actions corresponding to the steps.
+                - Masks and other metadata.
         """
         if self.windowing_mode == 'step':
-            # step-wise data loading
+            #########################################
+            # Original LIBERO training
+            # Logic: Fetch a single frame/action pair without history context.
+            #########################################
             trajectory_id, base_index = self.all_steps[index]
             dict_transformed = self.transforms(self.get_step_data(trajectory_id, base_index))
-            # dict_transformed: 'state': (1, 64), 'state_mask': (1, 64), 'segmentation_target': (2,), 'segmentation_target_mask': (1,), 'has_real_action': array(True), 'action': (16, 32), 'action_mask': (16, 32), 'embodiment_id': 31
-            # 'eagle_content': 'image_inputs': [PIL1, PIL2], 'video_inputs': None, 'text_list': ['<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1><image-2>put the yellow and white mug in the microwave and close it<|im_end|>\n<|im_start|>assistant\n'], 'step_annotation': [None]
             return dict_transformed
         else:
+            #########################################
+            # Trajectory / Sequence Training
+            # Logic: Load a window of T steps and format them into a single context.
+            #########################################
+
+            #########################################
+            # 1. Retrieve raw data for all steps in this window
             list_steps = self._window_steps[index]
-            list_step_data = [self.get_step_data(item[0], item[1]) for item in list_steps]  # dict_keys(['video.front_camera', 'state.single_arm', 'state.gripper', 'action.single_arm', 'action.gripper', 'annotation.step_description'])
-            image1 = list_step_data[0]['video.image']
-            image2 = list_step_data[0]['video.wrist_image']
-            # DEBUG: 
+            list_step_data = [self.get_step_data(item[0], item[1]) for item in list_steps]
             list_step_transform = [self.transforms(item) for item in list_step_data]
 
-            # return result: previous images, instructions, action / tools
-            # predicted: state / action / eagle_content of the last time step
-            # list_transformed_img = [item['eagle_content']['image_inputs'][0] for item in list_step_transform]
+            #########################################
+            # 2. Image Aggregation
+            # Collect all image tensors from the sequence into a flat list.
+            # These will be fed into the Vision Encoder.
             agg_images = []
             for i, t in enumerate(list_step_transform):
                 imgs = t['eagle_content']['image_inputs']
-                # [val.shape for x, val in t.items() if not isinstance(val, str) and not isinstance(val, dict) and not isinstance(val, int)]
-                # imgs is already a list produced by eagle_processor.process_vision_info
                 agg_images.extend(imgs)
 
-            # task_instruction: <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1>Open the cabinet door<|im_end|>\n<|im_start|>assistant\n
+            #########################################
+            # 3. Prompt Engineering (ChatML Format)
+            # Extract the initial system + user instruction from the first step.
+            # Format: <|im_start|>system...<|im_end|>\n<|im_start|>user\n<image-1>Instruction...
             task_instruction_postfix = "<|im_end|>\n<|im_start|>assistant\n"
             task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix, '')
 
-            # remove all occurrences like SCENE1, ]SCENE2, SCENE3, etc.
+            # Text Cleaning: Remove dataset artifacts like "SCENE1" which might confuse the model.
             new_text = re.sub(r'\bSCENE\d+\b\s*', '', task_instruction)
             if new_text != task_instruction:
                 task_instruction = new_text
 
+            # Detect if we are using single-view or multi-view (wrist + eye-in-hand)
             if '<image-2>' in task_instruction:
-                # 2 views
                 num_view = 2
             else:
                 num_view = 1
 
-            # add end of the current instruction
+            # Append the first turn ending and inject Mode Tokens ([SKILL_MODE] vs [TRAJ_MODE])
             task_instruction += "<|im_end|>\n"
             if 'Skill-mode' in task_instruction:
-                instruct_begin = task_instruction.replace('Skill-mode: ', "[SKILL_MODE]")
+                # instruct_begin = task_instruction.replace('Skill-mode: ', "[SKILL_MODE]")
+                instruct_begin = task_instruction.replace('Skill-mode: ', "")
             else:
-                instruct_begin = task_instruction.replace(f'<image-{num_view}>', f"<image-{num_view}>[TRAJ_MODE]")
+                # instruct_begin = task_instruction.replace(f'<image-{num_view}>', f"<image-{num_view}>[TRAJ_MODE]")
+                instruct_begin = task_instruction.replace(f'<image-{num_view}>', f"<image-{num_view}>")
 
+            # Extract just the raw text instruction (e.g., "put the pot on the stove") for repetition later
             traj_instruction = instruct_begin.split('<image-2>')[-1].split('<|im_end|>')[0].replace('Skill-mode: ', '')
             
+            # Extract the Ground Truth text responses (Assistant outputs) for each step
             list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
             num_steps = len(list_transformed_steps)
 
+            #########################################
+            # 4. Construct Multi-Turn Conversation History
+            # We build the prompt iteratively:
+            # Turn 0: System + User (Task) -> Assistant (Step 0)
+            # Turn 1: User (Image t=1 + Task Repetition) -> Assistant (Step 1)
+            # ...
             list_transformed_steps_added = [instruct_begin]
             for i, step_text in enumerate(list_transformed_steps):
-                # <|im_start|>assistant\n[TOOLS] turn on the hot plate<|im_end|> --> i = 0
-                # <|im_start|>user\n<image-3><image-4><|im_end|>\n --> i = 1
-                # <|im_start|>assistant\n[ACTIONS]<|im_end|>\n --> i = 1
-                # <|im_start|>user\n<image-5><image-6><|im_end|>\n --> i = 2
-                # <|im_start|>assistant\n[TOOLS] put the moka pot on the hot plate'<|im_end|>\n --> i = 2
+                # i = 0 represents the response to the initial instruction.
+                # i > 0 represents subsequent steps where we simulate a new "User" turn providing new observations.
 
-                # for first step: I1, I2, task description --> tools / actions
-                # for other step: I1, I2 --> tools / actions
                 added_item = ''
                 if i > 0:
-                    # add image
+                    # Construct intermediate User turn
+                    # Note: We hardcode image indices to 1 and 2 here. The model likely resets
+                    # positional embeddings or handles relative image indexing per turn.
                     if num_view == 2:
-                        # image_mid = f"<image-{2*i+1}><image-{2*i+2}>"
                         image_mid = f"<image-{1}><image-{2}>"
                     else:
-                        # image_mid = f"<image-{i+1}>"
                         image_mid = f"<image-{1}>"
+
+                    # The user "says" the new image and repeats the instruction to maintain context attention
                     image_prefix = f'<|im_start|>user\n{image_mid}{traj_instruction}<|im_end|>\n'
                 else:
-                    # only add text description
+                    # For the first step, the image/instruction is already in `instruct_begin`
                     image_prefix = ''
 
-                # add text description
+                # Add the Assistant's response (The step description/action)
                 added_item = f"{image_prefix}<|im_start|>assistant\n{step_text}<|im_end|>\n"
                 list_transformed_steps_added.append(added_item)
 
             concated_text = "".join(list_transformed_steps_added)
-            # Original text:    
-            # <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n
-            # <|im_start|>user\n<image-1><image-2>put the yellow and white mug in the microwave and close it<|im_end|>\n
-            # <|im_start|>assistant\n
 
+            #########################################
+            # 5. Extract Physical Actions/States
+            # We only keep state/action tensors for steps that actually involve physical movement.
+            # Steps marked with [TOOLS] or reasoning only (no [ACTIONS]) are skipped for regression loss.
             list_transformed_state = [list_step_transform[i]['state'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_state_mask = [list_step_transform[i]['state_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_action = [list_step_transform[i]['action'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
             list_transformed_action_mask = [list_step_transform[i]['action_mask'] for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
 
+            #########################################
+            # 6. Final Output Assembly
+            # Use the last transform dict as a template, but overwrite content with the aggregated sequences
             dict_output = list_step_transform[-1]
             
             dict_output['eagle_content']['image_inputs'] = agg_images
             dict_output['eagle_content']['text_list'] = [concated_text]
+            # Replace single-step tensors with lists of tensors for the whole sequence
             dict_output['state'] = list_transformed_state
             dict_output['state_mask'] = list_transformed_state_mask
             dict_output['action'] = list_transformed_action

@@ -155,7 +155,8 @@ def get_frames_by_timestamps(
                     break
         except:
             traceback.print_exc()
-            import pdb;pdb.set_trace()
+            raise ValueError(f"unable to load file {video_path} with {timestamps}")
+
         reader.container.close()
         reader = None
         frames = np.array(loaded_frames)

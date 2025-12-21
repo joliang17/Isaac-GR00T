@@ -237,7 +237,9 @@ class Gr00tPolicy(BasePolicy):
             del observations['video.wrist_image']
         normalized_input = self.apply_transforms(observations)
         
-        normalized_action, backbone_outputs, tools_output, _ = self._get_action_from_normalized_input(normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False, inside_tool=inside_tool, )
+        normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(
+            normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False,
+            inside_tool=inside_tool, )
         unnormalized_action = self._get_unnormalized_action(normalized_action, )
         if not is_batch:
             unnormalized_action = squeeze_dict_values(unnormalized_action)
