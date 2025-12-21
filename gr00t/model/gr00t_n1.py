@@ -24,10 +24,7 @@ from huggingface_hub.errors import HFValidationError, RepositoryNotFoundError
 from transformers import AutoConfig, AutoModel, PretrainedConfig, PreTrainedModel
 from transformers.feature_extraction_utils import BatchFeature
 
-from .action_head.flow_matching_action_head import (
-    FlowmatchingActionHead,
-    FlowmatchingActionHeadConfig,
-)
+from .action_head.flow_matching_action_head import (FlowmatchingActionHead, FlowmatchingActionHeadConfig, )
 from .backbone import EagleBackbone
 
 BACKBONE_FEATURE_KEY = "backbone_features"
@@ -52,7 +49,6 @@ class GR00T_N1_5_Config(PretrainedConfig):
 
     pred_nextstep: bool = field(default=True, metadata={"help": "Compute dtype."})
 
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         for key, value in kwargs.items():
@@ -70,11 +66,7 @@ class GR00T_N1_5(PreTrainedModel):
     we expect these to have type BatchFeature, and they can of course have many other user specified keys too
     """
 
-    def __init__(
-        self,
-        config: GR00T_N1_5_Config,
-        local_model_path: str,
-    ):
+    def __init__(self, config: GR00T_N1_5_Config, local_model_path: str, ):
         assert isinstance(config.backbone_cfg, dict)
         assert isinstance(config.action_head_cfg, dict)
 
@@ -88,7 +80,6 @@ class GR00T_N1_5(PreTrainedModel):
         self.action_dim = config.action_dim
         self.compute_dtype = config.compute_dtype
         self.tie_weights()
-
 
     def tie_weights(self):
         """
@@ -104,30 +95,21 @@ class GR00T_N1_5(PreTrainedModel):
     @property
     def _tied_weights_keys(self):
         # Group 1: The new special embeddings and their corresponding heads (Group A)
-        special_tied_group_A = [
-            'backbone.eagle_model.language_model.lm_head.special_head_A.weight',
-            'backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight',
-        ]
+        special_tied_group_A = ['backbone.eagle_model.language_model.lm_head.special_head_A.weight',
+            'backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight', ]
 
         # Group 2: The new special embeddings and their corresponding heads (Group B)
-        special_tied_group_B = [
-            'backbone.eagle_model.language_model.lm_head.special_head_B.weight',
-            'backbone.eagle_model.language_model.model.embed_tokens.special_embedding_B.weight',
-        ]
+        special_tied_group_B = ['backbone.eagle_model.language_model.lm_head.special_head_B.weight',
+            'backbone.eagle_model.language_model.model.embed_tokens.special_embedding_B.weight', ]
 
         # Group 3: The base model's embeddings and heads
-        base_tied_group = [
-            'backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight',
-            'backbone.eagle_model.language_model.lm_head.base_head.weight',
-        ]
-        
+        base_tied_group = ['backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight',
+            'backbone.eagle_model.language_model.lm_head.base_head.weight', ]
+
         # Flatten the list of lists into a single list of strings
-        all_tied_keys = list(itertools.chain.from_iterable([
-            special_tied_group_A, 
-            special_tied_group_B, 
-            base_tied_group
-        ]))
-        
+        all_tied_keys = list(
+            itertools.chain.from_iterable([special_tied_group_A, special_tied_group_B, base_tied_group]))
+
         return all_tied_keys
 
     def validate_inputs(self, inputs):
@@ -139,11 +121,8 @@ class GR00T_N1_5(PreTrainedModel):
         if "action" in inputs:
             action = inputs["action"]
             type_ok = isinstance(action, torch.Tensor)
-            shape_ok = (
-                len(action.shape) == 3
-                and action.shape[1] == self.action_horizon
-                and action.shape[2] == self.action_dim
-            )
+            shape_ok = (len(action.shape) == 3 and action.shape[1] == self.action_horizon and action.shape[
+                2] == self.action_dim)
             if not type_ok:
                 error_msg += f"\n{action.dtype=}"
                 detected_error = True
@@ -170,10 +149,7 @@ class GR00T_N1_5(PreTrainedModel):
             raise ValueError(error_msg)
 
     def validate_data(self, action_head_outputs, backbone_outputs, is_training):
-        fail_backbone = (
-            not isinstance(backbone_outputs, BatchFeature)
-            or BACKBONE_FEATURE_KEY not in backbone_outputs
-        )
+        fail_backbone = (not isinstance(backbone_outputs, BatchFeature) or BACKBONE_FEATURE_KEY not in backbone_outputs)
 
         if fail_backbone:
             error_msg = ERROR_MSG
@@ -182,16 +158,16 @@ class GR00T_N1_5(PreTrainedModel):
             error_msg += f"\n{backbone_outputs[BACKBONE_FEATURE_KEY].shape=}"
             raise ValueError(error_msg)
 
-        fail_action_head = (not isinstance(action_head_outputs, BatchFeature)) or not (
-            (
-                LOSS_KEY in action_head_outputs and is_training
-            )  # there might not be an action prediction during training
-            or (
-                ACTION_KEY in action_head_outputs
-                and action_head_outputs[ACTION_KEY].shape[1] == self.action_horizon
-                and action_head_outputs[ACTION_KEY].shape[2] == self.action_dim
-            )
-        )
+        fail_action_head = (not isinstance(action_head_outputs, BatchFeature)) or not ((
+                                                                                               LOSS_KEY in action_head_outputs and is_training)  # there might not be an action prediction during training
+                                                                                       or (
+                                                                                               ACTION_KEY in action_head_outputs and
+                                                                                               action_head_outputs[
+                                                                                                   ACTION_KEY].shape[
+                                                                                                   1] == self.action_horizon and
+                                                                                               action_head_outputs[
+                                                                                                   ACTION_KEY].shape[
+                                                                                                   2] == self.action_dim))
 
         if fail_action_head:
             error_msg = ERROR_MSG
@@ -202,11 +178,8 @@ class GR00T_N1_5(PreTrainedModel):
             error_msg += f"\n{self.action_dim=}"
             raise ValueError(error_msg)
 
-    def forward(
-        self,
-        inputs: dict,
-    ) -> BatchFeature:
-        
+    def forward(self, inputs: dict, ) -> BatchFeature:
+
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         backbone_outputs = self.backbone(backbone_inputs)
 
@@ -215,7 +188,7 @@ class GR00T_N1_5(PreTrainedModel):
             self.validate_data(action_head_outputs, backbone_outputs, is_training=True)
             action_head_outputs["action_head_skipped"] = False
         else:
-            output_dict = {"loss": torch.tensor(0.0, device=self.action_head.device),}
+            output_dict = {"loss": torch.tensor(0.0, device=self.action_head.device), }
             action_head_outputs = BatchFeature(data=output_dict)
             action_head_outputs["action_head_skipped"] = True
 
@@ -229,20 +202,11 @@ class GR00T_N1_5(PreTrainedModel):
         return action_head_outputs
 
     @torch.no_grad()
-    def get_action(
-        self,
-        inputs: dict,
-        past_key_values=None,
-        mode: str='baseline',
-        inside_tool: bool=False,
-        toolend_head: bool=False
-    ) -> BatchFeature:
+    def get_action(self, inputs: dict, past_key_values=None, mode: str = 'baseline', inside_tool: bool = False,
+            toolend_head: bool = False) -> BatchFeature:
         def create_empty_actions(backbone_inputs, batch_size):
-            zero_actions = torch.zeros(
-                (batch_size, self.action_horizon, self.action_dim),
-                dtype=self.action_head.dtype,
-                device=self.device,
-            )
+            zero_actions = torch.zeros((batch_size, self.action_horizon, self.action_dim), dtype=self.action_head.dtype,
+                device=self.device, )
             action_head_outputs = BatchFeature(data={ACTION_KEY: zero_actions})
             action_head_outputs['action_head_skipped'] = True
             return action_head_outputs
@@ -265,19 +229,23 @@ class GR00T_N1_5(PreTrainedModel):
             # print(decoded_text[0])
 
             # self.backbone.eagle_tokenizer.decode(backbone_inputs['eagle_input_ids'][0])
-            token_id, tools_output, backbone_outputs = self.backbone.generate(backbone_inputs, max_token=max_generation_steps, past_key_values=past_key_values, inside_tool=inside_tool, toolend_head=toolend_head,)
+            token_id, tools_output, backbone_outputs = self.backbone.generate(backbone_inputs,
+                                                                              max_token=max_generation_steps,
+                                                                              past_key_values=past_key_values,
+                                                                              inside_tool=inside_tool,
+                                                                              toolend_head=toolend_head, )
 
             past_key_values = backbone_outputs.get('past_key_values', None)
 
             if isinstance(token_id, torch.Tensor):
                 token_id = token_id.item()
-                        
+
             if token_id == self.backbone.actions_id:
                 # Step 2a: use the action head when the route token is [ACTIONS]
                 # tools_output = ''
                 action_head_outputs = self.action_head.get_action(backbone_outputs, action_inputs)
                 action_head_outputs['action_head_skipped'] = False
-                
+
             elif token_id == self.backbone.tools_id:
                 # Step 2b: keep generating tool tokens until we observe [EOT]
                 action_head_outputs = create_empty_actions(backbone_inputs, batch_size)
@@ -390,7 +358,7 @@ class GR00T_N1_5(PreTrainedModel):
             original, inputs, list_base = self.formulate_input_traj(inputs)
 
         self.validate_inputs(inputs)
-            
+
         backbone_inputs = self.backbone.prepare_input(inputs)
         action_inputs = self.action_head.prepare_input(inputs)
 
@@ -429,23 +397,18 @@ class GR00T_N1_5(PreTrainedModel):
         try:
             # NOTE(YL) This downloads the model to the local cache and returns the local path to the model
             # saved in ~/.cache/huggingface/hub/
-            local_model_path = snapshot_download(pretrained_model_name_or_path, repo_type="model")
-            # HFValidationError, RepositoryNotFoundError
+            local_model_path = snapshot_download(pretrained_model_name_or_path,
+                                                 repo_type="model")  # HFValidationError, RepositoryNotFoundError
         except (HFValidationError, RepositoryNotFoundError):
             print(
-                f"Model not found or avail in the huggingface hub. Loading from local path: {pretrained_model_name_or_path}"
-            )
+                f"Model not found or avail in the huggingface hub. Loading from local path: {pretrained_model_name_or_path}")
             local_model_path = pretrained_model_name_or_path
 
-        pretrained_model = super().from_pretrained(
-            local_model_path, local_model_path=local_model_path, **kwargs
-        )
-        pretrained_model.backbone.set_trainable_parameters(
-            tune_visual=tune_visual, tune_llm=tune_llm, tune_special_A=tune_special_A, tune_special_B=tune_special_B, tune_tool_end=tune_tool_end
-        )
-        pretrained_model.action_head.set_trainable_parameters(
-            tune_projector=tune_projector, tune_diffusion_model=tune_diffusion_model
-        )
+        pretrained_model = super().from_pretrained(local_model_path, local_model_path=local_model_path, **kwargs)
+        pretrained_model.backbone.set_trainable_parameters(tune_visual=tune_visual, tune_llm=tune_llm,
+            tune_special_A=tune_special_A, tune_special_B=tune_special_B, tune_tool_end=tune_tool_end)
+        pretrained_model.action_head.set_trainable_parameters(tune_projector=tune_projector,
+            tune_diffusion_model=tune_diffusion_model)
         return pretrained_model
 
 
