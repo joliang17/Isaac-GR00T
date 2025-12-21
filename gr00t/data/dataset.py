@@ -30,6 +30,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Sequence
 import re
+from math import isclose
+import torchvision
 import random
 import pickle
 import numpy as np
@@ -56,6 +58,61 @@ LE_ROBOT_TASKS_FILENAME = "meta/tasks.jsonl"
 LE_ROBOT_INFO_FILENAME = "meta/info.json"
 LE_ROBOT_STATS_FILENAME = "meta/stats.json"
 LE_ROBOT_DATA_FILENAME = "data/*/*.parquet"
+
+import traceback
+import torchvision
+
+
+def check_video_with_videoreader(
+    video_path: str,
+    *,
+    backend: str = "pyav",
+    verbose: bool = True,
+):
+    """
+    Fully decode an entire video using torchvision VideoReader (pyav backend)
+    to check whether it is broken.
+
+    Returns:
+        ok (bool), info (dict)
+    """
+    info = {
+        "video_path": video_path,
+        "frames_read": 0,
+        "last_loaded_pts": None,
+    }
+    reader = None
+
+    try:
+        torchvision.set_video_backend(backend)
+        reader = torchvision.io.VideoReader(video_path, "video")
+
+        for frame in reader:
+            # Force actual decode
+            _ = frame["data"].numpy()
+            info["last_loaded_pts"] = frame.get("pts", None)
+            info["frames_read"] += 1
+
+        if info["frames_read"] == 0:
+            info["error"] = "decoded 0 frames"
+            return False, info
+
+        return True, info
+
+    except Exception as e:
+        info["error"] = f"{type(e).__name__}: {e}"
+        if verbose:
+            print(f"[BROKEN VIDEO] {video_path}")
+            traceback.print_exc()
+        return False, info
+
+    finally:
+        # Critical: PyAV container must be closed safely
+        try:
+            if reader is not None and getattr(reader, "container", None) is not None:
+                reader.container.close()
+        except Exception:
+            pass
 
 
 def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
@@ -184,10 +241,21 @@ class LeRobotSingleDataset(Dataset):
         self.min_seq_len = min_seq_len
 
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
-        self._trajectory_ids, self._trajectory_lengths, self._trajectory_types = self._get_trajectories()
-        self._all_steps = self._get_all_steps()
         self._modality_keys = self._get_modality_keys()
         self._delta_indices = self._get_delta_indices()
+
+        # LeRobot-specific config
+        self._lerobot_modality_meta = self._get_lerobot_modality_meta()
+        self._lerobot_info_meta = self._get_lerobot_info_meta()
+        self._data_path_pattern = self._get_data_path_pattern()
+        self._video_path_pattern = self._get_video_path_pattern()
+        self._chunk_size = self._get_chunk_size()
+        self._tasks = self._get_tasks()
+        self.curr_traj_data = None
+        self.curr_traj_id = None
+
+        self._trajectory_ids, self._trajectory_lengths, self._trajectory_types = self._get_trajectories()
+        self._all_steps = self._get_all_steps()
 
         if self.windowing_mode == 'step':
             self._max_delta_index = self._get_max_delta_index()
@@ -207,16 +275,6 @@ class LeRobotSingleDataset(Dataset):
         self.set_epoch(0)
 
         print(f"Initialized dataset {self.dataset_name} with {embodiment_tag}")
-
-        # LeRobot-specific config
-        self._lerobot_modality_meta = self._get_lerobot_modality_meta()
-        self._lerobot_info_meta = self._get_lerobot_info_meta()
-        self._data_path_pattern = self._get_data_path_pattern()
-        self._video_path_pattern = self._get_video_path_pattern()
-        self._chunk_size = self._get_chunk_size()
-        self._tasks = self._get_tasks()
-        self.curr_traj_data = None
-        self.curr_traj_id = None
 
         if self.windowing_mode != 'step':
             self._window_steps = self._get_all_windows()
@@ -458,6 +516,18 @@ class LeRobotSingleDataset(Dataset):
         # DEBUG
         for episode in episode_metadata:
             trajectory_ids.append(episode["episode_index"])
+            video_path = str(self.get_video_path(episode["episode_index"], 'image'))
+            okay, msg = check_video_with_videoreader(video_path)
+            if not okay:
+                print(f"{video_path} broken")
+                continue
+
+            video_path = str(self.get_video_path(episode["episode_index"], 'wrist_image'))
+            okay, msg = check_video_with_videoreader(video_path)
+            if not okay:
+                print(f"{video_path} broken")
+                continue
+
             trajectory_lengths.append(episode["length"])
             if self.windowing_mode != 'step': 
                 # only for tool-usage experiments
@@ -811,9 +881,11 @@ class LeRobotSingleDataset(Dataset):
             # add end of the current instruction
             task_instruction += "<|im_end|>\n"
             if 'Skill-mode' in task_instruction:
-                instruct_begin = task_instruction.replace('Skill-mode: ', "[SKILL_MODE]")
+                # instruct_begin = task_instruction.replace('Skill-mode: ', "[SKILL_MODE]")
+                instruct_begin = task_instruction.replace('Skill-mode: ', "")
             else:
-                instruct_begin = task_instruction.replace(f'<image-{num_view}>', f"<image-{num_view}>[TRAJ_MODE]")
+                # instruct_begin = task_instruction.replace(f'<image-{num_view}>', f"<image-{num_view}>[TRAJ_MODE]")
+                instruct_begin = task_instruction.replace(f'<image-{num_view}>', f"<image-{num_view}>")
 
             traj_instruction = instruct_begin.split('<image-2>')[-1].split('<|im_end|>')[0].replace('Skill-mode: ', '')
             
