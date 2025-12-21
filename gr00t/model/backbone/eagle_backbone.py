@@ -271,13 +271,14 @@ class EagleBackbone(nn.Module):
         self.eagle_tokenizer = self.eagle_processor.tokenizer
 
         # MODIFIED: Partition special tokens into group A and B
-        list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]
-        # list_special.extend([f"[SKILL_{i}]" for i in range(1, 42)])
+        # list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]
+        list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", ]
         specials = {"additional_special_tokens": list_special}
 
-        list_special_A_names = set(["[ACTIONS]", "[TOOLS_END]", "[SKILL_MODE]"])
-        # list_special_B_names = set(["[TOOLS]", "[TRAJ_MODE]"] + [f"[SKILL_{i}]" for i in range(1, 42)])
-        list_special_B_names = set(["[TOOLS]", "[TRAJ_MODE]"])
+        # list_special_A_names = set(["[ACTIONS]", "[TOOLS_END]", "[SKILL_MODE]"])
+        # list_special_B_names = set(["[TOOLS]", "[TRAJ_MODE]"])
+        list_special_A_names = set(["[ACTIONS]", "[TOOLS_END]", ])
+        list_special_B_names = set(["[TOOLS]", ])
         
         existing = set(self.eagle_tokenizer.all_special_tokens)
         to_add = [t for t in specials["additional_special_tokens"] if t not in existing] 
