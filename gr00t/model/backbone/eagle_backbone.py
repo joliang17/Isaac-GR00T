@@ -833,7 +833,7 @@ class EagleBackbone(nn.Module):
                 - segments_mask (list[Tensor]): Corresponding masks.
                 - Indices (batch, start, end) for tracking where these segments came from.
         """
-        eagle_input = {k[6:]: v for k, v in vl_input.items() if k.startswith("eagle_") and k != "eagle_num_images"}
+        eagle_input = {k.removeprefix("eagle_"): v for k, v in vl_input.items() if k.startswith("eagle_") and k != "eagle_num_images"}
 
         input_ids = eagle_input["input_ids"]  # [B, T]
         attn_mask = eagle_input["attention_mask"]  # [B, T]

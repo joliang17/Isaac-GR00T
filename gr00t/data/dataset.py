@@ -471,19 +471,17 @@ class LeRobotSingleDataset(Dataset):
         trajectory_type = []
         # DEBUG
         for episode in episode_metadata:
-            trajectory_ids.append(episode["episode_index"])
             video_path = str(self.get_video_path(episode["episode_index"], 'image'))
             okay, msg = check_video_with_videoreader(video_path)
             if not okay:
-                print(f"{video_path} broken")
                 continue
 
             video_path = str(self.get_video_path(episode["episode_index"], 'wrist_image'))
             okay, msg = check_video_with_videoreader(video_path)
             if not okay:
-                print(f"{video_path} broken")
                 continue
 
+            trajectory_ids.append(episode["episode_index"])
             trajectory_lengths.append(episode["length"])
             if self.windowing_mode != 'step':
                 # only for tool-usage experiments
