@@ -27,11 +27,11 @@ base_dir="/fs/nexus-scratch/yliang17/Research/VLA/saved_folder/checkpoint"
 #     --num_trials_per_task 2 \
 #     --port 5555 \
 #     --headless True \
-#     --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_training/checkpoint-60000" \
+#     --model_path youliangtan/gr00t-n1.5-libero-long-posttrain \
 #     --embodiment_tag new_embodiment \
 #     --data_config libero_original \
 #     --denoising_steps 8
-#     --model_path youliangtan/gr00t-n1.5-libero-long-posttrain \
+    # --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_training/checkpoint-60000" \
 
 python3 libero_scripts/libero_eval_interleaved.py \
     --task_suite_name libero_10 \
@@ -39,8 +39,9 @@ python3 libero_scripts/libero_eval_interleaved.py \
     --num_trials_per_task 2 \
     --embodiment_tag new_embodiment \
     --data_config libero_traj_arms_2 \
-    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage3_frzembB_nextstep_actiononly_v1_5/checkpoint-50000" \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_onlyembA_nextstep_skip_action_v4/checkpoint-6000" \
     --model_name "stage3_frzembB_nextstep_actiononly_v1" \
     --denoising_steps 8 \
-    # --call_baseline
-
+    --call_baseline
+    # --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_training/checkpoint-60000" \
+    # --model_path nvidia/GR00T-N1.5-3B \
