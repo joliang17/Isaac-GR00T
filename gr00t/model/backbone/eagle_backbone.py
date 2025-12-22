@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import copy
 import pickle
 import torch
 from torch import nn
@@ -243,10 +244,14 @@ class EagleBackbone(nn.Module):
         # list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]
         # list_special_A_names = set(["[ACTIONS]", "[TOOLS_END]", "[SKILL_MODE]"])
         # list_special_B_names = set(["[TOOLS]", "[TRAJ_MODE]"])
-        list_special_A_names = set(["[ACTIONS]", "[TOOLS_END]", ])
+
         list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", ]
+        list_special_A_names = set(["[ACTIONS]", "[TOOLS_END]", ])
         list_special_B_names = set(["[TOOLS]", ])
 
+        # list_special = []
+        # list_special_A_names = []
+        # list_special_B_names = []
         specials = {"additional_special_tokens": list_special}
 
         existing = set(self.eagle_tokenizer.all_special_tokens)
@@ -1075,6 +1080,7 @@ class EagleBackbone(nn.Module):
         batch_size = input_ids.size(0)
         device = input_ids.device
         base_vocab_size = self.eagle_model.get_output_embeddings().base_head.out_features
+        router_cache = copy.deepcopy(past_key_values) if past_key_values is not None else None
 
         # --- 1. Define Valid Router Tokens ---
         # Constrain the first token to be a structural control token.
@@ -1088,7 +1094,7 @@ class EagleBackbone(nn.Module):
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         # --- 2. Phase 1: Router Generation (The First Token) ---
-        logits, eagle_embeds, eagle_masks, _, last_HS = self.forward_eagle(vl_input, past_key_values=past_key_values)
+        logits, eagle_embeds, eagle_masks, _, last_HS = self.forward_eagle(vl_input, past_key_values=router_cache)
 
         # Masking: Force the model to select one of the `allowed_ids`
         next_token_logits = logits[:, -1, :]
@@ -1135,7 +1141,8 @@ class EagleBackbone(nn.Module):
 
         # --- 3. Phase 2: Content Generation (Subsequent Tokens) ---
         for _ in range(max_token - 1):
-            logits, _, _, _, _ = self.forward_eagle(vl_input, past_key_values=past_key_values)
+            router_cache = copy.deepcopy(past_key_values) if past_key_values is not None else None
+            logits, _, _, _, _ = self.forward_eagle(vl_input, past_key_values=router_cache)
 
             # Select the most likely token from the *Base Vocabulary*.
             # We exclude special tokens here to prevent the model from hallucinating new control codes mid-sentence.
@@ -1160,7 +1167,9 @@ class EagleBackbone(nn.Module):
 
         # --- 4. Final Cleanup ---
         # Run one last forward pass to get final KV cache states if needed for downstream tasks
-        _, _, _, final_kv_cache, _ = self.forward_eagle(vl_input, past_key_values=past_key_values)
+        router_cache = copy.deepcopy(past_key_values) if past_key_values is not None else None
+            
+        _, _, _, final_kv_cache, _ = self.forward_eagle(vl_input, past_key_values=router_cache)
 
         backbone_outputs = BatchFeature({"backbone_features": eagle_embeds, "backbone_attention_mask": eagle_masks,
                                          "past_key_values": final_kv_cache, })

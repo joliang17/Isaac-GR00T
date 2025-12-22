@@ -21,6 +21,7 @@ import copy
 import pickle
 import numpy as np
 import torch
+import time
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import HFValidationError, RepositoryNotFoundError
 
@@ -48,6 +49,41 @@ def compare_dicts(d1, d2, atol=1e-6):
                 print(f"[{k}] value mismatch: {v1} vs {v2}")
         except Exception as e:
             print(f"[{k}] error comparing: {e}")
+
+
+def kv_seq_len(past_key_values):
+    if past_key_values is None:
+        return 0
+    # past_key_values[layer][0] = key
+    return past_key_values[0][0].shape[-2]
+
+
+def truncate_kv(past_key_values, keep_last_n):
+    """
+    Truncates a DynamicCache object to keep only the last N tokens.
+    Modifies the cache in-place.
+    """
+    # 1. Iterate over the layers
+    # DynamicCache stores data in lists: .key_cache and .value_cache
+    for layer_idx in range(len(past_key_values.key_cache)):
+        
+        # 2. Get the specific layer's key and value tensors
+        # Shape is usually [batch, num_heads, seq_len, head_dim]
+        k = past_key_values.key_cache[layer_idx]
+        v = past_key_values.value_cache[layer_idx]
+        
+        # 3. Slice along the sequence length dimension (dim=-2)
+        # We use -keep_last_n: to take the suffix
+        if k.shape[-2] > keep_last_n:
+            past_key_values.key_cache[layer_idx] = k[..., -keep_last_n:, :]
+            past_key_values.value_cache[layer_idx] = v[..., -keep_last_n:, :]
+
+    # 4. Critical: Update the internal token counter
+    # If we don't do this, the cache might think it has more tokens than it actually does.
+    if hasattr(past_key_values, "_seen_tokens"):
+        past_key_values._seen_tokens = past_key_values.get_seq_length()
+        
+    return past_key_values
 
 
 class BasePolicy(ABC):
@@ -131,8 +167,9 @@ class Gr00tPolicy(BasePolicy):
         self._load_model(model_path)
 
         # ADDED: Load transforms
-        self._load_metadata(self.model_path / "experiment_cfg")
-        # self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
+        # self._load_metadata(self.model_path / "experiment_cfg")
+        self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"))
+
         self._load_metadata(Path(
             "/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"),
                             base=True)
@@ -222,17 +259,20 @@ class Gr00tPolicy(BasePolicy):
         else:
             observations_bs = observations.copy()
 
-        # Apply transforms
-        if self.data_config == 'libero_traj_arms':
-            del observations['video.wrist_image']
-        normalized_input = self.apply_transforms(observations)
+        unnormalized_action = None
+        tools_output = ''
+        if not self.is_base:
+            # Apply transforms
+            if self.data_config == 'libero_traj_arms':
+                del observations['video.wrist_image']
+            normalized_input = self.apply_transforms(observations)
 
-        normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(
-            normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False,
-            inside_tool=inside_tool, )
-        unnormalized_action = self._get_unnormalized_action(normalized_action, )
-        if not is_batch:
-            unnormalized_action = squeeze_dict_values(unnormalized_action)
+            normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(
+                normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False,
+                inside_tool=inside_tool, )
+            unnormalized_action = self._get_unnormalized_action(normalized_action, )
+            if not is_batch:
+                unnormalized_action = squeeze_dict_values(unnormalized_action)
 
         unnormalized_action_bs = None
         if call_baseline:
@@ -249,6 +289,11 @@ class Gr00tPolicy(BasePolicy):
                 unnormalized_action_bs = squeeze_dict_values(unnormalized_action_bs)
 
         tools_output = tools_output.replace('<|im_end|>', '')
+        if past_key_values is not None:
+            history_length = past_key_values.get_seq_length()
+            if history_length > 4096:
+                # print(history_length)
+                past_key_values = truncate_kv(past_key_values, keep_last_n=4096)
         return unnormalized_action, tools_output, past_key_values, unnormalized_action_bs
 
     def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None,
@@ -355,16 +400,24 @@ class Gr00tPolicy(BasePolicy):
         model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=COMPUTE_DTYPE, )
         model.eval()  # Set model to eval mode
         model.to(device=self.device)  # type: ignore
-        weight_A = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
-        model.backbone.eagle_model.language_model.lm_head.special_head_A.weight = weight_A
 
-        weight_B = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_B.weight
-        model.backbone.eagle_model.language_model.lm_head.special_head_B.weight = weight_B
+        if hasattr(model.backbone.eagle_model.language_model.model.embed_tokens, 'special_embedding_A'):
+            weight_A = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_A.weight
+            model.backbone.eagle_model.language_model.lm_head.special_head_A.weight = weight_A
+
+            weight_B = model.backbone.eagle_model.language_model.model.embed_tokens.special_embedding_B.weight
+            model.backbone.eagle_model.language_model.lm_head.special_head_B.weight = weight_B
 
         model = check_horizon(model)
         self.model = model
 
-        if model_path != "youliangtan/gr00t-n1.5-libero-long-posttrain" and self.call_baseline:
+        # check whether model is base model:
+        if 'GR00T-N1.5-3B' in str(model_path) or 'gr00t-n1.5-libero-long-posttrain' in str(model_path):
+            self.is_base = True
+        else:
+            self.is_base = False
+
+        if not self.is_base and self.call_baseline:
             # load baseline model
             print(f"load libero baseline model")
             base_model = GR00T_N1_5.from_pretrained("youliangtan/gr00t-n1.5-libero-long-posttrain",
@@ -373,6 +426,8 @@ class Gr00tPolicy(BasePolicy):
             base_model.to(device=self.device)  # type: ignore
             base_model = check_horizon(base_model, base=True)
             self.base_model = base_model
+        else:
+            self.base_model = model
 
     def _load_metadata(self, exp_cfg_dir: Path, base: bool = False):
         """Load the transforms for the model."""
