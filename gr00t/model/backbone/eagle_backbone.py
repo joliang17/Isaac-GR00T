@@ -286,8 +286,9 @@ class EagleBackbone(nn.Module):
         # list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", "[SKILL_MODE]", "[TRAJ_MODE]"]
         # list_special_A_names = set(["[ACTIONS]", "[TOOLS_END]", "[SKILL_MODE]"])
         # list_special_B_names = set(["[TOOLS]", "[TRAJ_MODE]"])
-        list_special_A_names = set(["[ACTIONS]", "[TOOLS_END]", ])
+
         list_special = ["[ACTIONS]", "[TOOLS]", "[TOOLS_END]", ]
+        list_special_A_names = set(["[ACTIONS]", "[TOOLS_END]", ])
         list_special_B_names = set(["[TOOLS]", ])
 
         specials = {"additional_special_tokens": list_special}

@@ -192,7 +192,7 @@ def eval_libero(cfg) -> None:
                     f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
                 )
                 log_file.flush()
-                sys.exit(0)
+                # sys.exit(0)
 
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")

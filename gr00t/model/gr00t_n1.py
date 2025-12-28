@@ -96,10 +96,11 @@ class GR00T_N1_5(PreTrainedModel):
         """
         # Tie the base embeddings and heads
         # This is a standard practice in many transformer models
-        base_emb_weight = self.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
-        self.backbone.eagle_model.language_model.lm_head.base_head.weight = base_emb_weight
-        self.backbone.eagle_model.language_model.lm_head.weight = base_emb_weight
-        self.backbone.eagle_model.language_model.model.embed_tokens.weight = base_emb_weight
+        if hasattr(self.backbone.eagle_model.language_model.model.embed_tokens, 'base_embedding'):
+            base_emb_weight = self.backbone.eagle_model.language_model.model.embed_tokens.base_embedding.weight
+            self.backbone.eagle_model.language_model.lm_head.base_head.weight = base_emb_weight
+            self.backbone.eagle_model.language_model.lm_head.weight = base_emb_weight
+            self.backbone.eagle_model.language_model.model.embed_tokens.weight = base_emb_weight
 
     @property
     def _tied_weights_keys(self):
