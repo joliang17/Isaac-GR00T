@@ -742,8 +742,7 @@ class EagleBackbone(nn.Module):
                 labels_AB = shift_labels[special_mask_AB]
                 target_positions_AB = (labels_AB - base_vocab_size).long()
 
-                special_loss_AB = F.cross_entropy(special_logits_AB[special_mask_AB], target_positions_AB,
-                                                  reduction="none")
+                special_loss_AB = F.cross_entropy(special_logits_AB[special_mask_AB], target_positions_AB, reduction="none")
                 per_token_loss[special_mask_AB] = special_loss_AB.to(dtype=per_token_loss.dtype)
 
             #######################

@@ -96,10 +96,10 @@ def check_video_with_videoreader(
         return True, info
 
     except Exception as e:
-        info["error"] = f"{type(e).__name__}: {e}"
+        # info["error"] = f"{type(e).__name__}: {e}"
         if verbose:
             print(f"[BROKEN VIDEO] {video_path}")
-            traceback.print_exc()
+            # traceback.print_exc()
         return False, info
 
     finally:
@@ -531,7 +531,7 @@ class LeRobotSingleDataset(Dataset):
         all_windows: list[list[tuple[int, int]]] = []
         skill_cnt = 0
         traj_cnt = 0
-
+        
         # Track stats for tool ends
         tool_end_window_count = 0
 
@@ -1375,12 +1375,17 @@ class LeRobotMixtureDataset(Dataset):
         # 3. Trajectory sampling weights
         self._trajectory_sampling_weights: list[np.ndarray] = []
         for dataset in self.datasets:
-            trajectory_sampling_weights = np.ones(len(dataset.trajectory_lengths))
-            if self.balance_trajectory_weights:
-                trajectory_sampling_weights *= dataset.trajectory_lengths
-            trajectory_sampling_weights /= trajectory_sampling_weights.sum()
-            self._trajectory_sampling_weights.append(trajectory_sampling_weights)
-
+            if dataset.windowing_mode == 'step':
+                trajectory_sampling_weights = np.ones(len(dataset.trajectory_lengths))
+                if self.balance_trajectory_weights:
+                    trajectory_sampling_weights *= dataset.trajectory_lengths
+                trajectory_sampling_weights /= trajectory_sampling_weights.sum()
+                self._trajectory_sampling_weights.append(trajectory_sampling_weights)
+            else:
+                trajectory_sampling_weights = np.ones(len(dataset._window_steps))
+                trajectory_sampling_weights /= trajectory_sampling_weights.sum()
+                self._trajectory_sampling_weights.append(trajectory_sampling_weights)
+            
         # 4. Primary dataset indices
         self._primary_dataset_indices = np.array(dataset_sampling_weights) == 1.0
         if not np.any(self._primary_dataset_indices):
@@ -1438,25 +1443,132 @@ class LeRobotMixtureDataset(Dataset):
         dataset_index = rng.choice(len(self.datasets), p=self.dataset_sampling_weights)
         dataset = self.datasets[dataset_index]
 
-        # Sample trajectory
-        trajectory_index = rng.choice(len(dataset.trajectory_ids), p=self.trajectory_sampling_weights[dataset_index])
-        trajectory_id = dataset.trajectory_ids[trajectory_index]
+        if dataset.windowing_mode == 'step':
+            # Sample trajectory
+            trajectory_index = rng.choice(len(dataset.trajectory_ids), p=self.trajectory_sampling_weights[dataset_index])
+            trajectory_id = dataset.trajectory_ids[trajectory_index]
 
-        # Sample step
-        base_index = rng.choice(dataset.trajectory_lengths[trajectory_index])
-        return dataset, trajectory_id, base_index
+            # Sample step
+            base_index = rng.choice(dataset.trajectory_lengths[trajectory_index])
+            return dataset, trajectory_id, base_index
+        else:
+            window_ids = rng.choice(len(dataset._window_steps), p=self.trajectory_sampling_weights[dataset_index])
+
+            return dataset, window_ids, None
 
     def __getitem__(self, index: int) -> dict:
-        """Get the data for a single trajectory and start index.
-
-        Args:
-            index (int): The index of the trajectory to get.
-
-        Returns:
-            dict: The data for the trajectory and start index.
         """
-        dataset, trajectory_name, step = self.sample_step(index)
-        return dataset.transforms(dataset.get_step_data(trajectory_name, step))
+        Get the data for a single trajectory (or window of steps) and start index.
+        """
+        # Retrieve the specific dataset and indices from the sampler
+        # ids: trajectory_id (if step) OR window_index (if trajectory)
+        # base_index: step index (if step) OR None (if trajectory)
+        dataset, ids, base_index = self.sample_step(index)
+
+        if dataset.windowing_mode == 'step':
+            #########################################
+            # Legacy / Single Step Mode
+            #########################################
+            return dataset.transforms(dataset.get_step_data(ids, base_index))
+
+        else:
+            #########################################
+            # Trajectory / Sequence Training
+            #########################################
+            
+            # 1. Retrieve raw data for all steps in this window using the sampled index (ids)
+            list_steps = dataset._window_steps[ids]
+            
+            # Note: We use 'dataset.get_step_data' and 'dataset.transforms'
+            list_step_data = [dataset.get_step_data(item[0], item[1]) for item in list_steps]
+            list_step_transform = [dataset.transforms(item) for item in list_step_data]
+
+            #########################################
+            # 2. Image Aggregation
+            #########################################
+            agg_images = []
+            for t in list_step_transform:
+                imgs = t['eagle_content']['image_inputs']
+                agg_images.extend(imgs)
+
+            #########################################
+            # 3. Prompt Engineering (ChatML Format)
+            #########################################
+            task_instruction_postfix = "<|im_end|>\n<|im_start|>assistant\n"
+            task_instruction = list_step_transform[0]['eagle_content']['text_list'][0].replace(task_instruction_postfix, '')
+
+            # Text Cleaning
+            new_text = re.sub(r'\bSCENE\d+\b\s*', '', task_instruction)
+            if new_text != task_instruction:
+                task_instruction = new_text
+
+            # Detect View Mode
+            if '<image-2>' in task_instruction:
+                num_view = 2
+            else:
+                num_view = 1
+
+            # Append ending and Mode Tokens
+            task_instruction += "<|im_end|>\n"
+            if 'Skill-mode' in task_instruction:
+                instruct_begin = task_instruction.replace('Skill-mode: ', "")
+            else:
+                instruct_begin = task_instruction.replace(f'<image-{num_view}>', f"<image-{num_view}>")
+
+            # Extract raw instruction for repetition
+            traj_instruction = instruct_begin.split('<image-2>')[-1].split('<|im_end|>')[0].replace('Skill-mode: ', '')
+
+            # Extract Ground Truth responses
+            list_transformed_steps = [item['eagle_content']['step_annotation'][0] for item in list_step_transform]
+            
+            #########################################
+            # 4. Construct Multi-Turn Conversation History
+            #########################################
+            list_transformed_steps_added = [instruct_begin]
+
+            for i, step_text in enumerate(list_transformed_steps):
+                if i > 0:
+                    # Construct intermediate User turn with image tokens
+                    if num_view == 2:
+                        image_mid = f"<image-{1}><image-{2}>"
+                    else:
+                        image_mid = f"<image-{1}>"
+
+                    image_prefix = f'<|im_start|>user\n{image_mid}{traj_instruction}<|im_end|>\n'
+                else:
+                    image_prefix = ''
+
+                # Add Assistant response
+                added_item = f"{image_prefix}<|im_start|>assistant\n{step_text}<|im_end|>\n"
+                list_transformed_steps_added.append(added_item)
+
+            concated_text = "".join(list_transformed_steps_added)
+
+            #########################################
+            # 5. Extract Physical Actions/States
+            #########################################
+            # Filter for steps that contain actual actions
+            valid_indices = [i for i, item in enumerate(list_transformed_steps) if '[ACTIONS]' in item]
+            
+            list_transformed_state = [list_step_transform[i]['state'] for i in valid_indices]
+            list_transformed_state_mask = [list_step_transform[i]['state_mask'] for i in valid_indices]
+            list_transformed_action = [list_step_transform[i]['action'] for i in valid_indices]
+            list_transformed_action_mask = [list_step_transform[i]['action_mask'] for i in valid_indices]
+
+            #########################################
+            # 6. Final Output Assembly
+            #########################################
+            dict_output = list_step_transform[-1]
+
+            dict_output['eagle_content']['image_inputs'] = agg_images
+            dict_output['eagle_content']['text_list'] = [concated_text]
+            
+            # Replace single-step tensors with lists of tensors
+            dict_output['state'] = list_transformed_state
+            dict_output['state_mask'] = list_transformed_state_mask
+            dict_output['action'] = list_transformed_action
+            dict_output['action_mask'] = list_transformed_action_mask
+            return dict_output
 
     def __len__(self) -> int:
         """Get the length of a single epoch in the mixture.

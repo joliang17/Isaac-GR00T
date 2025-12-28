@@ -51,14 +51,14 @@ class ArgsConfig:
     dataset_path: List[str]
     """Path to the dataset directory or directories"""
 
+    data_config: Literal[tuple(DATA_CONFIG_MAP.keys())] = "franka_arms_only"
+    """Data configuration name from DATA_CONFIG_MAP, we assume all datasets have the same data config"""
+
     output_dir: str = "gr00t_model"
     """Directory to save model checkpoints."""
 
     run_name: str = "vla_tooluse"
     """Directory to save model checkpoints."""
-
-    data_config: Literal[tuple(DATA_CONFIG_MAP.keys())] = "franka_arms_only"
-    """Data configuration name from DATA_CONFIG_MAP, we assume all datasets have the same data config"""
 
     # Training parameters
     batch_size: int = 32
@@ -221,7 +221,6 @@ def main(config: ArgsConfig):
     data_config_cls = DATA_CONFIG_MAP[config.data_config]
     modality_configs = data_config_cls.modality_config()
     transforms = data_config_cls.transform()
-
     # 1.2 data loader: we will use either single dataset or mixture dataset
     if len(config.dataset_path) == 1:
         train_dataset = LeRobotSingleDataset(dataset_path=config.dataset_path[0], modality_configs=modality_configs,
@@ -254,7 +253,7 @@ def main(config: ArgsConfig):
 
     if config.do_eval:
         eval_sanity_set = Subset(train_dataset, indices=range(20))
-        import pdb;
+        import pdb
         pdb.set_trace()
     else:
         eval_sanity_set = None
