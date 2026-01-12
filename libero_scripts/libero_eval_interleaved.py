@@ -64,6 +64,42 @@ os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
 
 
 def eval_libero(cfg) -> None:
+
+    def call_tool(obs, tools_instruct: str, call_baseline: bool=False):
+        inside_tools = True
+        # for step t, regenerate the action with the new instructions
+        obs_dict_base = process_observation(obs, tools_instruct, headless=cfg.headless)
+        # obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
+        obs_dict_tools = process_observation(obs, "[INFER]" + tools_instruct, headless=cfg.headless)
+        # obs_dict = process_observation(obs, "[INFER]" + '[INFER_CNT]' + tools_output, headless=cfg.headless)
+        # obs_dict_tools = process_observation(obs, "[INFER]" + '[SKILL_MODE]' + tools_instruct, headless=cfg.headless)
+
+        action_chunk_our, cur_tools_output, _, action_chunk_bs = gr00t_policy.get_action(
+            obs_dict_tools, observations_base=obs_dict_base, 
+            mode='interleaved', call_baseline=call_baseline, inside_tool=True)
+
+        if cur_tools_output == '[TOOLS_END]':
+            # skill finished, no action is needed at the current step
+            inside_tools = False
+            no_action = True
+            print(f"Tool ended! Back to trajectory")
+        else:
+            # action tokens are generated
+            final_action = reformat_action(action_chunk_bs, action_chunk_our, call_baseline=call_baseline)
+            no_action = False
+
+        return action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools
+
+    def reformat_action(action_chunk_bs, action_chunk_our, call_baseline: bool=False):
+        if call_baseline:
+            action_chunk = action_chunk_bs
+        else:
+            action_chunk = action_chunk_our
+        
+        # action tokens are generated
+        final_action = convert_to_libero_action(action_chunk, action_keys)
+        return final_action
+
     call_baseline = cfg.call_baseline 
     
     # Initialize LIBERO task suite
@@ -144,6 +180,7 @@ def eval_libero(cfg) -> None:
             inside_tools = False
             task_instruction = ""
             current_tool_instruction = ""
+            tools_output = ""
             traj_img_count = 0
             tool_img_count = 0
             no_action = False
@@ -186,67 +223,24 @@ def eval_libero(cfg) -> None:
                             obs_dict, observations_base=obs_dict_base, img_count=traj_img_count,
                             past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
 
+                        import pdb;pdb.set_trace()
                         if tools_output != '' and tools_output != '[ACTIONS]':
-                            tools_output = tools_output.replace('[TOOLS]', '')
-                            print(f"Call Tools: {tools_output}")
                             # generated skill instructions
                             # start a new inference session, generate actions to achieve the tools, until finish
+                            no_action = True
                             inside_tools = True
-                            past_key_values_tools = None
-                            # for step t, regenerate the action with the new instructions
-                            # obs_dict_tools = process_observation(obs, "[INFER]" + '[SKILL_MODE]' + tools_output,
-                            #                                      headless=cfg.headless)
-                            obs_dict_base = process_observation(obs, tools_output, headless=cfg.headless)
-                            # obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
-                            obs_dict_tools = process_observation(obs, "[INFER]" + tools_output,
-                                                                 headless=cfg.headless)
+                            tools_output = tools_output.replace('[TOOLS]', '')
+                            print(f"Call Tools: {tools_output}")
 
-                            action_chunk_our, invalid_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(
-                                obs_dict_tools, observations_base=obs_dict_base, past_key_values=None,
-                                mode='interleaved', call_baseline=call_baseline, inside_tool=True)
-                            
-                        if call_baseline:
-                            action_chunk = action_chunk_bs
-                        else:
-                            action_chunk = action_chunk_our
-
-                        # generate action_tokens for execution
-                        action = convert_to_libero_action(action_chunk, action_keys)
-                        no_action = False
+                            # action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, call_baseline=call_baseline)
                     else:
                         # inside tools
                         # skill instruction is already included in past_key_values_traj
-                        
-                        # obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
-                        obs_dict_base = process_observation(obs, tools_output, headless=cfg.headless)
-                        # obs_dict = process_observation(obs, "[INFER]" + '[SKILL_MODE]' + tools_output,
-                        #                                headless=cfg.headless)
-                        obs_dict = process_observation(obs, "[INFER]" + '[INFER_CNT]' + tools_output, headless=cfg.headless)
-
-                        # past_key_values=past_key_values_tools,
-                        action_chunk_our, cur_tools_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(
-                            obs_dict, observations_base=obs_dict_base, past_key_values=None,
-                            mode='interleaved', inside_tool=True, call_baseline=call_baseline, )
-
-                        if call_baseline:
-                            action_chunk = action_chunk_bs
-                        else:
-                            action_chunk = action_chunk_our
-
-                        if cur_tools_output == '[TOOLS_END]':
-                            # skill finished, no action is needed at the current step
-                            inside_tools = False
-                            print(f"Tool ended! Back to trajectory")
-                            no_action = True
-                            continue
-                        else:
-                            # action tokens are generated
-                            action = convert_to_libero_action(action_chunk, action_keys)
-                            no_action = False
+                        action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, call_baseline=call_baseline)
 
                     if not no_action:
                         # Execute action in environment
-                        obs, reward, done, info = env.step(action.tolist())
+                        obs, reward, done, info = env.step(final_action.tolist())
                         if done:
                             task_successes += 1
                             total_successes += 1
