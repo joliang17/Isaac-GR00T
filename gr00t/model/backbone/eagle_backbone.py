@@ -21,6 +21,7 @@ from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoConfig, AutoModel, AutoTokenizer, AutoProcessor
 from transformers.feature_extraction_utils import BatchFeature
 import re
+import copy
 
 import gr00t
 
@@ -1114,13 +1115,20 @@ class EagleBackbone(nn.Module):
            - TOOL: Generate full text explanation.
            - ACTION: Return hidden states for policy head.
         """
-        def generate_text_kvcache(input_ids, attention_mask, token_to_append):
-            generation_inputs = {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "past_key_values": past_key_values,
-                "use_cache": True
-            }
+        def generate_text_kvcache(input_ids, attention_mask, token_to_append, ):
+            gene_cache = copy.deepcopy(past_key_values) if past_key_values is not None else None
+            past_kv_len = gene_cache.get_seq_length() if gene_cache is not None else 0
+            current_input_len = input_ids.shape[1]
+            total_len = current_input_len + past_kv_len
+            full_mask = torch.ones((input_ids.shape[0], total_len), device=input_ids.device)
+
+            # Create positions: [553, 554, ..., 1094]
+            cache_position = torch.arange(past_kv_len, past_kv_len + current_input_len, device=input_ids.device)
+
+            # generation_inputs = {"input_ids": input_ids, "attention_mask": attention_mask, "past_key_values": gene_cache, "use_cache": True}
+            # Manually create the full mask of 1s
+            # generation_inputs = {"input_ids": input_ids, "cache_position": cache_position, "past_key_values": gene_cache, "use_cache": True}
+            generation_inputs = {"input_ids": input_ids, "use_cache": True}
             
             if "eagle_pixel_values" in vl_input and vl_input["eagle_pixel_values"] is not None:
                 generation_inputs["pixel_values"] = vl_input["eagle_pixel_values"]
@@ -1129,15 +1137,9 @@ class EagleBackbone(nn.Module):
             
             # 2. Run Generation
             # return_dict_in_generate=True is REQUIRED to get the new past_key_values back
-            gen_output = self.eagle_model.generate(
-                **generation_inputs,
-                max_new_tokens=max_token-1,
-                pad_token_id=self.pad_id,
-                eos_token_id=self.end_id,
-                do_sample=False, 
-                return_dict_in_generate=True,
-                output_hidden_states=True,
-            )
+            # generation_inputs['input_ids'].shape
+            # import pdb;pdb.set_trace()
+            gen_output = self.eagle_model.generate(**generation_inputs, max_new_tokens=max_token-1, pad_token_id=self.pad_id, eos_token_id=self.end_id, do_sample=False,  return_dict_in_generate=True, output_hidden_states=True, )
             
             # 3. Package Outputs
             full_ids = gen_output.sequences
@@ -1159,6 +1161,7 @@ class EagleBackbone(nn.Module):
         attention_mask = vl_input["eagle_attention_mask"]
         batch_size = input_ids.size(0)
         device = input_ids.device
+        router_cache = copy.deepcopy(past_key_values) if past_key_values is not None else None
 
         if inside_tool:
             allowed_ids = torch.tensor(
@@ -1173,7 +1176,7 @@ class EagleBackbone(nn.Module):
         
         # 1. Forward Pass (Single Step)
         # We use your custom forward to get logits AND hidden states
-        logits, eagle_embeds, eagle_masks, _, last_HS = self.forward_eagle(vl_input, past_key_values=past_key_values)
+        logits, eagle_embeds, eagle_masks, _, last_HS = self.forward_eagle(vl_input, past_key_values=router_cache)
 
         # 2. Masking (Force selection of Action, Tool, or End)
         next_token_logits = logits[:, -1, :]
@@ -1249,7 +1252,6 @@ class EagleBackbone(nn.Module):
             "backbone_attention_mask":   eagle_masks,
             "past_key_values": final_kv_cache,
         })
-
         return router_token_id.unsqueeze(1), decoded_text, backbone_outputs
 
 

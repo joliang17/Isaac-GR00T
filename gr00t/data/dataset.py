@@ -183,7 +183,8 @@ class LeRobotSingleDataset(Dataset):
         toolend_upsample_ratio: float = 1.0,
         min_seq_len: int = 1,
         windowing_mode: str = 'sliding_prefix',
-        skill_level: str = 'window'
+        skill_level: str = 'window',
+        frame_type: str = 'normal',
     ):
         """
         Initialize the dataset.
@@ -236,6 +237,7 @@ class LeRobotSingleDataset(Dataset):
         # "block_prefix": Produces 1-2...1-10, 11-12... (Expands prefixes, then jumps to next block).
         # "sliding_prefix": Produces 1-2...1-10, 2-3... (Expands prefixes, slides by 1).
 
+        self.frame_type = frame_type
         self.windowing_mode = windowing_mode
         self.skill_level = skill_level
         self.min_seq_len = min_seq_len
@@ -620,30 +622,40 @@ class LeRobotSingleDataset(Dataset):
             tool_end_indices = set()
 
             # Only fetch text if needed for Action DS or Tool Upsampling
-            need_text = (ttype == 0 and action_ratio < 1.0) or (toolend_ratio > 1.0)
+            need_text = (ttype == 0 and action_ratio < 1.0) or (toolend_ratio > 1.0) or self.frame_type == 'key'
             
             if need_text:
                 step_descs = [self.get_step_data(tid, idx)['annotation.step_description'] for idx in range(T)]
-                if ttype == 0 and action_ratio < 1.0:
-                    list_act = []
-                    for idx, desc in enumerate(step_descs):
-                        if isinstance(desc, list) and len(desc) == 1:
-                            desc = desc[0]
+
+                list_act = []
+                list_key = []
+                for idx, desc in enumerate(step_descs):
+                    if isinstance(desc, list) and len(desc) == 1:
+                        desc = desc[0]
+
+                    if ttype == 0 and action_ratio < 1.0:
+                        # downsample the modification action steps
                         list_act.append((idx, 1 if '[ACTIONS]' in desc else 0))
 
+                    # Logic: Identify indices where tool use ends for later upsampling
+                    if toolend_ratio > 1.0:
+                        if '[TOOLS_END]' in desc:
+                            tool_end_indices.add(idx)
+                    
+                    # if self.frame_type == 'key':
+                    #     # for trajectory level data (ttype==0): only save key frame in trajectory
+                    #     # ony save steps if prefix is not [ACTIONS] (or mid step of [ACTIONS])
+                    #     # for skill level data (ttype==1): step only?
+                    #     if 'TOOLS' in desc:
+                    #         list_key.append(idx, )
+                    #     pass
+
+                if len(list_act) > 0:
                     action_steps = [x[0] for x in list_act if x[1] == 1]
                     other_steps = [x[0] for x in list_act if x[1] == 0]
                     n_keep = int(len(action_steps) * action_ratio)
                     random.shuffle(action_steps)
                     available_indices = sorted(other_steps + action_steps[:n_keep])
-
-                # Logic: Identify indices where tool use ends for later upsampling
-                if toolend_ratio > 1.0:
-                    for idx, desc in enumerate(step_descs):
-                        if isinstance(desc, list) and len(desc) == 1:
-                            desc = desc[0]
-                        if '[TOOLS_END]' in desc:
-                            tool_end_indices.add(idx)
 
             n_available = len(available_indices)
             if n_available < min_seq_len: continue

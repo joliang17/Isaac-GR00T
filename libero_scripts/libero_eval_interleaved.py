@@ -83,6 +83,20 @@ def eval_libero(cfg) -> None:
     modality_transform_base = data_config_base.transform()
     action_keys = ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
 
+    # gr00t_policy = GR00TPolicy(host="localhost", port=cfg.port, headless=cfg.headless)
+    gr00t_policy = Gr00tPolicy(
+        model_path=cfg.model_path,
+        modality_config=modality_config,
+        modality_transform=modality_transform,
+        modality_config_base=modality_config_base,
+        modality_transform_base=modality_transform_base,
+        embodiment_tag=cfg.embodiment_tag,
+        denoising_steps=cfg.denoising_steps,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        data_config=cfg.data_config, 
+        call_baseline=call_baseline,
+    )
+
     # Start evaluation
     total_episodes, total_successes = 0, 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
@@ -94,20 +108,6 @@ def eval_libero(cfg) -> None:
 
         # Initialize LIBERO environment and task description
         env, task_description = get_libero_env(task, resolution=256)
-
-        # gr00t_policy = GR00TPolicy(host="localhost", port=cfg.port, headless=cfg.headless)
-        gr00t_policy = Gr00tPolicy(
-            model_path=cfg.model_path,
-            modality_config=modality_config,
-            modality_transform=modality_transform,
-            modality_config_base=modality_config_base,
-            modality_transform_base=modality_transform_base,
-            embodiment_tag=cfg.embodiment_tag,
-            denoising_steps=cfg.denoising_steps,
-            device="cuda" if torch.cuda.is_available() else "cpu",
-            data_config=cfg.data_config, 
-            call_baseline=call_baseline,
-        )
 
         # Start episodes
         task_episodes, task_successes = 0, 0
@@ -179,8 +179,8 @@ def eval_libero(cfg) -> None:
                         traj_img_count += 1
                         # task instruction is already included in past_key_values_traj
                         # [INFER]: refers to our vla: add to step annotation
-                        obs_dict = process_observation(obs, "[INFER]" + cur_instr, headless=cfg.headless)
                         obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
+                        obs_dict = process_observation(obs, "[INFER]" + cur_instr, headless=cfg.headless)
 
                         action_chunk_our, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(
                             obs_dict, observations_base=obs_dict_base, img_count=traj_img_count,
@@ -196,12 +196,13 @@ def eval_libero(cfg) -> None:
                             # for step t, regenerate the action with the new instructions
                             # obs_dict_tools = process_observation(obs, "[INFER]" + '[SKILL_MODE]' + tools_output,
                             #                                      headless=cfg.headless)
+                            obs_dict_base = process_observation(obs, tools_output, headless=cfg.headless)
+                            # obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
                             obs_dict_tools = process_observation(obs, "[INFER]" + tools_output,
                                                                  headless=cfg.headless)
-                            obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
 
                             action_chunk_our, invalid_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(
-                                obs_dict_tools, observations_base=obs_dict_base, past_key_values=past_key_values_tools,
+                                obs_dict_tools, observations_base=obs_dict_base, past_key_values=None,
                                 mode='interleaved', call_baseline=call_baseline, inside_tool=True)
                             
                         if call_baseline:
@@ -215,14 +216,18 @@ def eval_libero(cfg) -> None:
                     else:
                         # inside tools
                         # skill instruction is already included in past_key_values_traj
+                        
+                        # obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
+                        obs_dict_base = process_observation(obs, tools_output, headless=cfg.headless)
                         # obs_dict = process_observation(obs, "[INFER]" + '[SKILL_MODE]' + tools_output,
                         #                                headless=cfg.headless)
                         obs_dict = process_observation(obs, "[INFER]" + '[INFER_CNT]' + tools_output, headless=cfg.headless)
-                        obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
 
+                        # past_key_values=past_key_values_tools,
                         action_chunk_our, cur_tools_output, past_key_values_tools, action_chunk_bs = gr00t_policy.get_action(
-                            obs_dict, observations_base=obs_dict_base, past_key_values=past_key_values_tools,
+                            obs_dict, observations_base=obs_dict_base, past_key_values=None,
                             mode='interleaved', inside_tool=True, call_baseline=call_baseline, )
+
                         if call_baseline:
                             action_chunk = action_chunk_bs
                         else:
@@ -273,7 +278,7 @@ def eval_libero(cfg) -> None:
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
             )
             log_file.flush()
-            # sys.exit(0)
+            sys.exit(0)
 
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")

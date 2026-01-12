@@ -260,6 +260,7 @@ class GR00T_N1_5(PreTrainedModel):
             action_head_outputs['action_head_skipped'] = False
             past_key_values = None
         else:
+            # import pdb;pdb.set_trace()
             # DEBUG: generate text first to see what is the output
             # self.backbone.eagle_tokenizer.decode(backbone_inputs['eagle_input_ids'][0])
             # output_ids, decoded_text = self.backbone.generate_entire_text(backbone_inputs, max_new_tokens=max_generation_steps, )
