@@ -596,124 +596,137 @@ class LeRobotSingleDataset(Dataset):
 
             if T <= 0: continue
 
-            if self.skill_level == 'step':
-                #########################################
-                # BRANCH A: SKILL DATA (ttype == 1)
-                # Logic: Extract step-wise data (only 1 step per window)
-                 #########################################
-                if ttype == 1:
-                    for idx in range(T):
-                        # Create a window with a single step
-                        all_windows.append([(tid, idx)])
-                        
-                        if max_windows is not None and len(all_windows) >= max_windows:
-                            self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
-                            return all_windows
-                    continue
-
-            #########################################
-            # BRANCH B: TRAJECTORY DATA (ttype == 0)
-            # Logic: Complex windowing (Fixed/Block/Sliding + Action DS + Tool Upsample)
-            #########################################
-            
-            #########################################
-            # --- 2. Step Filtering (Action Downsampling) ---
             available_indices = list(range(T))
             tool_end_indices = set()
-
             # Only fetch text if needed for Action DS or Tool Upsampling
             need_text = (ttype == 0 and action_ratio < 1.0) or (toolend_ratio > 1.0) or self.frame_type == 'key'
-            
+
+            step_descs = []
             if need_text:
                 step_descs = [self.get_step_data(tid, idx)['annotation.step_description'] for idx in range(T)]
 
-                list_act = []
-                list_key = []
-                for idx, desc in enumerate(step_descs):
-                    if isinstance(desc, list) and len(desc) == 1:
-                        desc = desc[0]
+            if self.skill_level == 'step' and ttype == 1:
+                #########################################
+                # BRANCH A: SKILL DATA (ttype == 1)
+                # Logic: Extract step-wise data (only 1 step per window)
+                #########################################
+                for idx in range(T):
+                    if len(step_descs) > 0:
+                        desc = step_descs[idx]
+                        if isinstance(desc, list) and len(desc) == 1:
+                            desc = desc[0]
+                        
+                        # Logic: Identify indices where tool use ends for later upsampling
+                        if toolend_ratio > 1.0 and '[TOOLS_END]' in desc:
+                            repeats = int(toolend_ratio) - 1
+                            tool_end_window_count += 1
 
-                    if ttype == 0 and action_ratio < 1.0:
-                        # downsample the modification action steps
-                        list_act.append((idx, 1 if '[ACTIONS]' in desc else 0))
+                            for _ in range(repeats):
+                                all_windows.append([(tid, idx)])
+                                tool_end_window_count += 1
 
-                    # Logic: Identify indices where tool use ends for later upsampling
-                    if toolend_ratio > 1.0:
-                        if '[TOOLS_END]' in desc:
-                            tool_end_indices.add(idx)
-                    
-                    # if self.frame_type == 'key':
-                    #     # for trajectory level data (ttype==0): only save key frame in trajectory
-                    #     # ony save steps if prefix is not [ACTIONS] (or mid step of [ACTIONS])
-                    #     # for skill level data (ttype==1): step only?
-                    #     if 'TOOLS' in desc:
-                    #         list_key.append(idx, )
-                    #     pass
+                    # Create a window with a single step
+                    all_windows.append([(tid, idx)])
 
-                if len(list_act) > 0:
-                    action_steps = [x[0] for x in list_act if x[1] == 1]
-                    other_steps = [x[0] for x in list_act if x[1] == 0]
-                    n_keep = int(len(action_steps) * action_ratio)
-                    random.shuffle(action_steps)
-                    available_indices = sorted(other_steps + action_steps[:n_keep])
+                continue
 
-            n_available = len(available_indices)
-            if n_available < min_seq_len: continue
+            else:
+                #########################################
+                # BRANCH B: TRAJECTORY DATA (ttype == 0)
+                # Logic: Complex windowing (Fixed/Block/Sliding + Action DS + Tool Upsample)
+                #########################################
+                
+                #########################################
+                # --- 2. Step Filtering (Action Downsampling) ---
+                if len(step_descs) > 0:
 
-            #########################################
-            # --- 3. Window Generation (Slicing Strategies) ---
-            windows_to_process = [] 
+                    list_act = []
+                    list_key = []
+                    for idx, desc in enumerate(step_descs):
+                        if isinstance(desc, list) and len(desc) == 1:
+                            desc = desc[0]
 
-            if mode == 'fixed':
-                # Non-overlapping windows of length `wl`
-                curr = 0
-                while curr + wl <= n_available:
-                    windows_to_process.append(available_indices[curr : curr + wl])
-                    curr += wl
+                        if ttype == 0 and action_ratio < 1.0:
+                            # downsample the modification action steps
+                            list_act.append((idx, 1 if '[ACTIONS]' in desc else 0))
 
-            elif mode == 'block_prefix':
-                # Generates windows of increasing length (prefix modeling) starting from intervals of `wl`.
-                curr = 0
-                while curr < n_available:
-                    max_len_here = min(wl, n_available - curr)
-                    if max_len_here >= min_seq_len:
+                        # Logic: Identify indices where tool use ends for later upsampling
+                        if toolend_ratio > 1.0:
+                            if '[TOOLS_END]' in desc:
+                                tool_end_indices.add(idx)
+                        
+                        # if self.frame_type == 'key':
+                        #     # for trajectory level data (ttype==0): only save key frame in trajectory
+                        #     # ony save steps if prefix is not [ACTIONS] (or mid step of [ACTIONS])
+                        #     # for skill level data (ttype==1): step only?
+                        #     if 'TOOLS' in desc:
+                        #         list_key.append(idx, )
+                        #     pass
+
+                    if len(list_act) > 0:
+                        action_steps = [x[0] for x in list_act if x[1] == 1]
+                        other_steps = [x[0] for x in list_act if x[1] == 0]
+                        n_keep = int(len(action_steps) * action_ratio)
+                        random.shuffle(action_steps)
+                        available_indices = sorted(other_steps + action_steps[:n_keep])
+
+                n_available = len(available_indices)
+                if n_available < min_seq_len: continue
+
+                #########################################
+                # --- 3. Window Generation (Slicing Strategies) ---
+                windows_to_process = [] 
+
+                if mode == 'fixed':
+                    # Non-overlapping windows of length `wl`
+                    curr = 0
+                    while curr + wl <= n_available:
+                        windows_to_process.append(available_indices[curr : curr + wl])
+                        curr += wl
+
+                elif mode == 'block_prefix':
+                    # Generates windows of increasing length (prefix modeling) starting from intervals of `wl`.
+                    curr = 0
+                    while curr < n_available:
+                        max_len_here = min(wl, n_available - curr)
+                        if max_len_here >= min_seq_len:
+                            for length in range(min_seq_len, max_len_here + 1):
+                                windows_to_process.append(available_indices[curr : curr + length])
+                        curr += wl
+
+                elif mode == 'sliding_prefix':
+                    # Sliding window approach: shift by `stride`, then generate prefixes up to `wl`.
+                    last_start = n_available - min_seq_len
+                    curr = 0
+                    while curr <= last_start:
+                        max_len_here = min(wl, n_available - curr)
                         for length in range(min_seq_len, max_len_here + 1):
                             windows_to_process.append(available_indices[curr : curr + length])
-                    curr += wl
+                        curr += stride
 
-            elif mode == 'sliding_prefix':
-                # Sliding window approach: shift by `stride`, then generate prefixes up to `wl`.
-                last_start = n_available - min_seq_len
-                curr = 0
-                while curr <= last_start:
-                    max_len_here = min(wl, n_available - curr)
-                    for length in range(min_seq_len, max_len_here + 1):
-                        windows_to_process.append(available_indices[curr : curr + length])
-                    curr += stride
-
-            #########################################
-            # --- 4. Final Processing & Upsampling ---
-            for step_indices in windows_to_process:
-                window = [(tid, s_idx) for s_idx in step_indices]                
-                repeats = 1
-                is_tool_end = False
-                
-                # Logic: Upsample windows containing '[TOOLS_END]' to emphasize tool completion logic.
-                if toolend_ratio > 1.0 and len(tool_end_indices) > 0:
-                    if not tool_end_indices.isdisjoint(step_indices):
-                        is_tool_end = True
-                        base = int(toolend_ratio)
-                        remainder = toolend_ratio - base
-                        repeats = base + (1 if random.random() < remainder else 0)
-                
-                for _ in range(repeats):
-                    all_windows.append(window)
-                    if is_tool_end:
-                        tool_end_window_count += 1
-                        
-                    if max_windows is not None and len(all_windows) >= max_windows:
-                        self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
-                        return all_windows
+                #########################################
+                # --- 4. Final Processing & Upsampling ---
+                for step_indices in windows_to_process:
+                    window = [(tid, s_idx) for s_idx in step_indices]                
+                    repeats = 1
+                    is_tool_end = False
+                    
+                    # Logic: Upsample windows containing '[TOOLS_END]' to emphasize tool completion logic.
+                    if toolend_ratio > 1.0 and len(tool_end_indices) > 0:
+                        if not tool_end_indices.isdisjoint(step_indices):
+                            is_tool_end = True
+                            base = int(toolend_ratio)
+                            remainder = toolend_ratio - base
+                            repeats = base + (1 if random.random() < remainder else 0)
+                    
+                    for _ in range(repeats):
+                        all_windows.append(window)
+                        if is_tool_end:
+                            tool_end_window_count += 1
+                            
+                        if max_windows is not None and len(all_windows) >= max_windows:
+                            self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
+                            return all_windows
                         
         self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
         return all_windows
@@ -994,12 +1007,13 @@ class LeRobotSingleDataset(Dataset):
             
             dict_output['eagle_content']['image_inputs'] = agg_images
             dict_output['eagle_content']['text_list'] = [concated_text]
+            # if '[TOOLS_END]' in concated_text:
+                # import pdb;pdb.set_trace()
             # Replace single-step tensors with lists of tensors for the whole sequence
             dict_output['state'] = list_transformed_state
             dict_output['state_mask'] = list_transformed_state_mask
             dict_output['action'] = list_transformed_action
             dict_output['action_mask'] = list_transformed_action_mask
-
 
         return dict_output
 

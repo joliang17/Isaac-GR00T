@@ -868,10 +868,6 @@ class EagleBackbone(nn.Module):
             # #######################
             # # DEBUG
             if False:
-                if self.pred_nextstep and self.tune_tool_end:
-                    predicted_labels = torch.argmax(tool_end_logits_step, dim=1)
-                    toolend_correct = (predicted_labels == target_tool_end)
-                    print(f"Matches: {toolend_correct.tolist()}")
 
                 # 1. Get the predicted IDs for the entire sequence at once
                 # shape: [Batch, Seq]
@@ -914,7 +910,15 @@ class EagleBackbone(nn.Module):
                 # if special_mask_B.any():
                 #     debug_print_group("Special B", special_mask_B)
 
-                import pdb; pdb.set_trace()
+                if self.pred_nextstep and self.tune_tool_end:
+                    predicted_labels = torch.argmax(tool_end_logits_step, dim=1)
+                    toolend_correct = (predicted_labels == target_tool_end)
+                    # if there exists 1 in target_tool_end
+                    if (target_tool_end == 1).any().item():
+                        print(f"Matches: {toolend_correct.tolist()}")
+                        import pdb;pdb.set_trace()
+
+                # import pdb; pdb.set_trace()
             
         return logits, labels, loss, base_loss, special_loss_A, special_loss_B
         
