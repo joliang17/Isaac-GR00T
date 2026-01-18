@@ -243,6 +243,63 @@ def flatten_actions(list_embeds, list_masks):
     return embeds_tensor, masks_tensor
 
 
+class AttentionHead(nn.Module):
+    def __init__(self, hidden_size, num_classes=2):
+        super().__init__()
+        # 1. Learnable weight to score the importance of each token/feature
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, 1)
+        )
+        # 2. Final classifier
+        self.classifier = nn.Linear(hidden_size, num_classes)
+
+    def forward(self, x):
+        # Input x: [bs, hiddensize]
+        
+        # 1. Force it to be 3D: [bs, 1, hiddensize]
+        # We treat the single vector as a sequence of length 1
+        if x.dim() == 2:
+            x = x.unsqueeze(1) 
+            
+        # 2. Attention scores: [bs, 1, 1]
+        weights = self.attention(x) 
+        
+        # 3. Softmax over the sequence length (dim=1)
+        # Since seq_len=1, weight will become 1.0 (correct)
+        weights = torch.softmax(weights, dim=1)
+        
+        # 4. Context vector: [bs, hidden size]
+        # Weighted sum across the sequence
+        context_vector = torch.sum(weights * x, dim=1)
+        
+        # 5. Final Classification
+        return self.classifier(context_vector)
+
+
+class ResidualHead(nn.Module):
+    def __init__(self, hidden_size, num_classes=2):
+        super().__init__()
+        self.norm = nn.LayerNorm(hidden_size)
+        self.fc1 = nn.Linear(hidden_size, hidden_size // 2)
+        self.fc2 = nn.Linear(hidden_size // 2, hidden_size)
+        self.classifier = nn.Linear(hidden_size, num_classes)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        # x: [bs, hidden_size]
+        residual = x
+        out = self.norm(x)
+        out = self.fc1(out)
+        out = self.relu(out)
+        out = self.fc2(out)
+        
+        # Add back the original features (Residual)
+        out = out + residual 
+        return self.classifier(out)
+
+
 class EagleBackbone(nn.Module):
 
     def __init__(
@@ -386,8 +443,12 @@ class EagleBackbone(nn.Module):
 
         # Binary classification head for [TOOLS_END] / [TOOLS] prediction
         # These auxiliary heads allow the model to predict structural boundaries without generating full tokens
-        self.tool_end_head = torch.nn.Linear(hidden_size, 2)
-        self.tool_head = torch.nn.Linear(hidden_size, 2)
+
+        # self.tool_end_head = torch.nn.Linear(hidden_size, 2)
+        # self.tool_head = torch.nn.Linear(hidden_size, 2)
+
+        self.tool_end_head = ResidualHead(hidden_size, 2)
+        self.tool_head = ResidualHead(hidden_size, 2)
 
         # Layer Pruning: Pop layers from the end to reduce model depth
         # Used if we only need intermediate features or a lighter-weight model (Early Exit)
@@ -728,8 +789,9 @@ class EagleBackbone(nn.Module):
                 tool_end_logits_step = self.tool_end_head(selected_hidden)
                 tool_logits_step = self.tool_head(selected_hidden)
 
-                tool_loss_fct = nn.CrossEntropyLoss(reduction='mean')
-                
+                weights = torch.tensor([1.0, 9.0]).to(tool_end_logits_step.device) # [Neg_Weight, Pos_Weight]
+                tool_loss_fct = nn.CrossEntropyLoss(reduction='mean', weight=weights)
+
                 toolend_loss_avg = tool_loss_fct(tool_end_logits_step, target_tool_end)
                 tool_loss_avg = tool_loss_fct(tool_logits_step, target_tool)
 
@@ -800,15 +862,17 @@ class EagleBackbone(nn.Module):
             ######################################
             # loss avg per type
             if self.tune_tool_end:
-                loss = loss + (self.tool_end_loss_weight * tool_loss_avg) + (self.tool_end_loss_weight * toolend_loss_avg)
+                # loss = loss + (self.tool_end_loss_weight * tool_loss_avg) + (self.tool_end_loss_weight * toolend_loss_avg)
+                loss = (self.tool_end_loss_weight * toolend_loss_avg)
 
             # #######################
             # # DEBUG
             if False:
-                # import pickle
-                # with open(f"input_ids.pkl", 'wb') as f:
-                #     pickle.dump((vl_input, logits), f)
-                
+                if self.pred_nextstep and self.tune_tool_end:
+                    predicted_labels = torch.argmax(tool_end_logits_step, dim=1)
+                    toolend_correct = (predicted_labels == target_tool_end)
+                    print(f"Matches: {toolend_correct.tolist()}")
+
                 # 1. Get the predicted IDs for the entire sequence at once
                 # shape: [Batch, Seq]
                 # Since shift_logits is [Batch, Seq, Full_Vocab], the result is already standard Token IDs.
@@ -1107,7 +1171,7 @@ class EagleBackbone(nn.Module):
         )
 
     @torch.no_grad()
-    def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, inside_tool=False, toolend_head=False):
+    def generate(self, vl_input: BatchFeature, max_token: int = 1, past_key_values=None, inside_tool=False, toolend_head=False, if_debug: bool=False):
         """
         Two-stage generation:
         1. Router Step: Force pick [TOOL, ACTION, END].
@@ -1184,6 +1248,9 @@ class EagleBackbone(nn.Module):
         mask.scatter_(dim=-1, index=allowed_ids.unsqueeze(0).expand(batch_size, -1), value=0)
         masked_token_logits = next_token_logits + mask
         router_token_id = masked_token_logits.argmax(dim=-1)
+        if if_debug:
+            masked_token_logits[0, -5:]
+            import pdb;pdb.set_trace()
 
         router_token_id_head = None
         # STEP 1: ROUTER (Generate the Special Token first)

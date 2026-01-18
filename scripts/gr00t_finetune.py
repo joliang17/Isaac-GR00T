@@ -371,11 +371,25 @@ def main(config: ArgsConfig):
                 print(f"Re-initialized {num_embeddings_B} special tokens (Group B) with base embedding mean.")
     
     # Initialize the tool head so it doesn't output garbage initially
-    if config.tune_tool_end and hasattr(model.backbone, "tool_end_head") and config.base_model_path == "nvidia/GR00T-N1.5-3B":
+    # if config.tune_tool_end and hasattr(model.backbone, "tool_end_head") and config.base_model_path == "nvidia/GR00T-N1.5-3B":
+    if config.tune_tool_end and hasattr(model.backbone, "tool_end_head") and 'toolhead' not in config.base_model_path:
         with torch.no_grad():
-            model.backbone.tool_end_head.weight.data.normal_(mean=0.0, std=0.02)
-            model.backbone.tool_end_head.bias.data.zero_()
-            model.backbone.tool_end_head.bias.data[1] = -5.0 
+            # model.backbone.tool_end_head.weight.data.normal_(mean=0.0, std=0.02)
+            # model.backbone.tool_end_head.bias.data.zero_()
+            # model.backbone.tool_end_head.bias.data[1] = -5.0 
+            
+            head = model.backbone.tool_end_head
+            for layer in [head.fc1, head.fc2]:
+                torch.nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
+                if layer.bias is not None:
+                    layer.bias.data.zero_()
+
+            head.norm.weight.data.fill_(1.0)
+            head.norm.bias.data.zero_()
+            head.classifier.weight.data.normal_(mean=0.0, std=0.01)
+            head.classifier.bias.data.zero_()
+            head.classifier.bias.data[1] = -5.0 
+
         print("Initialized tool_end_head with custom weights.")
 
     # Initialize the tool head so it doesn't output garbage initially

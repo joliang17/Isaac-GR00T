@@ -236,7 +236,8 @@ class GR00T_N1_5(PreTrainedModel):
         past_key_values=None,
         mode: str='baseline',
         inside_tool: bool=False,
-        toolend_head: bool=False
+        toolend_head: bool=False,
+        if_debug: bool=False
     ) -> BatchFeature:
         def create_empty_actions(backbone_inputs, batch_size):
             zero_actions = torch.zeros(
@@ -267,7 +268,7 @@ class GR00T_N1_5(PreTrainedModel):
             # print(decoded_text[0])
 
             # self.backbone.eagle_tokenizer.decode(backbone_inputs['eagle_input_ids'][0])
-            token_id, tools_output, backbone_outputs = self.backbone.generate(backbone_inputs, max_token=max_generation_steps, past_key_values=past_key_values, inside_tool=inside_tool, toolend_head=toolend_head,)
+            token_id, tools_output, backbone_outputs = self.backbone.generate(backbone_inputs, max_token=max_generation_steps, past_key_values=past_key_values, inside_tool=inside_tool, toolend_head=toolend_head, if_debug=if_debug)
 
             past_key_values = backbone_outputs.get('past_key_values', None)
 
