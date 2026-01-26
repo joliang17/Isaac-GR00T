@@ -83,6 +83,42 @@ def truncate_kv(past_key_values, keep_last_n):
     return past_key_values
 
 
+def prune_kv_cache(past_key_values, max_length=4096, keep_images=True):
+    """
+    Trims the KV cache to stay within VRAM/Context limits.
+    Assumes cache shape: (layers, 2, batch, heads, seq_len, dim)
+    """
+    if past_key_values is None:
+        return None
+
+    # Get current length from the first layer
+    current_len = past_key_values[0][0].shape[2]
+    
+    if current_len <= max_length:
+        return past_key_values
+
+    # Calculate how many tokens to drop
+    num_to_drop = current_len - max_length
+    
+    new_past = []
+    for layer in past_key_values:
+        # layer is tuple (key, value)
+        k, v = layer
+        
+        # Slicing: [Batch, Heads, Seq_Len, Dim]
+        # We drop the OLDEST tokens (from the beginning)
+        # Note: In VLM, you must be careful not to drop the system prompt or image tokens 
+        # if they are at the very start. A smarter implementation keeps index 0-100 
+        # and drops from 101 onwards.
+        
+        k_trimmed = k[:, :, num_to_drop:, :]
+        v_trimmed = v[:, :, num_to_drop:, :]
+        
+        new_past.append((k_trimmed, v_trimmed))
+        
+    return tuple(new_past)
+
+
 class BasePolicy(ABC):
     @abstractmethod
     def get_action(self, observations: Dict[str, Any]) -> Dict[str, Any]:
@@ -221,7 +257,7 @@ class Gr00tPolicy(BasePolicy):
             return self._modality_transform_base.unapply(action)
 
 
-    def get_action(self, observations: Dict[str, Any], observations_base=None, img_count: int=1, past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> Dict[str, Any]:
+    def get_action(self, observations: Dict[str, Any], observations_base=None, img_count: int=1, past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, if_debug: bool=False) -> Dict[str, Any]:
         """
         Make a prediction with the model.
         Args:
@@ -277,7 +313,7 @@ class Gr00tPolicy(BasePolicy):
 
             normalized_action, backbone_outputs, tools_output, past_key_values = self._get_action_from_normalized_input(
                 normalized_input, past_key_values=past_key_values, mode=mode, call_baseline=False,
-                inside_tool=inside_tool, )
+                inside_tool=inside_tool, if_debug=if_debug)
             unnormalized_action = self._get_unnormalized_action(normalized_action, )
             if not is_batch:
                 unnormalized_action = squeeze_dict_values(unnormalized_action)
@@ -301,13 +337,13 @@ class Gr00tPolicy(BasePolicy):
                 past_key_values = truncate_kv(past_key_values, keep_last_n=4096)
         return unnormalized_action, tools_output, past_key_values, unnormalized_action_bs
 
-    def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, ) -> torch.Tensor:
+    def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, if_debug: bool=False) -> torch.Tensor:
         # Set up autocast context if needed
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=COMPUTE_DTYPE):
             if call_baseline:
                 model_pred, backbone_outputs, tools_output, past_key_values = self.base_model.get_action(normalized_input, mode='baseline')
             else:
-                model_pred, backbone_outputs, tools_output, past_key_values = self.model.get_action(normalized_input, past_key_values=past_key_values, mode=mode, inside_tool=inside_tool, toolend_head=self.toolend_head)
+                model_pred, backbone_outputs, tools_output, past_key_values = self.model.get_action(normalized_input, past_key_values=past_key_values, mode=mode, inside_tool=inside_tool, toolend_head=self.toolend_head, if_debug=if_debug)
 
         normalized_action = model_pred["action_pred"].float()
         return normalized_action, backbone_outputs, tools_output, past_key_values

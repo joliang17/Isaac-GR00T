@@ -1,4 +1,11 @@
 import os
+# --- CONFIGURATION ---
+CACHE_DIR = '/fs/nexus-projects/wilddiffusion/cache'
+os.environ["HF_HOME"] = CACHE_DIR
+os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
+os.environ["HF_MODULES_CACHE"] = CACHE_DIR
+os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
+
 import sys
 import pathlib
 import traceback
@@ -41,6 +48,7 @@ import numpy as np
 import torch
 import tqdm
 import tyro
+from PIL import Image
 
 from libero_scripts.utils import (
     get_libero_dummy_action,
@@ -63,12 +71,16 @@ log_dir = "logs/"
 os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
 
 
+def save_img(img_array, filename):
+    img_pil = Image.fromarray(img_array)
+    img_pil.save(f"{filename}.png")
+
 def eval_libero(cfg) -> None:
 
-    def call_tool(obs, tools_instruct: str, call_baseline: bool=False):
+    def call_tool(obs, tools_instruct: str, task_instruct: str, call_baseline: bool=False, if_debug: bool=False):
         inside_tools = True
         # for step t, regenerate the action with the new instructions
-        obs_dict_base = process_observation(obs, tools_instruct, headless=cfg.headless)
+        obs_dict_base = process_observation(obs, task_instruct, headless=cfg.headless)
         # obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
         obs_dict_tools = process_observation(obs, "[INFER]" + tools_instruct, headless=cfg.headless)
         # obs_dict = process_observation(obs, "[INFER]" + '[INFER_CNT]' + tools_output, headless=cfg.headless)
@@ -76,11 +88,11 @@ def eval_libero(cfg) -> None:
 
         action_chunk_our, cur_tools_output, _, action_chunk_bs = gr00t_policy.get_action(
             obs_dict_tools, observations_base=obs_dict_base, 
-            mode='interleaved', call_baseline=call_baseline, inside_tool=True)
-
+            mode='interleaved', call_baseline=call_baseline, inside_tool=True, if_debug=if_debug)
         if cur_tools_output == '[TOOLS_END]':
             # skill finished, no action is needed at the current step
             inside_tools = False
+            final_action = None
             no_action = True
             print(f"Tool ended! Back to trajectory")
         else:
@@ -161,6 +173,7 @@ def eval_libero(cfg) -> None:
             t = 0
             top_view = []
             wrist_view = []
+            
             if cfg.task_suite_name == "libero_spatial":
                 max_steps = 220  # longest training demo has 193 steps
             elif cfg.task_suite_name == "libero_object":
@@ -184,6 +197,9 @@ def eval_libero(cfg) -> None:
             traj_img_count = 0
             tool_img_count = 0
             no_action = False
+            if_debug = False
+            last_skill_idx = -1
+            
             while t < max_steps + cfg.num_steps_wait:
                 try:
                     # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
@@ -217,26 +233,35 @@ def eval_libero(cfg) -> None:
                         # task instruction is already included in past_key_values_traj
                         # [INFER]: refers to our vla: add to step annotation
                         obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
-                        obs_dict = process_observation(obs, "[INFER]" + cur_instr, headless=cfg.headless)
+                        if last_skill_idx != -1 and t <= last_skill_idx + 5:
+                            obs_dict = process_observation(obs, "[INFER]" + cur_instr + ". Previuos skill finished.", headless=cfg.headless)
+                        else:
+                            obs_dict = process_observation(obs, "[INFER]" + cur_instr, headless=cfg.headless)
 
                         action_chunk_our, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(
                             obs_dict, observations_base=obs_dict_base, img_count=traj_img_count,
                             past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
 
-                        import pdb;pdb.set_trace()
                         if tools_output != '' and tools_output != '[ACTIONS]':
                             # generated skill instructions
                             # start a new inference session, generate actions to achieve the tools, until finish
                             no_action = True
                             inside_tools = True
                             tools_output = tools_output.replace('[TOOLS]', '')
-                            print(f"Call Tools: {tools_output}")
+                            print(f"At timestep {t}, Call Tools: {tools_output}")
 
                             # action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, call_baseline=call_baseline)
+                        else:
+                            final_action = reformat_action(action_chunk_bs, action_chunk_our, call_baseline=call_baseline)
+
                     else:
-                        # inside tools
                         # skill instruction is already included in past_key_values_traj
-                        action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, call_baseline=call_baseline)
+                        action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, task_instruct=task.language, call_baseline=call_baseline, if_debug=if_debug)
+                        last_skill_idx = t
+                        if not inside_tools:
+                            import pdb;pdb.set_trace()
+                        # if final_action[-1] > -1.0:
+                            save_img(img_array=img, filename=f"cases/skill_end_{t}")
 
                     if not no_action:
                         # Execute action in environment
@@ -272,7 +297,7 @@ def eval_libero(cfg) -> None:
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
             )
             log_file.flush()
-            sys.exit(0)
+            # sys.exit(0)
 
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")

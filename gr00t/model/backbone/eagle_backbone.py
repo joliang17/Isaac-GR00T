@@ -863,7 +863,8 @@ class EagleBackbone(nn.Module):
             # loss avg per type
             if self.tune_tool_end:
                 # loss = loss + (self.tool_end_loss_weight * tool_loss_avg) + (self.tool_end_loss_weight * toolend_loss_avg)
-                loss = (self.tool_end_loss_weight * toolend_loss_avg)
+                loss = loss + (self.tool_end_loss_weight * toolend_loss_avg)
+                # loss = (self.tool_end_loss_weight * toolend_loss_avg)
 
             # #######################
             # # DEBUG
@@ -916,9 +917,9 @@ class EagleBackbone(nn.Module):
                     # if there exists 1 in target_tool_end
                     if (target_tool_end == 1).any().item():
                         print(f"Matches: {toolend_correct.tolist()}")
-                        import pdb;pdb.set_trace()
+                        # import pdb;pdb.set_trace()
 
-                # import pdb; pdb.set_trace()
+                import pdb; pdb.set_trace()
             
         return logits, labels, loss, base_loss, special_loss_A, special_loss_B
         
@@ -1183,7 +1184,9 @@ class EagleBackbone(nn.Module):
            - TOOL: Generate full text explanation.
            - ACTION: Return hidden states for policy head.
         """
-        def generate_text_kvcache(input_ids, attention_mask, token_to_append, ):
+        def generate_text_kvcache_ori(input_ids, attention_mask, token_to_append, ):
+            if past_key_values is not None:
+                import pdb;pdb.set_trace()
             gene_cache = copy.deepcopy(past_key_values) if past_key_values is not None else None
             past_kv_len = gene_cache.get_seq_length() if gene_cache is not None else 0
             current_input_len = input_ids.shape[1]
@@ -1215,6 +1218,58 @@ class EagleBackbone(nn.Module):
             final_kv_cache = gen_output.past_key_values  # kv cache that include text generated this step
 
             decoded_text = self.eagle_tokenizer.batch_decode(full_ids)[0]
+            return final_kv_cache, decoded_text
+
+        def generate_text_kvcache(input_ids, attention_mask, token_to_append, past_key_values):
+            # import pdb;pdb.set_trace()
+            # 1. Check History Length
+            past_kv_len = 0
+            if past_key_values is not None:
+                # Shape: (layers, 2, batch, num_heads, seq_len, head_dim)
+                past_kv_len = past_key_values[0][0].shape[2]
+
+            # 2. Construct Full Attention Mask (History + New Input)
+            current_len = input_ids.shape[1]
+            total_len = past_kv_len + current_len
+
+            if past_kv_len > 0:
+                dummy_ids = torch.zeros((input_ids.shape[0], past_kv_len), dtype=input_ids.dtype, device=input_ids.device)
+                padded_input_ids = torch.cat([dummy_ids, input_ids], dim=1)
+
+                history_mask = torch.ones((input_ids.shape[0], past_kv_len), dtype=attention_mask.dtype, device=attention_mask.device)
+                full_attention_mask = torch.cat([history_mask, attention_mask], dim=1)
+            else:
+                padded_input_ids = input_ids
+                full_attention_mask = attention_mask
+            
+            generation_inputs = {
+                "input_ids": padded_input_ids, 
+                "attention_mask": full_attention_mask,  
+                "past_key_values": past_key_values, 
+                "use_cache": True, 
+                "max_new_tokens": max_token - 1 if max_token > 1 else 1, 
+                "pad_token_id": self.pad_id, 
+                "eos_token_id": self.end_id, 
+                "do_sample": False, 
+                "return_dict_in_generate": True, 
+                "output_hidden_states": True, }
+            
+            if "eagle_pixel_values" in vl_input and vl_input["eagle_pixel_values"] is not None:
+                generation_inputs["pixel_values"] = vl_input["eagle_pixel_values"]
+                if "eagle_image_sizes" in vl_input:
+                    generation_inputs["image_sizes"] = vl_input["eagle_image_sizes"]
+            else:
+                generation_inputs["pixel_values"] = None
+
+            # 4. Run Generation
+            gen_output = self.eagle_model.generate(**generation_inputs)
+
+            # 5. Package Outputs
+            full_ids = gen_output.sequences
+            full_ids = torch.concat([token_to_append, full_ids], dim=1)
+            final_kv_cache = gen_output.past_key_values  # kv cache that include text generated this step
+
+            decoded_text = self.eagle_tokenizer.batch_decode(full_ids)[0]   
             return final_kv_cache, decoded_text
 
         if max_token is None or max_token < 1:
@@ -1252,13 +1307,10 @@ class EagleBackbone(nn.Module):
         mask.scatter_(dim=-1, index=allowed_ids.unsqueeze(0).expand(batch_size, -1), value=0)
         masked_token_logits = next_token_logits + mask
         router_token_id = masked_token_logits.argmax(dim=-1)
-        if if_debug:
-            masked_token_logits[0, -5:]
-            import pdb;pdb.set_trace()
 
         router_token_id_head = None
         # STEP 1: ROUTER (Generate the Special Token first)
-        if toolend_head:
+        if inside_tool and toolend_head:
             # use hidden state to predict toolend or not
             # last_HS is [B, T, H]
             current_hidden = last_HS[:1, -1, :]  # [B, H]
@@ -1272,51 +1324,28 @@ class EagleBackbone(nn.Module):
             tool_preds = tool_logits.argmax(dim=-1) # [B]
 
             # 4. OVERRIDE Logic
-            router_token_id_head = torch.tensor(self.actions_id, device=device)
             mask_end = (toolend_preds == 1)
             if mask_end.any():
+                # import pdb;pdb.set_trace()
                 router_token_id_head = torch.tensor(self.skills_end, device=device)
 
-            mask_tool = (tool_preds == 1)  # Prevent conflict
-            if mask_tool.any():
-                router_token_id_head = torch.tensor(self.tools_id, device=device)
+            # if if_debug:
+            #     import pdb;pdb.set_trace()
+
+            # mask_tool = (tool_preds == 1)  # Prevent conflict
+            # if mask_tool.any():
+            #     router_token_id_head = torch.tensor(self.tools_id, device=device)
         
-            if router_token_id_head != router_token_id:
+            if router_token_id_head is not None:
                 router_token_id = router_token_id_head.unsqueeze(0)
 
-        if not inside_tool:
-            # result different
-            # append router_token_id_head to current input
-            token_to_append = router_token_id.unsqueeze(0)
-            input_ids_action = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
-            attention_mask_action = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
-            final_kv_cache, decoded_text = generate_text_kvcache(input_ids_action, attention_mask_action, token_to_append)
-            # print(self.eagle_tokenizer.decode(input_ids_action[0]))
-
-            router_token_id_tool = torch.tensor([self.tools_id], device=device)
-            token_to_append = router_token_id_tool.unsqueeze(0)
-            input_ids_tool = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
-            attention_mask_tool = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
-            tool_kv_cache, decoded_text_tool = generate_text_kvcache(input_ids_tool, attention_mask_tool, token_to_append)
-            # print(self.eagle_tokenizer.decode(input_ids_tool[0]))
-            
-            if decoded_text != decoded_text_tool:
-                print(f"Original: {decoded_text}")
-                print(f"TOOLS: {decoded_text_tool}")
-                decoded_text = decoded_text_tool
-                final_kv_cache = tool_kv_cache
-
-        else:
-            # result different
-            # append router_token_id to current input
-            # router_token_id = torch.tensor([self.actions_id], device=device)
-            token_to_append = router_token_id.unsqueeze(0)
-            input_ids_action = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
-            attention_mask_action = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
-            final_kv_cache, decoded_text = generate_text_kvcache(input_ids_action, attention_mask_action, token_to_append)
-
-            if '[ACTIONS]' not in decoded_text :
-                print(f"in tools: {decoded_text}")
+        # result different
+        # append router_token_id_head to current input
+        token_to_append = router_token_id.unsqueeze(0)
+        input_ids_added = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
+        attention_mask_added = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
+        # final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values)
+        final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, None)
 
         backbone_outputs = BatchFeature({
             "backbone_features": eagle_embeds,

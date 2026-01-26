@@ -185,6 +185,7 @@ class LeRobotSingleDataset(Dataset):
         windowing_mode: str = 'sliding_prefix',
         skill_level: str = 'window',
         frame_type: str = 'normal',
+        action_only: bool = False
     ):
         """
         Initialize the dataset.
@@ -229,6 +230,7 @@ class LeRobotSingleDataset(Dataset):
         self.skill_inclusion_ratio = skill_inclusion_ratio
         self.action_ds_ratio = action_ds_ratio
         self.toolend_upsample_ratio = toolend_upsample_ratio
+        self.action_only = action_only
 
         # --- Windowing Logic Control ---
         # Options: 'step', 'fixed', 'block_prefix', 'sliding_prefix'
@@ -1007,8 +1009,7 @@ class LeRobotSingleDataset(Dataset):
             
             dict_output['eagle_content']['image_inputs'] = agg_images
             dict_output['eagle_content']['text_list'] = [concated_text]
-            # if '[TOOLS_END]' in concated_text:
-                # import pdb;pdb.set_trace()
+
             # Replace single-step tensors with lists of tensors for the whole sequence
             dict_output['state'] = list_transformed_state
             dict_output['state_mask'] = list_transformed_state_mask
