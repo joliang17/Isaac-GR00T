@@ -96,7 +96,7 @@ def summarize_obs(obs_dict):
 
 
 def convert_to_libero_action(
-    action_chunk: dict[str, np.array], action_keys, idx: int = 0
+    action_chunk: dict[str, np.array], action_keys, idx: int = 0, normalize: bool=False
 ) -> np.ndarray:
     """Convert GR00T action chunk to Libero format.
 
@@ -107,11 +107,13 @@ def convert_to_libero_action(
     Returns:
         7-dim numpy array: [dx, dy, dz, droll, dpitch, dyaw, gripper]
     """
-    action_components = [
-        np.atleast_1d(action_chunk[f"action.{key}"][idx])[0] for key in action_keys
-    ]
+    action_components = [np.atleast_1d(action_chunk[f"action.{key}"][idx])[0] for key in action_keys]
     action_array = np.array(action_components, dtype=np.float32)
-    action_array = normalize_gripper_action(action_array, binarize=True)
+    if normalize:
+        action_array = normalize_gripper_action(action_array, binarize=True)
+    else:
+        action_array[..., -1] = np.sign(action_array[..., -1])
+
     assert len(action_array) == 7, f"Expected 7-dim action, got {len(action_array)}"
     return action_array
     

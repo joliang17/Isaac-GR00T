@@ -102,14 +102,16 @@ def eval_libero(cfg) -> None:
 
         return action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools
 
-    def reformat_action(action_chunk_bs, action_chunk_our, call_baseline: bool=False):
+    def reformat_action(action_chunk_bs, action_chunk_our, call_baseline: bool=False, ):
         if call_baseline:
             action_chunk = action_chunk_bs
+            normalize = True
         else:
             action_chunk = action_chunk_our
+            normalize = False
         
         # action tokens are generated
-        final_action = convert_to_libero_action(action_chunk, action_keys)
+        final_action = convert_to_libero_action(action_chunk, action_keys, normalize=normalize)
         return final_action
 
     call_baseline = cfg.call_baseline 
@@ -181,7 +183,7 @@ def eval_libero(cfg) -> None:
             elif cfg.task_suite_name == "libero_goal":
                 max_steps = 600  # longest training demo has 270 steps
             elif cfg.task_suite_name == "libero_10":
-                max_steps = 1000  # longest training demo has 505 steps
+                max_steps = 500  # longest training demo has 505 steps
                 # max_steps = 1000  # longest training demo has 505 steps
             elif cfg.task_suite_name == "libero_90":
                 max_steps = 400  # longest training demo has 373 steps
@@ -252,16 +254,17 @@ def eval_libero(cfg) -> None:
 
                             # action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, call_baseline=call_baseline)
                         else:
+                            # import pdb;pdb.set_trace()
                             final_action = reformat_action(action_chunk_bs, action_chunk_our, call_baseline=call_baseline)
 
                     else:
                         # skill instruction is already included in past_key_values_traj
                         action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, task_instruct=task.language, call_baseline=call_baseline, if_debug=if_debug)
                         last_skill_idx = t
-                        if not inside_tools:
-                            import pdb;pdb.set_trace()
+                        # if not inside_tools:
+                        #     import pdb;pdb.set_trace()
                         # if final_action[-1] > -1.0:
-                            save_img(img_array=img, filename=f"cases/skill_end_{t}")
+                            # save_img(img_array=img, filename=f"cases/skill_end_{t}")
 
                     if not no_action:
                         # Execute action in environment
@@ -278,7 +281,7 @@ def eval_libero(cfg) -> None:
                     traceback.print_exc()
                     print(f"Caught exception: {e}")
                     log_file.write(f"Caught exception: {e}\n")
-                    # sys.exit(-1)
+                    sys.exit(-1)
                     break
 
             task_episodes += 1
@@ -297,7 +300,7 @@ def eval_libero(cfg) -> None:
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
             )
             log_file.flush()
-            # sys.exit(0)
+            sys.exit(0)
 
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
