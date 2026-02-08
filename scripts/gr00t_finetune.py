@@ -15,7 +15,7 @@
 
 import os
 CACHE_DIR = "/fs/nexus-projects/wilddiffusion/cache"
-CACHE_DIR = "/fs/nexus-scratch/yliang17/Research/cache"
+CACHE_DIR = os.getenv("CACHE_DIR", CACHE_DIR)
 
 os.environ["HF_HOME"] = CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
@@ -40,6 +40,7 @@ from gr00t.experiment.runner import TrainRunner
 from gr00t.model.gr00t_n1 import GR00T_N1_5
 from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING
 from gr00t.utils.peft import get_lora_model, list_trainable_parameter_names, tie_all_special_weights
+torch.autograd.set_detect_anomaly(True)
 
 
 @dataclass
@@ -236,6 +237,7 @@ def main(config: ArgsConfig):
             skill_inclusion_ratio=config.skill_inclusion_ratio,
             action_ds_ratio=config.action_ds_ratio,
             toolend_upsample_ratio=config.toolend_upsample_ratio,
+            # action_only=config.tune_diffusion_model,
         )
     else:
         single_datasets = []
@@ -254,6 +256,7 @@ def main(config: ArgsConfig):
                 skill_inclusion_ratio=config.skill_inclusion_ratio,
                 action_ds_ratio=config.action_ds_ratio,
                 toolend_upsample_ratio=config.toolend_upsample_ratio,
+                # action_only=config.tune_diffusion_model,
             )
             single_datasets.append(dataset)
 
@@ -405,7 +408,7 @@ def main(config: ArgsConfig):
     model.config.compute_dtype = "bfloat16"
 
     train_action_head = False
-    if 'traj_video_both' in config.dataset_path[0] and 'skip_action' not in config.run_name:
+    if 'both' in config.dataset_path[0] and 'skip_action' not in config.run_name:
         train_action_head = True
 
     if config.lora_rank > 0:
@@ -428,7 +431,7 @@ def main(config: ArgsConfig):
         # check wether head & embeddings shared the same weight
         if config.windowing_mode != 'step':
             model.action_head.requires_grad_(train_action_head)
-
+    
     _ = list_trainable_parameter_names(model)
             
     # 2.1 modify training args

@@ -11,22 +11,22 @@
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=64G
 
+source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
+
 cd /fs/nexus-scratch/yliang17/Research/VLA/GR00T
-
-
 
 source /etc/profile.d/modules.sh
 module add cuda/12.4.1
 module add gcc/11.2.0
 
-source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
-
 export WANDB_PROJECT="vla_tooluse"
-DATASET=libero_10_no_noops_lerobot
+export CACHE_DIR="/fs/nexus-scratch/yliang17/Research/cache"
+
+DATASET=libero_base
 TASK_NAME=libero_training_1
 
 python scripts/gr00t_finetune.py \
-  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/libero_lerobot/${DATASET}" \
+  --dataset-path "/fs/nexus-scratch/yliang17/Research/VLA/LIBERO_10_lerobot" \
   --num-gpus 1 \
   --windowing_mode "step" \
   --batch-size 16 \
@@ -34,7 +34,7 @@ python scripts/gr00t_finetune.py \
   --video_backend "torchvision_av" \
   --save_steps 30000 \
   --max_steps 60000 \
-  --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
+  --output_dir "/fs/nexus-scratch/yliang17/Research/VLA/GR00T/saved_checkpoint/${TASK_NAME}" \
   --run_name ${TASK_NAME} \
   --tune_diffusion_model \
-  --dataloader_num_workers 0
+  # --dataloader_num_workers 0

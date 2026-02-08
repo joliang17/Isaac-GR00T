@@ -195,6 +195,7 @@ def eval_libero(cfg) -> None:
             inside_tools = False
             task_instruction = ""
             current_tool_instruction = ""
+            prev_tool_instruction = ""
             tools_output = ""
             traj_img_count = 0
             tool_img_count = 0
@@ -236,7 +237,7 @@ def eval_libero(cfg) -> None:
                         # [INFER]: refers to our vla: add to step annotation
                         obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
                         if last_skill_idx != -1 and t <= last_skill_idx + 5:
-                            obs_dict = process_observation(obs, "[INFER]" + cur_instr + ". Previuos skill finished.", headless=cfg.headless)
+                            obs_dict = process_observation(obs, "[INFER]" + cur_instr + f". Previuos skill finished: {prev_tool_instruction.strip()}. " , headless=cfg.headless)
                         else:
                             obs_dict = process_observation(obs, "[INFER]" + cur_instr, headless=cfg.headless)
 
@@ -261,6 +262,7 @@ def eval_libero(cfg) -> None:
                         # skill instruction is already included in past_key_values_traj
                         action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, task_instruct=task.language, call_baseline=call_baseline, if_debug=if_debug)
                         last_skill_idx = t
+                        prev_tool_instruction = tools_output
                         # if not inside_tools:
                         #     import pdb;pdb.set_trace()
                         # if final_action[-1] > -1.0:

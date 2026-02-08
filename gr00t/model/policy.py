@@ -212,7 +212,9 @@ class Gr00tPolicy(BasePolicy):
 
         # ADDED: Load transforms
         self._load_metadata(self.model_path / "experiment_cfg")
-        self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"), base=True)
+        if self.call_baseline:
+            self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"), base=True)
+
         # Load horizons
         self._load_horizons()
 
@@ -433,6 +435,7 @@ class Gr00tPolicy(BasePolicy):
         print(f"load my trained model: {model_path}")
         if 'toolhead' in model_path:
             self.toolend_head = True
+
         model = GR00T_N1_5.from_pretrained(model_path, torch_dtype=COMPUTE_DTYPE, )
         model.eval()  # Set model to eval mode
         model.to(device=self.device)  # type: ignore

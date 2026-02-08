@@ -27,11 +27,11 @@ base_dir="/fs/nexus-scratch/yliang17/Research/VLA/saved_folder/checkpoint"
 #     --num_trials_per_task 2 \
 #     --port 5555 \
 #     --headless True \
-#     --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_training/checkpoint-60000" \
+#     --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_training_1/checkpoint-60000" \
 #     --embodiment_tag new_embodiment \
 #     --data_config libero_original \
-#     --denoising_steps 8
-#     --model_path youliangtan/gr00t-n1.5-libero-long-posttrain \
+#     --denoising_steps 8 \
+    # --model_path youliangtan/gr00t-n1.5-libero-long-posttrain \
 
 python3 libero_scripts/libero_eval_interleaved.py \
     --task_suite_name libero_10 \
@@ -39,8 +39,8 @@ python3 libero_scripts/libero_eval_interleaved.py \
     --num_trials_per_task 2 \
     --embodiment_tag new_embodiment \
     --data_config libero_traj_arms_2 \
-    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage3_onlyembA_nextstep_actiononly_v2/checkpoint-60000" \
-    --model_name "stage3_onlyembA_nextstep_actiononly_v2" \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_nextstep_skip_action_toolhead_only_v6/checkpoint-3000" \
+    --model_name "stage3_onlyembA_nextstep_actiononly_toolhead_v5" \
     --denoising_steps 8 \
-    # --call_baseline
+    --call_baseline
 

@@ -76,6 +76,16 @@ def eval_libero(cfg) -> None:
     modality_transform = data_config.transform()
     action_keys = ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
 
+    # gr00t_policy = GR00TPolicy(host="localhost", port=cfg.port, headless=cfg.headless)
+    gr00t_policy = Gr00tPolicy(
+        model_path=args.model_path,
+        modality_config=modality_config,
+        modality_transform=modality_transform,
+        embodiment_tag=args.embodiment_tag,
+        denoising_steps=args.denoising_steps,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+    )
+
     # Start evaluation
     total_episodes, total_successes = 0, 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
@@ -88,17 +98,7 @@ def eval_libero(cfg) -> None:
 
         # Initialize LIBERO environment and task description
         env, task_description = get_libero_env(task, resolution=256)
-
-        # gr00t_policy = GR00TPolicy(host="localhost", port=cfg.port, headless=cfg.headless)
-        gr00t_policy = Gr00tPolicy(
-            model_path=args.model_path,
-            modality_config=modality_config,
-            modality_transform=modality_transform,
-            embodiment_tag=args.embodiment_tag,
-            denoising_steps=args.denoising_steps,
-            device="cuda" if torch.cuda.is_available() else "cpu",
-        )
-
+        
         # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
@@ -134,7 +134,7 @@ def eval_libero(cfg) -> None:
                 elif cfg.task_suite_name == "libero_goal":
                     max_steps = 600  # longest training demo has 270 steps
                 elif cfg.task_suite_name == "libero_10":
-                    max_steps = 1000  # longest training demo has 505 steps
+                    max_steps = 510  # longest training demo has 505 steps
                 elif cfg.task_suite_name == "libero_90":
                     max_steps = 400  # longest training demo has 373 steps
 
@@ -159,15 +159,22 @@ def eval_libero(cfg) -> None:
                         # Query model to get action
                         obs_dict = process_observation(obs, task_description, headless=args.headless)
                         action_chunk, _, _, _ = gr00t_policy.get_action(obs_dict, mode='baseline')
-                        action = convert_to_libero_action(action_chunk, action_keys)
+                        action = convert_to_libero_action(action_chunk, action_keys, normalize=False)
 
-                        # Execute action in environment
-                        obs, reward, done, info = env.step(action.tolist())
+                        try:
+                            # Execute action in environment
+                            obs, reward, done, info = env.step(action.tolist())
+                        except:
+                            break
+
                         if done:
                             task_successes += 1
                             total_successes += 1
                             break
+
                         t += 1
+                        if t % 10 == 0:
+                            print(f"current t: {t}")
 
                     except Exception as e:
                         traceback.print_exc()
