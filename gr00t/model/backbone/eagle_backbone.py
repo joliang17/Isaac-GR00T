@@ -450,11 +450,13 @@ class EagleBackbone(nn.Module):
         self.tool_end_head = ResidualHead(hidden_size, 2)
         self.tool_head = ResidualHead(hidden_size, 2)
 
-        # Layer Pruning: Pop layers from the end to reduce model depth
-        # Used if we only need intermediate features or a lighter-weight model (Early Exit)
-        while len(self.eagle_model.language_model.model.layers) > select_layer:
-            self.eagle_model.language_model.model.layers.pop(-1)
+        # MODIFIER: avoid removing layers
+        # # Layer Pruning: Pop layers from the end to reduce model depth
+        # # Used if we only need intermediate features or a lighter-weight model (Early Exit)
+        # while len(self.eagle_model.language_model.model.layers) > select_layer:
+        #     self.eagle_model.language_model.model.layers.pop(-1)
 
+        print(f"selected layer: {select_layer}")
         self.select_layer = select_layer
 
         #########################################
@@ -666,12 +668,13 @@ class EagleBackbone(nn.Module):
 
         eagle_output = self.eagle_model(**eagle_input, past_key_values=past_key_values, output_hidden_states=True, return_dict=True, use_cache=True)
         past_key_values = eagle_output.past_key_values
-        eagle_features = eagle_output.hidden_states[self.select_layer]
+        eagle_features = eagle_output.hidden_states[self.select_layer]  # 29 layers
         eagle_features = self.eagle_linear(eagle_features)
         eagle_logits = eagle_output.logits
         eagle_attn = eagle_input["attention_mask"]
 
         # Raw Hidden States for Tool Head / Tool
+        # TODO: select the last layers?
         raw_hidden_states = eagle_output.hidden_states[-1]
 
         return eagle_logits, eagle_features, eagle_attn, past_key_values, raw_hidden_states
@@ -739,7 +742,6 @@ class EagleBackbone(nn.Module):
             final_mask = find_last_step(eagle_input['input_ids'], labels)
             labels[final_mask] = -100
 
-        # import pdb;pdb.set_trace()
         # masked_tokens_per_sample = [ids[row == -100] for ids, row in zip(eagle_input['input_ids'], labels)]
         # unmasked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
         # print(self.eagle_tokenizer.decode(eagle_input['input_ids'][0, 2234]))
@@ -863,8 +865,8 @@ class EagleBackbone(nn.Module):
             # loss avg per type
             if self.tune_tool_end:
                 # loss = loss + (self.tool_end_loss_weight * tool_loss_avg) + (self.tool_end_loss_weight * toolend_loss_avg)
-                loss = loss + (self.tool_end_loss_weight * toolend_loss_avg)
-                # loss = (self.tool_end_loss_weight * toolend_loss_avg)
+                # loss = loss + (self.tool_end_loss_weight * toolend_loss_avg)
+                loss = (self.tool_end_loss_weight * toolend_loss_avg)
 
             # #######################
             # # DEBUG
@@ -1116,7 +1118,6 @@ class EagleBackbone(nn.Module):
             has_actions = (vl_input['eagle_input_ids'] == self.actions_id).any().item()
             if has_actions:
                 list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
-                # import pdb;pdb.set_trace()
                 # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0])
                 # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0][1668:2208])
                 embeds_tensor, masks_tensor = flatten_actions(list_eagle_emb, list_eagle_mask)

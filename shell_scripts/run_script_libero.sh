@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=libero_training_1
-#SBATCH --output=/fs/nexus-scratch/yliang17/Research/VLA/GR00T/slurm_output/libero_training_1.log
-#SBATCH --error=/fs/nexus-scratch/yliang17/Research/VLA/GR00T/slurm_output/libero_training_1.log
+#SBATCH --job-name=libero_training_2
+#SBATCH --output=/fs/nexus-scratch/yliang17/Research/VLA/GR00T/slurm_output/libero_training_2.log
+#SBATCH --error=/fs/nexus-scratch/yliang17/Research/VLA/GR00T/slurm_output/libero_training_2.log
 #SBATCH --time=48:00:00
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director
@@ -23,7 +23,7 @@ export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-scratch/yliang17/Research/cache"
 
 DATASET=libero_base
-TASK_NAME=libero_training_1
+TASK_NAME=libero_training_2
 
 python scripts/gr00t_finetune.py \
   --dataset-path "/fs/nexus-scratch/yliang17/Research/VLA/LIBERO_10_lerobot" \
