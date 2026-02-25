@@ -35,14 +35,113 @@ from gr00t.data.transform.video import (
 from gr00t.model.transforms import GR00TTransform
 
 
+@dataclass
 class BaseDataConfig(ABC):
-    @abstractmethod
     def modality_config(self) -> dict[str, ModalityConfig]:
-        pass
+        video_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.video_keys,
+        )
+        state_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.state_keys,
+        )
+        action_modality = ModalityConfig(
+            delta_indices=self.action_indices,
+            modality_keys=self.action_keys,
+        )
+        language_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.language_keys,
+        )
+        return {
+            "video": video_modality,
+            "state": state_modality,
+            "action": action_modality,
+            "language": language_modality,
+        }
 
     @abstractmethod
     def transform(self) -> ModalityTransform:
         pass
+
+
+#####################################################################################
+# helper functions
+#####################################################################################
+
+
+def import_external_data_config(data_config_str: str) -> Optional[BaseDataConfig]:
+    """
+    Import and instantiate an external data configuration class.
+
+    Format: "module_path:ClassName" (e.g., "my_configs:RobotConfig")
+    Supports nested modules like "package.submodule:ClassName"
+    """
+    if ":" not in data_config_str:
+        return None
+
+    import importlib
+    import os
+    import sys
+    from pathlib import Path
+
+    # Add current working directory to Python path
+    current_dir = str(Path(os.getcwd()).absolute())
+    if current_dir not in sys.path:
+        sys.path.insert(0, current_dir)
+
+    try:
+        module_path, class_name = data_config_str.split(":", 1)
+        if not module_path or not class_name:
+            raise ValueError(f"Invalid format: '{data_config_str}'. Use 'module:ClassName'")
+
+        print(f"Loading external config: {module_path}.{class_name}")
+
+        module = importlib.import_module(module_path)
+        if not hasattr(module, class_name):
+            available = [
+                n
+                for n in dir(module)
+                if not n.startswith("_") and isinstance(getattr(module, n), type)
+            ]
+            raise AttributeError(
+                f"Class '{class_name}' not found in '{module_path}'. Available: {available}"
+            )
+
+        # assert if the class has 'transform' and 'modality_config' methods
+        if not hasattr(getattr(module, class_name), "transform"):
+            raise AttributeError(f"Class '{class_name}' does not have a 'transform' method")
+        if not hasattr(getattr(module, class_name), "modality_config"):
+            raise AttributeError(f"Class '{class_name}' does not have a 'modality_config' method")
+
+        return getattr(module, class_name)()
+
+    except (ModuleNotFoundError, AttributeError, ValueError) as e:
+        print(f"Config loading failed: {e}")
+        print("Example: my_configs:MyConfig, package.submodule:ClassName")
+        raise
+
+
+def load_data_config(data_config_str: str) -> BaseDataConfig:
+    """
+    Get a data config class from a string.
+    >>> load_data_config("so100")
+    >>> get_data_config("dir.subdir.my_configs:RobotConfig")
+    """
+    if data_config_str in DATA_CONFIG_MAP:
+        return DATA_CONFIG_MAP[data_config_str]
+    data_config_cls = import_external_data_config(data_config_str)
+    if data_config_cls is not None:
+        return data_config_cls
+    # Yellow warning color
+    yellow = "\033[93m"
+    reset = "\033[0m"
+    raise ValueError(
+        f"{yellow}Invalid data_config '{data_config_str}'. "
+        f"Available options: {list(DATA_CONFIG_MAP.keys())}, "
+        f"or use 'module:ClassName' for external configs{reset}"
+    )
 
 
 ###########################################################################################
@@ -65,36 +164,6 @@ class FourierGr1ArmsOnlyDataConfig(BaseDataConfig):
     language_keys = ["annotation.human.action.task_description"]
     observation_indices = [0]
     action_indices = list(range(16))
-
-    def modality_config(self) -> dict[str, ModalityConfig]:
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
-
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-
-        modality_configs = {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
-
-        return modality_configs
 
     def transform(self) -> ModalityTransform:
         transforms = [
@@ -146,36 +215,6 @@ class So100DataConfig(BaseDataConfig):
     language_keys = ["annotation.human.task_description"]
     observation_indices = [0]
     action_indices = list(range(16))
-
-    def modality_config(self) -> dict[str, ModalityConfig]:
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
-
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-
-        modality_configs = {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
-
-        return modality_configs
 
     def transform(self) -> ModalityTransform:
         transforms = [
@@ -242,36 +281,6 @@ class UnitreeG1DataConfig(BaseDataConfig):
     language_keys = ["annotation.human.task_description"]
     observation_indices = [0]
     action_indices = list(range(16))
-
-    def modality_config(self) -> dict[str, ModalityConfig]:
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
-
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-
-        modality_configs = {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
-
-        return modality_configs
 
     def transform(self) -> ModalityTransform:
         transforms = [
@@ -357,31 +366,6 @@ class FourierGr1FullUpperBodyDataConfig(BaseDataConfig):
     language_keys = ["annotation.human.action.task_description"]
     observation_indices = [0]
     action_indices = list(range(16))
-
-    def modality_config(self):
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-        modality_configs = {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
-        return modality_configs
 
     def transform(self):
         transforms = [
@@ -471,31 +455,6 @@ class BimanualPandaGripperDataConfig(BaseDataConfig):
         "action.right_gripper_close": "binary",
         "action.left_gripper_close": "binary",
     }
-
-    def modality_config(self):
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-        modality_configs = {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
-        return modality_configs
 
     def transform(self):
         transforms = [
@@ -659,9 +618,6 @@ class FourierGr1ArmsWaistDataConfig(FourierGr1ArmsOnlyDataConfig):
     observation_indices = [0]
     action_indices = list(range(16))
 
-    def modality_config(self):
-        return super().modality_config()
-
     def transform(self):
         return super().transform()
 
@@ -669,7 +625,7 @@ class FourierGr1ArmsWaistDataConfig(FourierGr1ArmsOnlyDataConfig):
 ###########################################################################################
 
 
-class OxeDroidDataConfig:
+class OxeDroidDataConfig(BaseDataConfig):
     video_keys = [
         "video.exterior_image_1",
         "video.exterior_image_2",
@@ -688,31 +644,6 @@ class OxeDroidDataConfig:
     language_keys = ["annotation.language.language_instruction"]
     observation_indices = [0]
     action_indices = list(range(16))
-
-    def modality_config(self):
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-        modality_configs = {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
-        return modality_configs
 
     def transform(self):
         transforms = [
@@ -769,7 +700,7 @@ class OxeDroidDataConfig:
 ###########################################################################################
 
 
-class AgibotGenie1DataConfig:
+class AgibotGenie1DataConfig(BaseDataConfig):
     video_keys = [
         "video.top_head",
         "video.hand_left",
@@ -796,130 +727,7 @@ class AgibotGenie1DataConfig:
     observation_indices = [0]
     action_indices = list(range(16))
 
-    def modality_config(self):
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-        modality_configs = {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
-        return modality_configs
-
     def transform(self):
-        transforms = [
-            # video transforms
-            VideoToTensor(apply_to=self.video_keys),
-            VideoCrop(apply_to=self.video_keys, scale=0.95),
-            VideoResize(apply_to=self.video_keys, height=224, width=224, interpolation="linear"),
-            VideoColorJitter(
-                apply_to=self.video_keys,
-                brightness=0.3,
-                contrast=0.4,
-                saturation=0.5,
-                hue=0.08,
-            ),
-            VideoToNumpy(apply_to=self.video_keys),
-            # state transforms
-            StateActionToTensor(apply_to=self.state_keys),
-            StateActionTransform(
-                apply_to=self.state_keys,
-                normalization_modes={
-                    "state.left_arm_joint_position": "min_max",
-                    "state.right_arm_joint_position": "min_max",
-                    "state.left_effector_position": "min_max",
-                    "state.right_effector_position": "min_max",
-                    "state.head_position": "min_max",
-                    "state.waist_position": "min_max",
-                },
-            ),
-            # action transforms
-            StateActionToTensor(apply_to=self.action_keys),
-            StateActionTransform(
-                apply_to=self.action_keys,
-                normalization_modes={
-                    "action.left_arm_joint_position": "min_max",
-                    "action.right_arm_joint_position": "min_max",
-                    "action.left_effector_position": "min_max",
-                    "action.right_effector_position": "min_max",
-                    "action.head_position": "min_max",
-                    "action.waist_position": "min_max",
-                    "action.robot_velocity": "min_max",
-                },
-            ),
-            # concat transforms
-            ConcatTransform(
-                video_concat_order=self.video_keys,
-                state_concat_order=self.state_keys,
-                action_concat_order=self.action_keys,
-            ),
-            GR00TTransform(
-                state_horizon=len(self.observation_indices),
-                action_horizon=len(self.action_indices),
-                max_state_dim=64,
-                max_action_dim=32,
-            ),
-        ]
-
-        return ComposedModalityTransform(transforms=transforms)
-
-###########################################################################################
-
-
-class FrankaDataConfig(BaseDataConfig):
-    video_keys = ["video.front_camera"]
-    state_keys = ["state.single_arm", "state.gripper"]
-    action_keys = ["action.single_arm", "action.gripper"]
-    language_keys = ["annotation.step_description", ]
-    observation_indices = [0]
-    action_indices = list(range(16))
-
-    def modality_config(self) -> dict[str, ModalityConfig]:
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
-
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-
-        modality_configs = {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
-
-        return modality_configs
-
-    def transform(self) -> ModalityTransform:
         transforms = [
             # video transforms
             VideoToTensor(apply_to=self.video_keys),
@@ -951,7 +759,6 @@ class FrankaDataConfig(BaseDataConfig):
                 state_concat_order=self.state_keys,
                 action_concat_order=self.action_keys,
             ),
-            # model-specific transform
             GR00TTransform(
                 state_horizon=len(self.observation_indices),
                 action_horizon=len(self.action_indices),
@@ -959,8 +766,8 @@ class FrankaDataConfig(BaseDataConfig):
                 max_action_dim=32,
             ),
         ]
-        return ComposedModalityTransform(transforms=transforms)
 
+        return ComposedModalityTransform(transforms=transforms)
 
 ###########################################################################################
 
@@ -991,36 +798,6 @@ class LIEBROTrajDataConfig(BaseDataConfig):
     language_keys = ["annotation.step_description", ]
     observation_indices = [0]
     action_indices = list(range(16))
-
-    def modality_config(self) -> dict[str, ModalityConfig]:
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
-
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-
-        modality_configs = {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
-
-        return modality_configs
 
     def transform(self, action_norm: str = "min_max") -> ModalityTransform:
         if action_norm == "min_max":
@@ -1109,36 +886,6 @@ class LIEBROTrajData2Config(BaseDataConfig):
     observation_indices = [0]
     action_indices = list(range(16))
 
-    def modality_config(self) -> dict[str, ModalityConfig]:
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
-
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-
-        modality_configs = {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
-
-        return modality_configs
-
     def transform(self, action_norm: str = "min_max") -> ModalityTransform:
         if action_norm == "min_max":
             action_transform = StateActionTransform(
@@ -1226,36 +973,91 @@ class LiberoDataConfig(BaseDataConfig):
     observation_indices = [0]
     action_indices = list(range(16))
 
+    def transform(self, action_norm: str = "min_max") -> ModalityTransform:
+        if action_norm == "min_max":
+            action_transform = StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={key: "min_max" for key in self.action_keys},
+            )
+        else:
+            action_transform = StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={
+                    "action.x": "mean_std",
+                    "action.y": "mean_std",
+                    "action.z": "mean_std",
+                    "action.roll": "mean_std",
+                    "action.pitch": "mean_std",
+                    "action.yaw": "mean_std",
+                    "action.gripper": "min_max",
+                },
+            )
+        transforms = [
+            # video transforms
+            VideoToTensor(apply_to=self.video_keys),
+            VideoCrop(apply_to=self.video_keys, scale=0.95),
+            VideoResize(apply_to=self.video_keys, height=224, width=224, interpolation="linear"),
+            VideoColorJitter(
+                apply_to=self.video_keys,
+                brightness=0.3,
+                contrast=0.4,
+                saturation=0.5,
+                hue=0.08,
+            ),
+            VideoToNumpy(apply_to=self.video_keys),
+            # state transforms
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes={key: "min_max" for key in self.state_keys},
+            ),
+            # action transforms
+            StateActionToTensor(apply_to=self.action_keys),
+            action_transform,
+            # concat transforms
+            ConcatTransform(
+                video_concat_order=self.video_keys,
+                state_concat_order=self.state_keys,
+                action_concat_order=self.action_keys,
+            ),
+            # model-specific transform
+            GR00TTransform(
+                state_horizon=len(self.observation_indices),
+                action_horizon=len(self.action_indices),
+                max_state_dim=64,
+                max_action_dim=32,
+            ),
+        ]
+        return ComposedModalityTransform(transforms=transforms)
 
-    def modality_config(self) -> dict[str, ModalityConfig]:
-        video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.video_keys,
-        )
 
-        state_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.state_keys,
-        )
-
-        action_modality = ModalityConfig(
-            delta_indices=self.action_indices,
-            modality_keys=self.action_keys,
-        )
-
-        language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
-            modality_keys=self.language_keys,
-        )
-
-        modality_configs = {
-            "video": video_modality,
-            "state": state_modality,
-            "action": action_modality,
-            "language": language_modality,
-        }
-
-        return modality_configs
+class LiberoTraceDataConfig(BaseDataConfig):
+    video_keys = [
+        "video.image",
+        "video.wrist_image",
+        "video.trace_image",
+    ]
+    state_keys = [
+        "state.x",
+        "state.y",
+        "state.z",
+        "state.roll",
+        "state.pitch",
+        "state.yaw",
+        "state.gripper",
+    ]
+    action_keys = [
+        "action.x",
+        "action.y",
+        "action.z",
+        "action.roll",
+        "action.pitch",
+        "action.yaw",
+        "action.gripper",
+    ]
+    language_keys = ["annotation.human.action.task_description"]
+    observation_indices = [0]
+    action_indices = list(range(16))
 
     def transform(self, action_norm: str = "min_max") -> ModalityTransform:
         if action_norm == "min_max":
@@ -1338,8 +1140,9 @@ DATA_CONFIG_MAP = {
     "unitree_g1_full_body": UnitreeG1FullBodyDataConfig(),
     "oxe_droid": OxeDroidDataConfig(),
     "agibot_genie1": AgibotGenie1DataConfig(),
-    "franka_arms_only": FrankaDataConfig(),
+    # "franka_arms_only": FrankaDataConfig(),
     "libero_traj_arms": LIEBROTrajDataConfig(),
     "libero_traj_arms_2": LIEBROTrajData2Config(),
-    "libero_original": LiberoDataConfig()
+    "libero_original": LiberoDataConfig(),
+    "libero_trace": LiberoTraceDataConfig()
 }

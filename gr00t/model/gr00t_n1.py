@@ -423,6 +423,7 @@ class GR00T_N1_5(PreTrainedModel):
         tune_special_A = kwargs.pop("tune_special_A", True)
         tune_special_B = kwargs.pop("tune_special_B", False)
         tune_tool_end = kwargs.pop("tune_tool_end", False)
+        tune_trace_projector = kwargs.pop("tune_trace_projector", False)
 
         print(f"Loading pretrained dual brain from {pretrained_model_name_or_path}")
         print(f"Tune backbone vision tower: {tune_visual}")
@@ -430,6 +431,7 @@ class GR00T_N1_5(PreTrainedModel):
         print(f"Tune embedding A: {tune_special_A}")
         print(f"Tune embedding B: {tune_special_B}")
         print(f"Tune tool end head: {tune_tool_end}")
+        print(f"Tune trace projector: {tune_trace_projector}")
         print(f"Tune action head projector: {tune_projector}")
         print(f"Tune action head DiT: {tune_diffusion_model}")
 
@@ -449,7 +451,7 @@ class GR00T_N1_5(PreTrainedModel):
             local_model_path, local_model_path=local_model_path, **kwargs
         )
         pretrained_model.backbone.set_trainable_parameters(
-            tune_visual=tune_visual, tune_llm=tune_llm, tune_special_A=tune_special_A, tune_special_B=tune_special_B, tune_tool_end=tune_tool_end
+            tune_visual=tune_visual, tune_llm=tune_llm, tune_special_A=tune_special_A, tune_special_B=tune_special_B, tune_tool_end=tune_tool_end, tune_trace_projector=tune_trace_projector
         )
         pretrained_model.action_head.set_trainable_parameters(
             tune_projector=tune_projector, tune_diffusion_model=tune_diffusion_model

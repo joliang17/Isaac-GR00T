@@ -24,22 +24,23 @@ export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 
 DATASET=libero_base
-TASK_NAME=libero_training_v6
+TASK_NAME=ibero_action_trace
 
   # --dataset-path "/fs/nexus-scratch/yliang17/Research/VLA/LIBERO_10_lerobot" \
 
 python scripts/gr00t_finetune.py \
-  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero_base_action" \
+  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero_base_action_trace" \
   --num-gpus 1 \
   --windowing_mode "step" \
   --batch-size 16 \
-  --data_config "libero_original" \
+  --data_config "libero_trace" \
   --video_backend "torchvision_av" \
   --save_steps 30000 \
   --max_steps 60000 \
-  --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_base_action" \
-  --run_name libero_base_action \
-  --tune_diffusion_model
+  --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
+  --run_name ${TASK_NAME} \
+  --tune_diffusion_model \
+  --tune_trace_projector
   # --dataloader_num_workers 0
 
 # python scripts/gr00t_finetune.py \

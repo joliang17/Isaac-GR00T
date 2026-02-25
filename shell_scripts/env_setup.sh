@@ -2,7 +2,8 @@
 
 
 pip install "git+https://github.com/facebookresearch/pytorch3d.git"
-pip install --no-build-isolation flash-attn==2.7.1.post4 
+# pip install --no-build-isolation flash-attn==2.7.1.post4 
+pip install --no-build-isolation flash-attn==2.7.4.post4 
 
 
 module load gcc/11.2.0

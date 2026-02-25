@@ -21,34 +21,14 @@ source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 WANDB_PROJECT="vla_tooluse"
 TASK_NAME="stage2_onlyembA_nextstep_skip_action"
 
-# model_path="stage2_freezeembB_skip_action"
-# model_folder="${model_path}"
-
-# model_path='stage2_onlyembA_skip_action'
-# model_folder="${model_path}"
-
 model_path="stage2_onlyembA_nextstep_skip_action"
 model_folder="${model_path}"
 
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-scratch/yliang17/Research/VLA/saved_folder/dataset/traj_video_both_v2_noid --num-gpus 1 --batch-size 4 --lora_llm_model --lora_rank=4 --window_length=10 --data_config libero_traj_arms --video_backend torchvision_av --save_steps 10 --output_dir "/fs/nexus-scratch/yliang17/Research/VLA/saved_folder/checkpoint/tt" --action_ds_ratio=0.5 --dataloader_num_workers=0 --windowing_mode fixed --toolend_upsample_ratio=20  --run_name ${TASK_NAME} --tune_tool_end --tune_special_A --tune_special_B  --base_model_path "/fs/nexus-scratch/yliang17/Research/VLA/saved_folder/checkpoint/skill_noid_textonly_2emb_allstep_merged/checkpoint-10000" 
 
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-scratch/yliang17/Research/VLA/saved_folder/dataset/traj_video_both_v2_noid --num-gpus 1 --batch-size 4 --lora_llm_model --window_length=10 --data_config libero_traj_arms --video_backend torchvision_av --save_steps 20 --output_dir "/fs/nexus-scratch/yliang17/Research/VLA/saved_folder/checkpoint/tt" --base_model_path "/fs/nexus-scratch/yliang17/Research/VLA/saved_folder/checkpoint/stage2_freezeembB_nextstep_skip_action_merged/checkpoint-6000"
+python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_both_v5_noid --num-gpus 1 --batch-size 2 --window_length=5 --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 200 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --dataloader_num_workers=0 --windowing_mode "sliding_prefix" --run_name "tt_nextstep_skip_action" --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_nextstep_skip_action_toolhead_only_v6_rerun/checkpoint-6000"  --tune_tool_end --do_eval
 
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_skill_only_noid --num-gpus 1 --batch-size 2 --lora_rank 4 --lora_llm_model --window_length=5 --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 20 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --dataloader_num_workers=0 --windowing_mode "block_prefix" --run_name "tt_nextstep" --skill_level="step"
+# --frame_type="key"
+--do_eval
+#  --tune_special_A 
 
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_skill_only_noid --num-gpus 1 --batch-size 2 --window_length=1 --lora_rank 4 --lora_llm_model --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 5 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage3_onlyembA_nextstep_actiononly_v2/checkpoint-40000" --dataloader_num_workers=0 --windowing_mode "sliding_prefix"  --skill_level="step" --run_name "tt_nextstep" 
-
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_skill_only_noid --num-gpus 1 --batch-size 2 --window_length=1 --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 5 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_onlyembA_nextstep_skip_action_v2/checkpoint-6000" --dataloader_num_workers=0 --windowing_mode "sliding_prefix"  --skill_level="step" --run_name "tt_nextstep" --tune_diffusion_model
-
-
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_both_v42_noid --num-gpus 1 --batch-size 2 --lora_rank 4 --lora_llm_model --window_length=5 --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 100 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_nextstep_skip_action_toolhead_only/checkpoint-6000" --dataloader_num_workers=0 --windowing_mode "sliding_prefix"  --skill_level="step" --run_name "tt_nextstep" --tune_tool_end
-
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_both_v42_noid --num-gpus 1 --batch-size 2 --window_length=5 --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 100 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_nextstep_skip_action_toolhead_only_v5/checkpoint-6000" --dataloader_num_workers=0 --windowing_mode "sliding_prefix"  --skill_level="step" --run_name "tt_nextstep" --tune_tool_end 
-
-python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_skill_only_v4_noid --num-gpus 1 --batch-size 2 --window_length=5 --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 200 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_nextstep_skip_action_toolhead_only_v6/checkpoint-6000" --dataloader_num_workers=0 --windowing_mode "sliding_prefix"  --skill_level="step" --run_name "tt_nextstep_skip_action" --tune_special_A
-# --do_eval
-
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_both_v2_noid --num-gpus 1 --batch-size 2 --lora_rank 4 --lora_llm_model --window_length=5 --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 2000 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --dataloader_num_workers=0 --windowing_mode "sliding_prefix" --run_name "tt_nextstep" --skill_level="step"
-
-# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_both_v2_noid --num-gpus 1 --batch-size 4 --window_length=1 --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 20 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_onlyembA_nextstep_skip_action_v3/checkpoint-6000" --dataloader_num_workers=0 --windowing_mode "block_prefix" --run_name "tt_nextstep"
 

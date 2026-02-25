@@ -383,6 +383,145 @@ class Eagle2_5_VLForConditionalGeneration(Eagle2_5_VLPreTrainedModel, Generation
 
         return outputs
 
+    @torch.no_grad()
+    def generate_ori(
+        self,
+        pixel_values: Optional[torch.FloatTensor] = None,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.LongTensor] = None,
+        visual_features: Optional[torch.FloatTensor] = None,
+        generation_config: Optional[GenerationConfig] = None,
+        output_hidden_states: Optional[bool] = None,
+        image_sizes: Optional[List[Tuple[int, int]]] = None,
+        **generate_kwargs,
+    ) -> torch.LongTensor:
+
+        # ------------------------------------------------------------------
+        # 1. Prepare Input Embeddings (Your Original Logic)
+        # ------------------------------------------------------------------
+        if pixel_values is not None:
+            if visual_features is not None:
+                vit_embeds = visual_features
+            else:
+                vit_embeds = self.extract_feature(pixel_values)
+
+            # Get base embeddings
+            input_embeds = self.language_model.get_input_embeddings()(input_ids)
+            B, N, C = input_embeds.shape
+            input_embeds = input_embeds.reshape(B * N, C)
+
+            # Flatten and swap image tokens
+            input_ids_flat = input_ids.reshape(B * N)
+            selected = input_ids_flat == self.config.image_token_index
+            assert selected.sum() != 0
+            input_embeds[selected] = vit_embeds.reshape(-1, C).to(input_embeds.device)
+
+            # Reshape back to batch
+            input_embeds = input_embeds.reshape(B, N, C)
+        else:
+            input_embeds = self.language_model.get_input_embeddings()(input_ids)
+
+        if "use_cache" not in generate_kwargs:
+            generate_kwargs["use_cache"] = True
+
+        past_key_values = generate_kwargs.get("past_key_values", None)
+        
+        # SCENARIO A: We have previous History (KV Cache) AND new inputs
+        # We CANNOT call generate() directly because it will try to slice inputs
+        # based on history length, causing the "0 elements" crash.
+        if past_key_values is not None:
+            # 1. Calculate correct Position IDs (Start after history)
+            past_len = past_key_values[0][0].shape[2]
+            current_len = input_embeds.shape[1]
+            position_ids = torch.arange(
+                past_len, past_len + current_len, 
+                dtype=torch.long, device=input_embeds.device
+            ).unsqueeze(0)
+
+            # 2. Construct Full Attention Mask (History + New)
+            # If the user didn't provide a full mask, we assume 1s for history
+            if attention_mask is not None and attention_mask.shape[1] < (past_len + current_len):
+                history_mask = torch.ones(
+                    (attention_mask.shape[0], past_len), 
+                    dtype=attention_mask.dtype, 
+                    device=attention_mask.device
+                )
+                full_attention_mask = torch.cat([history_mask, attention_mask], dim=1)
+            else:
+                full_attention_mask = attention_mask # Caller might have already handled it
+
+            # 3. Manual Forward Pass (Update Cache with New Images)
+            outputs = self.language_model(
+                inputs_embeds=input_embeds,
+                past_key_values=past_key_values,
+                attention_mask=full_attention_mask,
+                position_ids=position_ids,
+                use_cache=True
+            )
+
+            # 4. Prepare for standard generation
+            # Get the new cache (which now contains Old + New Images)
+            new_past_key_values = outputs.past_key_values
+            
+            # Get the last token's logits to predict the first generated token
+            next_token_logits = outputs.logits[:, -1, :]
+            next_token = torch.argmax(next_token_logits, dim=-1).unsqueeze(1)
+            
+            # Update kwargs for the decoding phase
+            generate_kwargs["past_key_values"] = new_past_key_values
+            
+            # Decrement max_new_tokens since we just "processed" the prompt step manually
+            if "max_new_tokens" in generate_kwargs:
+                generate_kwargs["max_new_tokens"] = max(1, generate_kwargs["max_new_tokens"])
+
+            # 5. Run Generation (Text Only Phase)
+            import pdb;pdb.set_trace()
+            dummy_history = torch.zeros(
+                (input_ids.shape[0], past_len), 
+                dtype=torch.long, 
+                device=input_ids.device
+            )
+            
+            input_ids_for_gen = torch.cat([dummy_history, next_token], dim=1)
+            mask_extension = torch.ones((full_attention_mask.shape[0], 1), 
+                                        dtype=full_attention_mask.dtype, 
+                                        device=full_attention_mask.device)
+            mask_for_gen = torch.cat([full_attention_mask, mask_extension], dim=1)
+            
+            generated_ids = self.language_model.generate(
+                input_ids=input_ids_for_gen,
+                attention_mask=full_attention_mask,
+                generation_config=generation_config,
+                output_hidden_states=output_hidden_states,
+                **generate_kwargs
+            )
+            import pdb;pdb.set_trace()
+            
+            # 6. Concat: [Input Prompt] + [Generated Output]
+            # Standard generate() usually returns [input, output], so we replicate that.
+            final_output = torch.cat([input_ids, generated_ids], dim=1)
+            return final_output
+
+        # SCENARIO B: Cold Start (No History)
+        else:            
+            # model_kwargs = generate_kwargs.get("model_kwargs", {})
+            # # Ensure mask is passed too if available
+            # if attention_mask is not None:
+            #     model_kwargs["attention_mask"] = attention_mask
+            
+            # generate_kwargs["model_kwargs"] = model_kwargs
+
+            outputs = self.language_model.generate(
+                inputs_embeds=input_embeds,
+                # Do NOT pass input_ids directly to avoid "Both specified" conflict
+                attention_mask=attention_mask,
+                generation_config=generation_config,
+                output_hidden_states=output_hidden_states,
+                **generate_kwargs,
+            )
+
+            return outputs
+
     # Copied from transformers.models.llava_next.modeling_llava_next.LlavaNextForConditionalGeneration.get_input_embeddings
     def get_input_embeddings(self):
         return self.language_model.get_input_embeddings()

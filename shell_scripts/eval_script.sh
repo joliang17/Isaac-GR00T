@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=vla_test
-#SBATCH --output=vla_test.log
-#SBATCH --error=vla_test.log
+#SBATCH --job-name=libero_eval_unnorm
+#SBATCH --output=libero_eval_unnorm.log
+#SBATCH --error=libero_eval_unnorm.log
 #SBATCH --time=48:00:00
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director
@@ -20,17 +20,21 @@ source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 
 export OPENAI_API_KEY=""
 base_dir="/fs/nexus-scratch/yliang17/Research/VLA/saved_folder/checkpoint"
+export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
+# export CUDA_VISIBLE_DEVICES="1"
 
 # python3 libero_scripts/libero_eval.py \
 #     --task_suite_name libero_10 \
 #     --num_steps_wait 10 \
-#     --num_trials_per_task 2 \
+#     --num_trials_per_task 5 \
 #     --port 5555 \
 #     --headless True \
-#     --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_training_1/checkpoint-60000" \
+#     --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_base_action_unnorm/checkpoint-60000" \
 #     --embodiment_tag new_embodiment \
 #     --data_config libero_original \
 #     --denoising_steps 8 \
+
+    # --normalize_action
     # --model_path youliangtan/gr00t-n1.5-libero-long-posttrain \
 
 python3 libero_scripts/libero_eval_interleaved.py \
@@ -39,8 +43,20 @@ python3 libero_scripts/libero_eval_interleaved.py \
     --num_trials_per_task 2 \
     --embodiment_tag new_embodiment \
     --data_config libero_traj_arms_2 \
-    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_nextstep_skip_action_toolhead_only_v6/checkpoint-3000" \
-    --model_name "stage3_onlyembA_nextstep_actiononly_toolhead_v5" \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_nextstep_skip_action_toolhead_only_v6_rerun/checkpoint-6000" \
+    --model_name "stage2_nextstep_skip_action_toolhead_only_v6_rerun" \
     --denoising_steps 8 \
     --call_baseline
+
+
+# python3 libero_scripts/libero_eval_interleaved.py \
+#     --task_suite_name libero_10 \
+#     --num_steps_wait 10 \
+#     --num_trials_per_task 2 \
+#     --embodiment_tag new_embodiment \
+#     --data_config libero_traj_arms_2 \
+#     --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_nextstep_skip_action_toolhead_only_v6_rerun/checkpoint-6000" \
+#     --model_name "stage2_nextstep_skip_action_toolhead_only_v6_rerun" \
+#     --denoising_steps 8 \
+#     --call_baseline
 

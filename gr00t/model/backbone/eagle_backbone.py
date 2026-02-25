@@ -309,6 +309,7 @@ class EagleBackbone(nn.Module):
         tune_special_A: bool = True,
         tune_special_B: bool = True,
         tune_tool_end: bool = False,
+        tune_trace_projector: bool = False,
         select_layer: int = -1,
         reproject_vision: bool = False,
         use_flash_attention: bool = False,
@@ -449,19 +450,20 @@ class EagleBackbone(nn.Module):
 
         self.tool_end_head = ResidualHead(hidden_size, 2)
         self.tool_head = ResidualHead(hidden_size, 2)
+        self.trace_projector = torch.nn.Linear(2048, 2048)
 
         # MODIFIER: avoid removing layers
-        # # Layer Pruning: Pop layers from the end to reduce model depth
-        # # Used if we only need intermediate features or a lighter-weight model (Early Exit)
-        # while len(self.eagle_model.language_model.model.layers) > select_layer:
-        #     self.eagle_model.language_model.model.layers.pop(-1)
+        # Layer Pruning: Pop layers from the end to reduce model depth
+        # Used if we only need intermediate features or a lighter-weight model (Early Exit)
+        while len(self.eagle_model.language_model.model.layers) > select_layer:
+            self.eagle_model.language_model.model.layers.pop(-1)
 
         print(f"selected layer: {select_layer}")
         self.select_layer = select_layer
 
         #########################################
         # Freeze/Unfreeze specific components based on configuration
-        self.set_trainable_parameters(tune_llm, tune_visual, tune_special_A, tune_special_B, tune_tool_end)
+        self.set_trainable_parameters(tune_llm, tune_visual, tune_special_A, tune_special_B, tune_tool_end, tune_trace_projector)
 
         # Safety for generation
         if self.eagle_tokenizer.pad_token_id is None:
@@ -568,12 +570,13 @@ class EagleBackbone(nn.Module):
             print("Tied special LM head (Group B) to special embeddings (Group B).")
 
 
-    def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_special_A: bool, tune_special_B: bool, tune_tool_end: bool=False):
+    def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_special_A: bool, tune_special_B: bool, tune_tool_end: bool=False, tune_trace_projector: bool=False):
         self.tune_llm = tune_llm
         self.tune_visual = tune_visual
         self.tune_special_A = tune_special_A
         self.tune_special_B = tune_special_B
         self.tune_tool_end = tune_tool_end
+        self.tune_trace_projector = tune_trace_projector
 
         # Start with all params of this module (EagleBackbone) trainable
         # This includes eagle_linear and the entire eagle_model
@@ -583,6 +586,7 @@ class EagleBackbone(nn.Module):
         # Control the Tool End Head explicitly
         self.tool_end_head.requires_grad_(tune_tool_end)
         self.tool_head.requires_grad_(tune_tool_end)
+        self.trace_projector.requires_grad_(tune_trace_projector)
         
         if not tune_llm:
             # This freezes the entire language_model, including all embedding layers
@@ -669,12 +673,15 @@ class EagleBackbone(nn.Module):
         eagle_output = self.eagle_model(**eagle_input, past_key_values=past_key_values, output_hidden_states=True, return_dict=True, use_cache=True)
         past_key_values = eagle_output.past_key_values
         eagle_features = eagle_output.hidden_states[self.select_layer]  # 29 layers
+        # 540 - 803: trace image
+        if self.tune_trace_projector:
+            eagle_features[:, 546:802] = self.trace_projector(eagle_features[:, 546:802])
+
         eagle_features = self.eagle_linear(eagle_features)
         eagle_logits = eagle_output.logits
         eagle_attn = eagle_input["attention_mask"]
 
         # Raw Hidden States for Tool Head / Tool
-        # TODO: select the last layers?
         raw_hidden_states = eagle_output.hidden_states[-1]
 
         return eagle_logits, eagle_features, eagle_attn, past_key_values, raw_hidden_states
@@ -791,7 +798,7 @@ class EagleBackbone(nn.Module):
                 tool_end_logits_step = self.tool_end_head(selected_hidden)
                 tool_logits_step = self.tool_head(selected_hidden)
 
-                weights = torch.tensor([1.0, 9.0]).to(tool_end_logits_step.device) # [Neg_Weight, Pos_Weight]
+                weights = torch.tensor([1.0, 5.0]).to(tool_end_logits_step.device) # [Neg_Weight, Pos_Weight]
                 tool_loss_fct = nn.CrossEntropyLoss(reduction='mean', weight=weights)
 
                 toolend_loss_avg = tool_loss_fct(tool_end_logits_step, target_tool_end)
@@ -916,12 +923,13 @@ class EagleBackbone(nn.Module):
                 if self.pred_nextstep and self.tune_tool_end:
                     predicted_labels = torch.argmax(tool_end_logits_step, dim=1)
                     toolend_correct = (predicted_labels == target_tool_end)
+                    import pdb;pdb.set_trace()
                     # if there exists 1 in target_tool_end
                     if (target_tool_end == 1).any().item():
                         print(f"Matches: {toolend_correct.tolist()}")
-                        # import pdb;pdb.set_trace()
+                        import pdb;pdb.set_trace()
 
-                import pdb; pdb.set_trace()
+                # import pdb; pdb.set_trace()
             
         return logits, labels, loss, base_loss, special_loss_A, special_loss_B
         
@@ -1297,7 +1305,6 @@ class EagleBackbone(nn.Module):
                         [self.tools_id, self.actions_id, self.skills_end], 
                         device=device, dtype=torch.long
                     )
-        
         # 1. Forward Pass (Single Step)
         # We use your custom forward to get logits AND hidden states
         logits, eagle_embeds, eagle_masks, _, last_HS = self.forward_eagle(vl_input, past_key_values=router_cache)
@@ -1329,6 +1336,7 @@ class EagleBackbone(nn.Module):
             if mask_end.any():
                 # import pdb;pdb.set_trace()
                 router_token_id_head = torch.tensor(self.skills_end, device=device)
+                import pdb;pdb.set_trace()
 
             # if if_debug:
             #     import pdb;pdb.set_trace()
@@ -1347,10 +1355,13 @@ class EagleBackbone(nn.Module):
         attention_mask_added = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
         # final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values)
         final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, None)
+        # import pdb;pdb.set_trace()
+        # if self.tools_id in router_token_id:
+        #     import pdb;pdb.set_trace()
 
         backbone_outputs = BatchFeature({
             "backbone_features": eagle_embeds,
-            "backbone_attention_mask":   eagle_masks,
+            "backbone_attention_mask": eagle_masks,
             "past_key_values": final_kv_cache,
         })
         return router_token_id.unsqueeze(1), decoded_text, backbone_outputs

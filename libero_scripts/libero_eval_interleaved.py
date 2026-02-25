@@ -33,7 +33,7 @@ if importlib.util.find_spec("libero") is None:
     raise ModuleNotFoundError(f"'libero' not found on sys.path. Tried: {_LIBERO_ROOT}")
 
 CACHE_DIR = "/fs/nexus-projects/wilddiffusion/cache"
-CACHE_DIR = "/fs/nexus-scratch/yliang17/Research/cache"
+# CACHE_DIR = "/fs/nexus-scratch/yliang17/Research/cache"
 
 os.environ["HF_HOME"] = CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
@@ -108,7 +108,8 @@ def eval_libero(cfg) -> None:
             normalize = True
         else:
             action_chunk = action_chunk_our
-            normalize = False
+            # normalize = False
+            normalize = True
         
         # action tokens are generated
         final_action = convert_to_libero_action(action_chunk, action_keys, normalize=normalize)
@@ -173,8 +174,13 @@ def eval_libero(cfg) -> None:
 
             # Setup
             t = 0
+            prev_t = 0
+            prev_traj_t = 0
             top_view = []
             wrist_view = []
+            traj_top_view = []
+            traj_wrist_view = []
+            list_output = []
             
             if cfg.task_suite_name == "libero_spatial":
                 max_steps = 220  # longest training demo has 193 steps
@@ -183,7 +189,7 @@ def eval_libero(cfg) -> None:
             elif cfg.task_suite_name == "libero_goal":
                 max_steps = 600  # longest training demo has 270 steps
             elif cfg.task_suite_name == "libero_10":
-                max_steps = 500  # longest training demo has 505 steps
+                max_steps = 550  # longest training demo has 505 steps
                 # max_steps = 1000  # longest training demo has 505 steps
             elif cfg.task_suite_name == "libero_90":
                 max_steps = 400  # longest training demo has 373 steps
@@ -216,12 +222,17 @@ def eval_libero(cfg) -> None:
                     img, wrist_img = get_libero_image(obs)
 
                     # # Save preprocessed image for replay video
-                    top_view.append(img)
-                    wrist_view.append(wrist_img)
+                    if t != prev_t:
+                        top_view.append(img)
+                        wrist_view.append(wrist_img)
                     # high_level_instruct = '[TRAJ_MODE]' + task.language
                     high_level_instruct = task.language
 
                     if not inside_tools:
+                        if t != prev_traj_t:
+                            traj_top_view.append(img)
+                            traj_wrist_view.append(wrist_img)
+
                         # on trajectory level
                         if task_instruction == '':
                             task_instruction = task.language
@@ -241,6 +252,16 @@ def eval_libero(cfg) -> None:
                         else:
                             obs_dict = process_observation(obs, "[INFER]" + cur_instr, headless=cfg.headless)
 
+                        # # select 4 steps from previous timesteps and add to observation
+                        # selected_t = random.sample(range(len(traj_top_view)), 4)
+                        # sel_top = [traj_top_view[i] for i in selected_t]
+                        # sel_wrist = [traj_wrist_view[i] for i in selected_t]
+                        # sel_instruction = [list_output[i] for i in selected_t]
+                        # obs_dict['top_previous'] = np.array(sel_top)
+                        # obs_dict['wrist_previous'] = np.array(sel_wrist)
+                        # obs_dict['annotation.human.action.task_description'] = sel_instruction
+                        # import pdb;pdb.set_trace()
+
                         action_chunk_our, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(
                             obs_dict, observations_base=obs_dict_base, img_count=traj_img_count,
                             past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
@@ -252,21 +273,24 @@ def eval_libero(cfg) -> None:
                             inside_tools = True
                             tools_output = tools_output.replace('[TOOLS]', '')
                             print(f"At timestep {t}, Call Tools: {tools_output}")
+                            list_output.append(tools_output)
 
                             # action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, call_baseline=call_baseline)
                         else:
+                            list_output.append('[ACTIONS]')
+                            no_action = False
                             # import pdb;pdb.set_trace()
                             final_action = reformat_action(action_chunk_bs, action_chunk_our, call_baseline=call_baseline)
+                            prev_traj_t = t
 
                     else:
                         # skill instruction is already included in past_key_values_traj
                         action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, task_instruct=task.language, call_baseline=call_baseline, if_debug=if_debug)
                         last_skill_idx = t
                         prev_tool_instruction = tools_output
-                        # if not inside_tools:
-                        #     import pdb;pdb.set_trace()
-                        # if final_action[-1] > -1.0:
-                            # save_img(img_array=img, filename=f"cases/skill_end_{t}")
+                        if not inside_tools:
+                            import pdb;pdb.set_trace()
+                            save_img(img_array=img, filename=f"cases/skill_end_{t}")
 
                     if not no_action:
                         # Execute action in environment
@@ -275,6 +299,7 @@ def eval_libero(cfg) -> None:
                             task_successes += 1
                             total_successes += 1
                             break
+                        prev_t = t
                         t += 1
                         if t % 10 == 0:
                             print(f"current t: {t}")

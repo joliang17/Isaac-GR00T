@@ -24,13 +24,12 @@ os.environ["PYTHONPATH"] = os.pathsep.join(
 if importlib.util.find_spec("libero") is None:
     raise ModuleNotFoundError(f"'libero' not found on sys.path. Tried: {_LIBERO_ROOT}")
 
-CACHE_DIR = "/fs/nexus-projects/wilddiffusion/cache"
-CACHE_DIR = "/fs/nexus-scratch/yliang17/Research/cache"
-
+CACHE_DIR = os.getenv("CACHE_DIR", "/fs/nexus-projects/wilddiffusion/cache")
 os.environ["HF_HOME"] = CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
 os.environ["HF_MODULES_CACHE"] = CACHE_DIR
 os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
+
 import pprint
 from dataclasses import dataclass
 import argparse
@@ -63,6 +62,7 @@ os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
 
 
 def eval_libero(cfg) -> None:
+    print(f"Normalized action or not: {args.normalize_action}")
     # Initialize LIBERO task suite
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[cfg.task_suite_name]()
@@ -158,8 +158,10 @@ def eval_libero(cfg) -> None:
 
                         # Query model to get action
                         obs_dict = process_observation(obs, task_description, headless=args.headless)
-                        action_chunk, _, _, _ = gr00t_policy.get_action(obs_dict, mode='baseline')
-                        action = convert_to_libero_action(action_chunk, action_keys, normalize=False)
+                        _, _, _, action_chunk = gr00t_policy.get_action(obs_dict, mode='baseline')
+                        # if normalize=True: gripper from model: [0, 1] will be normalized to [-1, 1]
+                        # if original training data is not normalized (-1, 1), no need ro norm (normalize_action = False)
+                        action = convert_to_libero_action(action_chunk, action_keys, normalize=args.normalize_action)
 
                         try:
                             # Execute action in environment
@@ -236,6 +238,7 @@ if __name__ == "__main__":
     parser.add_argument("--embodiment_tag", type=str, default="new_embodiment")
     parser.add_argument("--data_config", type=str, default="libero_original")
     parser.add_argument("--denoising_steps", type=int, default=8)
+    parser.add_argument("--normalize_action", action="store_true", help="Enable action normalization")
     args = parser.parse_args()
 
     eval_libero(args)

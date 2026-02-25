@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os
 import json
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -211,9 +211,9 @@ class Gr00tPolicy(BasePolicy):
         self._load_model(model_path)
 
         # ADDED: Load transforms
-        self._load_metadata(self.model_path / "experiment_cfg")
-        if self.call_baseline:
-            self._load_metadata(Path("/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/experiment_cfg"), base=True)
+        self._load_metadata(os.path.join(self.model_path, "experiment_cfg"))
+        # if self.call_baseline:
+        self._load_metadata(os.path.join(self.base_path, "experiment_cfg"), base=True)
 
         # Load horizons
         self._load_horizons()
@@ -320,7 +320,8 @@ class Gr00tPolicy(BasePolicy):
                 unnormalized_action = squeeze_dict_values(unnormalized_action)
 
         unnormalized_action_bs = None
-        if call_baseline:
+        # evaluated model is base model
+        if call_baseline or self.is_base:
             observations_backup = observations_bs.copy()
             observations_bs['annotation.human.action.task_description'] = np.array([observations_bs['annotation.human.action.task_description'].item().replace('[TRAJ_MODE]', '').replace('[SKILL_MODE]', '')])
             normalized_input_bs = self.apply_transforms(observations_bs, base=True)
@@ -336,6 +337,7 @@ class Gr00tPolicy(BasePolicy):
             if history_length > 4096:
                 # print(history_length)
                 past_key_values = truncate_kv(past_key_values, keep_last_n=4096)
+
         return unnormalized_action, tools_output, past_key_values, unnormalized_action_bs
 
     def _get_action_from_normalized_input(self, normalized_input: Dict[str, Any], past_key_values=None, mode: str='baseline', inside_tool: bool=False, call_baseline: bool=False, if_debug: bool=False) -> torch.Tensor:
@@ -450,27 +452,35 @@ class Gr00tPolicy(BasePolicy):
         model = check_horizon(model)
         self.model = model
 
-        # check whether model is base model:
-        if 'GR00T-N1.5-3B' in str(model_path) or 'gr00t-n1.5-libero-long-posttrain' in str(model_path):
+        if 'GR00T-N1.5-3B' in str(model_path) or 'libero' in str(model_path):
             self.is_base = True
+            self.base_path = str(model_path)
+        elif 'gr00t-n1.5-libero-long-posttrain' in str(model_path):
+            self.is_base = True
+            self.base_path = "/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/"
         else:
             self.is_base = False
+            # use groot on libero as base model
+            self.base_path = "/fs/nexus-scratch/yliang17/Research/cache/hub/models--youliangtan--gr00t-n1.5-libero-long-posttrain/snapshots/aa49078d5cc9ce72917bc4312f1ef12771f277de/"
 
         if not self.is_base and self.call_baseline:
+            # if input our VLA for planning and call baseline model for action prediction
             # load baseline model
-            print(f"load libero baseline model")
+            print(f"load libero baseline model for action prediction")
             base_model = GR00T_N1_5.from_pretrained("youliangtan/gr00t-n1.5-libero-long-posttrain", torch_dtype=COMPUTE_DTYPE, )
             base_model.eval()  # Set model to eval mode
             base_model.to(device=self.device)  # type: ignore
             base_model = check_horizon(base_model, base=True)
             self.base_model = base_model
         else:
+            # either use our model for planning & action prediction, or directly call baseline model for evaluation
+            print(f"load {str(model_path)} for action prediction")
             self.base_model = model
 
     def _load_metadata(self, exp_cfg_dir: Path, base: bool=False):
         """Load the transforms for the model."""
         # Load metadata for normalization stats
-        metadata_path = exp_cfg_dir / "metadata.json"
+        metadata_path = os.path.join(exp_cfg_dir, "metadata.json")
         with open(metadata_path, "r") as f:
             metadatas = json.load(f)
         

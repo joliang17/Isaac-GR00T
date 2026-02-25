@@ -82,6 +82,8 @@ class ArgsConfig:
     - 'window': window-wise prediction for skill-level only
     """
 
+    frame_type: str = "normal"
+
     min_seq_len: int = 1
     """Minimum sequence length. Set to 2 to generate '1-2' as the smallest window."""
 
@@ -137,6 +139,9 @@ class ArgsConfig:
     """Whether to fine-tune the language model backbone."""
 
     tune_tool_end: bool = False
+    """Whether to fine-tune the language model backbone."""
+
+    tune_trace_projector: bool = False
     """Whether to fine-tune the language model backbone."""
 
     freeze_embeddings: bool = False
@@ -233,6 +238,7 @@ def main(config: ArgsConfig):
             window_length=config.window_length, 
             windowing_mode=config.windowing_mode,
             skill_level=config.skill_level,
+            frame_type=config.frame_type,
             min_seq_len=config.min_seq_len,
             skill_inclusion_ratio=config.skill_inclusion_ratio,
             action_ds_ratio=config.action_ds_ratio,
@@ -252,6 +258,7 @@ def main(config: ArgsConfig):
                 window_length=config.window_length, 
                 windowing_mode=config.windowing_mode,
                 skill_level=config.skill_level,
+                frame_type=config.frame_type,
                 min_seq_len=config.min_seq_len,
                 skill_inclusion_ratio=config.skill_inclusion_ratio,
                 action_ds_ratio=config.action_ds_ratio,
@@ -277,7 +284,6 @@ def main(config: ArgsConfig):
 
     if config.do_eval:
         eval_sanity_set = Subset(train_dataset, indices=range(20))
-        import pdb;pdb.set_trace()
     else:
         eval_sanity_set = None
 
@@ -300,6 +306,7 @@ def main(config: ArgsConfig):
         tune_special_A=config.tune_special_A,  # backbone's embedding
         tune_special_B=config.tune_special_B,  # backbone's embedding
         tune_tool_end=config.tune_tool_end,
+        tune_trace_projector=config.tune_trace_projector,
         pred_nextstep=pred_nextstep
     )
 
@@ -395,13 +402,13 @@ def main(config: ArgsConfig):
 
         print("Initialized tool_end_head with custom weights.")
 
-    # Initialize the tool head so it doesn't output garbage initially
-    if config.tune_tool_end and hasattr(model.backbone, "tool_head") and config.base_model_path == "nvidia/GR00T-N1.5-3B":
+    if config.tune_trace_projector and hasattr(model.backbone, "trace_projector") and 'trace' not in config.base_model_path:
         with torch.no_grad():
-            model.backbone.tool_head.weight.data.normal_(mean=0.0, std=0.02)
-            model.backbone.tool_head.bias.data.zero_()
-            model.backbone.tool_head.bias.data[1] = -5.0 
-        print("Initialized tool_head with custom weights.")
+            model.backbone.trace_projector.weight.data.normal_(mean=0.0, std=0.02)
+            model.backbone.trace_projector.bias.data.zero_()
+            model.backbone.trace_projector.bias.data[1] = -5.0 
+
+        print("Initialized trace_projector with custom weights.")
 
     # Set the model's compute_dtype to bfloat16
     model.compute_dtype = "bfloat16"
@@ -423,6 +430,7 @@ def main(config: ArgsConfig):
             tune_special_A=config.tune_special_A,
             tune_special_B=config.tune_special_B,
             tune_tool_end=config.tune_tool_end,
+            tune_trace_projector=config.tune_trace_projector,
         )
     else:
         # tie model weight
