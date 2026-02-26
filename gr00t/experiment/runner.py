@@ -47,9 +47,11 @@ def preprocess_logits_for_metrics(logits, labels):
         t_te = logits.get("target_tool_end_eval")
         p_sp = logits.get("cur_pred_id_eval")
         l_sp = logits.get("cur_label_id_eval")
+        p_tt = logits.get("all_pred_id_eval")
+        l_tt = logits.get("all_pred_id_eval")
     else:
         lm_logits = logits
-        p_te = t_te = p_sp = l_sp = None
+        p_te = t_te = p_sp = l_sp = p_tt = l_tt = None
 
     # 2. Handle LM Logits (standard cross-entropy tracking)
     # Shape: [Batch, Seq]
@@ -64,11 +66,13 @@ def preprocess_logits_for_metrics(logits, labels):
     if t_te is None: t_te = torch.empty(0, dtype=torch.long, device=device)
     if p_sp is None: p_sp = torch.empty(0, dtype=torch.long, device=device)
     if l_sp is None: l_sp = torch.empty(0, dtype=torch.long, device=device)
+    if p_tt is None: p_tt = torch.empty(0, dtype=torch.long, device=device)
+    if l_tt is None: l_tt = torch.empty(0, dtype=torch.long, device=device)
 
     # 4. Return as a tuple
     # Note: We include both preds and targets for the toolhead/special tokens 
     # because they are filtered/subsampled in the backbone.
-    return (lm_preds, p_te, t_te, p_sp, l_sp)
+    return (lm_preds, p_te, t_te, p_sp, l_sp, p_tt, l_tt)
 
 
 def compute_tool_end_counts(
@@ -126,15 +130,38 @@ def compute_metrics(
     skills_end_id=None,
     tools_id=None,
     actions_id=None,
+    tokenizer=None,
 ):
     """
     Branched evaluation logic:
     - If tune_tool_end: Focus on Binary Classifier accuracy for the heads.
     - If not tune_tool_end: Focus on Token Generation accuracy (Special A/B).
     """
-    (lm_preds, predicted_tool_end, target_tool_end, cur_pred_id_eval, cur_label_id_eval), labels = eval_preds
-    metrics = {}
+    (lm_preds, predicted_tool_end, target_tool_end, cur_pred_id_eval, cur_label_id_eval, all_pred_id_eval, all_label_id_eval), labels = eval_preds
+    pred_text = tokenizer.batch_decode(all_pred_id_eval, skip_special_tokens=False)
+    gt_text = tokenizer.batch_decode(all_label_id_eval, skip_special_tokens=False)
     
+    gt_str = ''.join(gt_text)
+    pred_str = ''.join(pred_text)
+    gt_lines = gt_str.splitlines(keepends=True)
+
+    pred_groups = []
+    pos = 0
+
+    for line in gt_lines:
+        L = len(line)
+        pred_groups.append(pred_str[pos:pos+L])
+        pos += L
+
+    gt_groups = [l.rstrip('\n') for l in gt_lines]
+    pred_groups = [l.rstrip('\n') for l in pred_groups]
+    
+    for gt, pred in zip(gt_groups, pred_groups):
+        print('-' * 20)
+        print(f"Labels: {gt}")
+        print(f"Preds : {pred}")
+
+    metrics = {}
     valid_mask = cur_label_id_eval!=skills_end_id 
     pred_token = cur_pred_id_eval[valid_mask]
     gt_token = cur_label_id_eval[valid_mask]
@@ -282,6 +309,7 @@ class TrainRunner:
             if backbone:
                 # Get the training state of the heads
                 tune_tool_end = getattr(backbone, "tune_tool_end", False)
+                tokenizer = getattr(backbone, "eagle_tokenizer", None)
                 
                 compute_metrics_func = partial(
                     compute_metrics,
@@ -291,6 +319,7 @@ class TrainRunner:
                     skills_end_id=getattr(backbone, "skills_end", None),
                     tools_id=getattr(backbone, "tools_id", None),
                     actions_id=getattr(backbone, "actions_id", None),
+                    tokenizer=tokenizer
                 )
                 preprocess_logits_func = preprocess_logits_for_metrics
 

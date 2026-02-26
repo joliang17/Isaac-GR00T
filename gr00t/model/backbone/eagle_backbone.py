@@ -807,7 +807,7 @@ class EagleBackbone(nn.Module):
         num_special_B = self.special_token_ids_B.numel()
         num_special_total = num_special_A + num_special_B
         
-        special_loss_A = special_loss_B = base_loss = None
+        special_loss_A = special_loss_B = base_loss = text_preds = text_labels = None
 
         if num_special_total == 0:
             # Case A: Standard Vocabulary Only (No special tokens added)
@@ -843,6 +843,8 @@ class EagleBackbone(nn.Module):
             global_pred_ids = shift_logits.argmax(dim=-1)
             curr_preds  = global_pred_ids[special_token_mask]
             curr_labels = shift_labels[special_token_mask]
+            text_preds = global_pred_ids[valid_mask]
+            text_labels = shift_labels[valid_mask]
 
         ######################################
         # loss avg per type
@@ -854,11 +856,15 @@ class EagleBackbone(nn.Module):
         # # DEBUG
         if False:
 
-            pred_text = self.eagle_tokenizer.batch_decode(curr_preds, skip_special_tokens=False)
-            label_text = self.eagle_tokenizer.batch_decode(curr_labels, skip_special_tokens=False)
+            pred_label = self.eagle_tokenizer.batch_decode(curr_preds, skip_special_tokens=False)
+            gt_label = self.eagle_tokenizer.batch_decode(curr_labels, skip_special_tokens=False)
+            pred_text = self.eagle_tokenizer.batch_decode(global_pred_ids[valid_mask], skip_special_tokens=False)
+            gt_text = self.eagle_tokenizer.batch_decode(shift_labels[valid_mask], skip_special_tokens=False)
 
+            # print(f"Preds:  {''.join(pred_label)}")
+            # print(f"Labels: {''.join(gt_label)}")
             print(f"Preds:  {''.join(pred_text)}")
-            print(f"Labels: {''.join(label_text)}")
+            print(f"Labels:  {''.join(gt_text)}")
 
             if predicted_tool_end is not None:
                 toolend_correct = (predicted_tool_end == target_tool_end)
@@ -868,7 +874,7 @@ class EagleBackbone(nn.Module):
 
             import pdb; pdb.set_trace()
             
-        return logits, labels, loss, base_loss, special_loss_A, special_loss_B, predicted_tool_end, target_tool_end, curr_preds, curr_labels
+        return logits, labels, loss, base_loss, special_loss_A, special_loss_B, predicted_tool_end, target_tool_end, curr_preds, curr_labels, text_preds, text_labels
         
 
     def split_by_img_id(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
@@ -1052,12 +1058,12 @@ class EagleBackbone(nn.Module):
         special_loss_B_avg = torch.tensor(0.0, device=eagle_logits.device)
         embeds_tensor, masks_tensor = None, None
         logits, labels = None, None
-        predicted_tool_end, target_tool_end, curr_preds, curr_labels = None, None, None, None
+        predicted_tool_end, target_tool_end, special_preds, special_labels, text_preds, text_labels = None, None, None, None, None, None
 
         if len(step_input) != 0:
 
             # Compute generated loss
-            logits, labels, transcript_lm_loss, base_loss_avg, special_loss_A_avg, special_loss_B_avg, predicted_tool_end, target_tool_end, curr_preds, curr_labels = self._transcript_lm_loss(
+            logits, labels, transcript_lm_loss, base_loss_avg, special_loss_A_avg, special_loss_B_avg, predicted_tool_end, target_tool_end, special_preds, special_labels, text_preds, text_labels = self._transcript_lm_loss(
                 vl_input)
 
             # extract action token hidden states based on action_pad_ids
@@ -1082,8 +1088,10 @@ class EagleBackbone(nn.Module):
             "labels": labels,
             "predicted_tool_end_eval": predicted_tool_end,  # for evaluation
             "target_tool_end_eval": target_tool_end,  # for evaluation
-            "cur_pred_id_eval": curr_preds,  # for evaluation
-            "cur_label_id_eval": curr_labels,  # for evaluation
+            "cur_pred_id_eval": special_preds,  # for evaluation
+            "cur_label_id_eval": special_labels,  # for evaluation
+            "all_pred_id_eval": text_preds,  # for evaluation
+            "all_label_id_eval": text_labels,  # for evaluation
         }
 
         return out
@@ -1127,6 +1135,8 @@ class EagleBackbone(nn.Module):
                 "target_tool_end_eval": out["target_tool_end_eval"], 
                 "cur_pred_id_eval": out["cur_pred_id_eval"], 
                 "cur_label_id_eval": out["cur_label_id_eval"], 
+                "all_pred_id_eval": out["all_pred_id_eval"], 
+                "all_label_id_eval": out["all_label_id_eval"], 
             }
         )
 
