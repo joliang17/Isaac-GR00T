@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 
 import torch
+import numpy as np
 from transformers import TrainingArguments, set_seed
 from torch.utils.data import Subset
 from gr00t.data.dataset import LeRobotMixtureDataset, LeRobotSingleDataset
@@ -28,33 +29,81 @@ from gr00t.utils.experiment import (
     CheckpointFormatCallback,
     safe_save_model_for_hf_trainer,
 )
+import wandb
 from functools import partial
 
 
 def preprocess_logits_for_metrics(logits, labels):
-    """Reduces logits to ID to save RAM."""
-    import pdb;pdb.set_trace()
-    if isinstance(logits, tuple):
-        logits = logits[0]
-    return logits.argmax(dim=-1), labels
+    """
+    Handles the dictionary output from EagleBackbone.
+    Ensures all outputs are Tensors (not None) to prevent HF Trainer crashes.
+    """
+    # 1. Extract values from the dictionary
+    if isinstance(logits, dict) or hasattr(logits, "data"):
+        lm_logits = logits.get("logits")
+        # These are already argmaxed/filtered in the backbone
+        p_te = logits.get("predicted_tool_end_eval")
+        t_te = logits.get("target_tool_end_eval")
+        p_sp = logits.get("cur_pred_id_eval")
+        l_sp = logits.get("cur_label_id_eval")
+    else:
+        lm_logits = logits
+        p_te = t_te = p_sp = l_sp = None
 
+    # 2. Handle LM Logits (standard cross-entropy tracking)
+    # Shape: [Batch, Seq]
+    lm_preds = lm_logits.argmax(dim=-1) if lm_logits is not None else torch.zeros_like(labels)
 
-def compute_metrics(eval_preds, tokenizer):
-    """Decodes and prints predictions."""
-    preds, labels = eval_preds
-    # Log first 3 examples
-    print(f"\n\n{'='*40} EVAL PREDICTIONS {'='*40}")
-    for i in range(min(3, len(preds))):
-        valid_mask = labels[i] != -100
-        pred_text = tokenizer.decode(preds[i][valid_mask], skip_special_tokens=False)
-        label_text = tokenizer.decode(labels[i][valid_mask], skip_special_tokens=False)
+    # 3. Create Fallbacks for None values
+    # Accelerator.gather requires a real tensor. We use empty tensors for batches
+    # where no special tokens or tool-head events occurred.
+    device = lm_preds.device
+    
+    if p_te is None: p_te = torch.empty(0, dtype=torch.long, device=device)
+    if t_te is None: t_te = torch.empty(0, dtype=torch.long, device=device)
+    if p_sp is None: p_sp = torch.empty(0, dtype=torch.long, device=device)
+    if l_sp is None: l_sp = torch.empty(0, dtype=torch.long, device=device)
 
-        print(f"\n[Example {i}]")
-        print(f"LABEL: {label_text}")
-        print(f"PRED:  {pred_text}")
-    print(f"{'='*98}\n")
-    return {"samples_logged": 3}
+    # 4. Return as a tuple
+    # Note: We include both preds and targets for the toolhead/special tokens 
+    # because they are filtered/subsampled in the backbone.
+    return (lm_preds, p_te, t_te, p_sp, l_sp)
 
+def compute_metrics(
+    eval_preds,
+    tune_tool_end=False,
+    special_token_ids_A=None,
+    special_token_ids_B=None,
+    skills_end_id=None,
+    tools_id=None,
+    actions_id=None,
+):
+    """
+    Branched evaluation logic:
+    - If tune_tool_end: Focus on Binary Classifier accuracy for the heads.
+    - If not tune_tool_end: Focus on Token Generation accuracy (Special A/B).
+    """
+    (lm_preds, predicted_tool_end, target_tool_end_eval, cur_pred_id_eval, cur_label_id_eval), labels = eval_preds
+    metrics = {}
+    
+    # Common mask for valid LM tokens
+    
+    if tune_tool_end:
+        # --- BRANCH 1: AUXILIARY HEAD EVALUATION ---
+        metrics["tool_end_total"] = (target_tool_end_eval == predicted_tool_end).mean()
+        if (target_tool_end_eval==1).any():
+            metrics["tool_end_true"] = (target_tool_end_eval[target_tool_end_eval==1] == predicted_tool_end[target_tool_end_eval==1]).mean()
+        else:
+            metrics["tool_end_true"] = 0.0
+    else:
+        valid_mask = cur_label_id_eval!=skills_end_id 
+        pred_token = cur_pred_id_eval[valid_mask]
+        gt_token = cur_label_id_eval[valid_mask]
+        if valid_mask.any():
+            metrics["special_token"] = (pred_token == gt_token).mean()
+        else:
+            metrics["special_token"] = 0.0
+    return metrics
 
 class TrainRunner:
     def __init__(
@@ -178,9 +227,19 @@ class TrainRunner:
         # If your tokenizer is stored differently, adjust 'model.eagle_tokenizer' below.
         if eval_dataset is not None:
             backbone = getattr(model, "backbone", None)
-            tokenizer = getattr(backbone, "eagle_tokenizer", None) if backbone is not None else None
-            if tokenizer:
-                compute_metrics_func = partial(compute_metrics, tokenizer=tokenizer)
+            if backbone:
+                # Get the training state of the heads
+                tune_tool_end = getattr(backbone, "tune_tool_end", False)
+                
+                compute_metrics_func = partial(
+                    compute_metrics,
+                    tune_tool_end=tune_tool_end,
+                    special_token_ids_A=backbone.special_token_ids_A.cpu().numpy() if hasattr(backbone, "special_token_ids_A") else None,
+                    special_token_ids_B=backbone.special_token_ids_B.cpu().numpy() if hasattr(backbone, "special_token_ids_B") else None,
+                    skills_end_id=getattr(backbone, "skills_end", None),
+                    tools_id=getattr(backbone, "tools_id", None),
+                    actions_id=getattr(backbone, "actions_id", None),
+                )
                 preprocess_logits_func = preprocess_logits_for_metrics
 
         # Create the trainer
@@ -191,10 +250,9 @@ class TrainRunner:
             eval_dataset=eval_dataset,
             data_collator=data_collator,
             compute_dtype=compute_dtype,
-            # compute_metrics=compute_metrics_func,          # ### NEW
-            # preprocess_logits_for_metrics=preprocess_logits_func, # ### NEW
+            compute_metrics=compute_metrics_func,
+            preprocess_logits_for_metrics=preprocess_logits_func,
         )
-
         # Add checkpoint format callback to ensure experiment_cfg is copied to each checkpoint
         run_name = training_args.run_name
         ckpt_format_callback = CheckpointFormatCallback(
@@ -224,3 +282,12 @@ class TrainRunner:
             trainer=self.trainer,
             output_dir=self.training_args.output_dir,
         )
+
+    def eval(self):
+        print("***** Running Evaluation *****")
+        metrics = self.trainer.evaluate()
+
+        if self.rank == 0:
+            wandb.log(metrics)
+            print(metrics)            
+        return metrics

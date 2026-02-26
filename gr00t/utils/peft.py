@@ -26,9 +26,8 @@ def _wrap_forward(model):
 
         ah_loss = action_head_outputs["loss"]
         action_head_outputs["action_head_loss"] = ah_loss
-        action_head_outputs.update({k: v for k, v in backbone_outputs.items() if "loss" in k})
+        action_head_outputs.update({k: v for k, v in backbone_outputs.items() if "loss" in k or 'logit' in k or 'eval' in k})
         action_head_outputs["loss"] = ah_loss + action_head_outputs['transcript_lm_loss']
-        action_head_outputs["logits"] = backbone_outputs['logits']
         action_head_outputs["labels"] = backbone_outputs['labels']
         return action_head_outputs
 

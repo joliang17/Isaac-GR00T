@@ -283,7 +283,7 @@ def main(config: ArgsConfig):
         print(f"Loaded {len(single_datasets)} datasets, with {config.dataset_path} ")
 
     if config.do_eval:
-        eval_sanity_set = Subset(train_dataset, indices=range(20))
+        eval_sanity_set = Subset(train_dataset, indices=range(int(0.01 * len(train_dataset))))
     else:
         eval_sanity_set = None
 
@@ -499,6 +499,7 @@ def main(config: ArgsConfig):
     )
 
     # 2.3 run experiment
+    # experiment.eval()
     experiment.train()
 
 

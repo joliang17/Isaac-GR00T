@@ -207,7 +207,6 @@ class GR00T_N1_5(PreTrainedModel):
         self,
         inputs: dict,
     ) -> BatchFeature:
-        
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         backbone_outputs = self.backbone(backbone_inputs)
 
@@ -226,11 +225,9 @@ class GR00T_N1_5(PreTrainedModel):
         # Merge route/tool losses into the output and total loss.
         ah_loss = action_head_outputs["loss"]
         action_head_outputs["action_head_loss"] = ah_loss
-        action_head_outputs.update({k: v for k, v in backbone_outputs.items() if "loss" in k})
+        action_head_outputs.update({k: v for k, v in backbone_outputs.items() if "loss" in k or 'logit' in k or 'eval' in k})
         action_head_outputs["loss"] = ah_loss + action_head_outputs['transcript_lm_loss']
-        if action_head_outputs["loss"] is not None and (not action_head_outputs["loss"].requires_grad or action_head_outputs["loss"].grad_fn is None):
-            import pdb; pdb.set_trace()
-        action_head_outputs["logits"] = backbone_outputs['logits']
+        
         action_head_outputs["labels"] = backbone_outputs['labels']
         return action_head_outputs
 

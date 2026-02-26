@@ -215,3 +215,32 @@ class DualBrainTrainer(transformers.Trainer):
                 os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME)
             )
         return super().train(resume_from_checkpoint, trial, ignore_keys_for_eval, **kwargs)
+
+    def prediction_step(
+        self,
+        model: torch.nn.Module,
+        inputs,
+        prediction_loss_only: bool,
+        ignore_keys
+    ):
+        """
+        Overriding prediction_step to pass inputs as a single dictionary
+        instead of unpacking them with **inputs.
+        """
+        with torch.no_grad():
+            with self.compute_loss_context_manager():
+                # This is the critical line change:
+                # Use model(inputs) instead of model(**inputs)
+                outputs = model(inputs)
+                
+                loss = outputs.get("loss")
+                logits = outputs.get("logits")
+                tool_end_logits = outputs.get("tool_end_logits", None)
+                new_logits = {k:v for k, v in outputs.items() if 'logits' in k or 'eval' in k}
+                labels = inputs.get("labels") or inputs.get("eagle_llm_labels")
+
+        if prediction_loss_only:
+            return (loss, None, None)
+
+        # logits and labels need to be tensors for the Trainer to aggregate them
+        return (loss, new_logits, labels)

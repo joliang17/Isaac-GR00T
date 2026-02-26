@@ -545,6 +545,66 @@ class LeRobotSingleDataset(Dataset):
 
         return np.array(trajectory_ids), np.array(trajectory_lengths), np.array(trajectory_type)
 
+
+    # def _get_distinguishable_keyframes(self, tid: int, history_indices: list[int], step_descs: list[str]) -> list[tuple[int, int]]:
+    #     """
+    #     Selects up to 5 key frames based on [TOOLS] transitions.
+    #     """
+    #     key_indices = []
+    #     seen_tools = set()
+    #     list_desc = []
+
+    #     for idx in history_indices:
+    #         desc = step_descs[idx]
+    #         if isinstance(desc, list): desc = desc[0]
+
+    #         # We define a 'distinguishable skill' by the specific tool being used
+    #         # Example: "[TOOLS] pick up hammer" -> "[TOOLS] pick up screwdriver"
+    #         if '[TOOLS]' in desc:
+    #             if desc not in seen_tools:
+    #                 key_indices.append(idx)
+    #                 seen_tools.add(desc)
+
+    #     # Requirement: If more than 5, randomly sample 5
+    #     if len(key_indices) > self.window_length:
+    #         key_indices = sorted(random.sample(key_indices, self.window_length))            
+            
+    #     # Fallback: If no [TOOLS] were found but we need frames, 
+    #     # you might want to pick the first frame or [ACTIONS] frames.
+    #     if len(key_indices) == 0 and len(history_indices) > 0:
+    #         key_indices = [history_indices[0]]
+
+    #     return [(tid, idx) for idx in key_indices]
+
+    def _get_uniform_keyframes(self, tid: int, history_indices: list[int]) -> list[tuple[int, int]]:
+        """
+        Uniformly selects (window_length - 1) frames from history 
+        and appends the current frame as the last element.
+        """
+        n_available = len(history_indices)
+        target_num = self.window_length  # e.g., 5
+        
+        if n_available <= target_num:
+            # If history is too short, return what we have (already ends with current frame)
+            key_indices = history_indices
+        else:
+            import numpy as np
+            # 1. Isolate the current frame (the last index in history_indices)
+            current_frame = history_indices[-1]
+            # 2. Isolate the preceding history
+            preceding_history = history_indices[:-1]
+            
+            # 3. Uniformly pick (target_num - 1) frames from the preceding history
+            # We use linspace on the remaining slots
+            sub_indices = np.linspace(0, len(preceding_history) - 1, target_num - 1).astype(int)
+            key_indices = [preceding_history[i] for i in sub_indices]
+            
+            # 4. Append the current frame
+            key_indices.append(current_frame)
+            
+        return [(tid, idx) for idx in key_indices]
+
+
     def _get_all_windows(self) -> list[list[tuple[int, int]]]:
         """
         Generates training windows (sequences of frame indices) from the dataset trajectories.
@@ -632,6 +692,22 @@ class LeRobotSingleDataset(Dataset):
 
                 continue
 
+            # NEW LOGIC: Trajectory-level keyframe selection
+            elif self.frame_type == 'key' and ttype == 0:
+                for end_idx in range(T):
+                    # For every ending timestep, look at history
+                    history_indices = list(range(end_idx + 1))
+                    if len(history_indices) <= self.window_length:
+                        continue
+                    
+                    window = self._get_uniform_keyframes(tid, history_indices,)
+                    all_windows.append(window)
+                    
+                    if max_windows is not None and len(all_windows) >= max_windows:
+                        self._print_stats(skill_cnt, traj_cnt, skill_ratio, tool_end_window_count, len(all_windows), toolend_ratio)
+                        return all_windows
+                continue
+            
             else:
                 #########################################
                 # BRANCH B: TRAJECTORY DATA (ttype == 0)
@@ -903,7 +979,9 @@ class LeRobotSingleDataset(Dataset):
             # Logic: Fetch a single frame/action pair without history context.
             #########################################
             trajectory_id, base_index = self.all_steps[index]
+            # import pdb;pdb.set_trace()
             dict_transformed = self.transforms(self.get_step_data(trajectory_id, base_index))
+            # dict_transformed['eagle_content']['text_list'][0] = dict_transformed['eagle_content']['text_list'][0].replace('<image-3>', )
             return dict_transformed
         else:
             #########################################
@@ -1712,11 +1790,10 @@ class LeRobotMixtureDataset(Dataset):
         Returns:
             int: The length of a single epoch in the mixture.
         """
-        return int(
-            (self.dataset_lengths / self.dataset_sampling_weights)[
-                self.primary_dataset_indices
-            ].max()
-        )
+        print(self.dataset_lengths, self.dataset_sampling_weights, self.primary_dataset_indices)
+        # import pdb;pdb.set_trace()
+        len_dataset = int((self.dataset_lengths / self.dataset_sampling_weights)[self.primary_dataset_indices].max())
+        return len_dataset
 
     @staticmethod
     def compute_overall_statistics(

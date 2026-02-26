@@ -749,13 +749,6 @@ class EagleBackbone(nn.Module):
             final_mask = find_last_step(eagle_input['input_ids'], labels)
             labels[final_mask] = -100
 
-        # masked_tokens_per_sample = [ids[row == -100] for ids, row in zip(eagle_input['input_ids'], labels)]
-        # unmasked_tokens_per_sample = [ids[row != -100] for ids, row in zip(eagle_input['input_ids'], labels)]
-        # print(self.eagle_tokenizer.decode(eagle_input['input_ids'][0, 2234]))
-        # print(self.eagle_tokenizer.decode(masked_tokens_per_sample[0]))
-        # print(self.eagle_tokenizer.decode(unmasked_tokens_per_sample[0]))
-        # import pdb;pdb.set_trace()
-
         #########################################
         # 3. Forward Pass
         need_hidden = self.tune_tool_end
@@ -770,7 +763,8 @@ class EagleBackbone(nn.Module):
         # --- 4. Auxiliary Loss: Tool & Tool End Prediction ---
         toolend_loss_avg = torch.tensor(0.0, device=shift_labels.device)
         tool_loss_avg = torch.tensor(0.0, device=shift_labels.device)
-        
+        predicted_tool_end, target_tool_end = None, None
+
         if self.pred_nextstep and self.tune_tool_end:
             # Logic: Find the valid 'last token' of the sequence to predict if the tool has ended.
             seq_len = final_mask.size(1)
@@ -804,6 +798,9 @@ class EagleBackbone(nn.Module):
                 toolend_loss_avg = tool_loss_fct(tool_end_logits_step, target_tool_end)
                 tool_loss_avg = tool_loss_fct(tool_logits_step, target_tool)
 
+                # for evaluation calculation
+                predicted_tool_end = torch.argmax(tool_end_logits_step, dim=1)
+
         #########################################
         # --- 5. Main LM Loss (Hybrid Strategy) ---
         vocab_size = shift_logits.size(-1)
@@ -827,10 +824,12 @@ class EagleBackbone(nn.Module):
             # We must split the loss because Base tokens and Special tokens live in different embedding spaces.
             special_ids_A = self.special_token_ids_A.to(shift_labels.device)
             special_ids_B = self.special_token_ids_B.to(shift_labels.device)
+            all_special_ids = torch.cat([special_ids_A, special_ids_B])
             
             # Create boolean masks to partition the batch into Base vs Special
             special_mask_A = torch.isin(shift_labels, special_ids_A) & valid_mask
             special_mask_B = torch.isin(shift_labels, special_ids_B) & valid_mask
+            special_token_mask = torch.isin(shift_labels, all_special_ids) & valid_mask
             base_mask = valid_mask & ~special_mask_A & ~special_mask_B
             
             per_token_loss = shift_logits.new_zeros(shift_labels.shape, dtype=shift_logits.dtype)
@@ -867,6 +866,15 @@ class EagleBackbone(nn.Module):
                 special_loss_B = per_token_losses[special_mask_B].mean()
             else:
                 special_loss_B = torch.tensor(0.0, device=shift_labels.device)
+
+            if special_token_mask.any():
+                global_pred_ids = shift_logits.argmax(dim=-1)
+                curr_preds = global_pred_ids[special_token_mask]
+                curr_labels = shift_labels[special_token_mask]
+            else:
+                # Fallback to empty tensors if no special tokens exist in this batch
+                curr_preds = torch.empty(0, dtype=torch.long, device=shift_labels.device)
+                curr_labels = torch.empty(0, dtype=torch.long, device=shift_labels.device)
 
             ######################################
             # loss avg per type
@@ -905,33 +913,18 @@ class EagleBackbone(nn.Module):
                     print(f"Preds:  {''.join(pred_text)}")
                     print(f"Labels: {''.join(label_text)}")
 
-                # Print Base (Standard) Tokens
                 debug_print_group("All Tokens", shift_labels != -100)
 
-                # # Print Base (Standard) Tokens
-                # if base_mask.any():
-                #     debug_print_group("Base Tokens", base_mask)
-
-                # # Print Special Group A
-                # if special_mask_A.any():
-                #     debug_print_group("Special A", special_mask_A)
-
-                # # Print Special Group B
-                # if special_mask_B.any():
-                #     debug_print_group("Special B", special_mask_B)
-
-                if self.pred_nextstep and self.tune_tool_end:
-                    predicted_labels = torch.argmax(tool_end_logits_step, dim=1)
-                    toolend_correct = (predicted_labels == target_tool_end)
-                    import pdb;pdb.set_trace()
-                    # if there exists 1 in target_tool_end
+                if predicted_tool_end is not None:
+                    toolend_correct = (predicted_tool_end == target_tool_end)
                     if (target_tool_end == 1).any().item():
                         print(f"Matches: {toolend_correct.tolist()}")
                         import pdb;pdb.set_trace()
 
                 # import pdb; pdb.set_trace()
             
-        return logits, labels, loss, base_loss, special_loss_A, special_loss_B
+        # return logits, labels, loss, base_loss, special_loss_A, special_loss_B
+        return logits, labels, loss, base_loss, special_loss_A, special_loss_B, predicted_tool_end, target_tool_end, curr_preds, curr_labels
         
 
     def split_by_img_id(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
@@ -1115,11 +1108,12 @@ class EagleBackbone(nn.Module):
         special_loss_B_avg = torch.tensor(0.0, device=eagle_logits.device)
         embeds_tensor, masks_tensor = None, None
         logits, labels = None, None
+        predicted_tool_end, target_tool_end, curr_preds, curr_labels = None, None, None, None
 
         if len(step_input) != 0:
 
             # Compute generated loss
-            logits, labels, transcript_lm_loss, base_loss_avg, special_loss_A_avg, special_loss_B_avg = self._transcript_lm_loss(
+            logits, labels, transcript_lm_loss, base_loss_avg, special_loss_A_avg, special_loss_B_avg, predicted_tool_end, target_tool_end, curr_preds, curr_labels = self._transcript_lm_loss(
                 vl_input)
 
             # extract action token hidden states based on action_pad_ids
@@ -1141,7 +1135,11 @@ class EagleBackbone(nn.Module):
             "eagle_mask_multi": masks_tensor,
             "past_key_values": past_key_values,
             "logits": logits,
-            "labels": labels
+            "labels": labels,
+            "predicted_tool_end_eval": predicted_tool_end,  # for evaluation
+            "target_tool_end_eval": target_tool_end,  # for evaluation
+            "cur_pred_id_eval": curr_preds,  # for evaluation
+            "cur_label_id_eval": curr_labels,  # for evaluation
         }
 
         return out
@@ -1181,6 +1179,10 @@ class EagleBackbone(nn.Module):
             "past_key_values": None,
                 "logits": out["logits"], 
                 "labels": out["labels"], 
+                "predicted_tool_end_eval": out["predicted_tool_end_eval"], 
+                "target_tool_end_eval": out["target_tool_end_eval"], 
+                "cur_pred_id_eval": out["cur_pred_id_eval"], 
+                "cur_label_id_eval": out["cur_label_id_eval"], 
             }
         )
 
