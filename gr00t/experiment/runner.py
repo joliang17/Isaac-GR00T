@@ -30,6 +30,7 @@ from gr00t.utils.experiment import (
     safe_save_model_for_hf_trainer,
 )
 import wandb
+import pprint
 from functools import partial
 
 
@@ -69,6 +70,54 @@ def preprocess_logits_for_metrics(logits, labels):
     # because they are filtered/subsampled in the backbone.
     return (lm_preds, p_te, t_te, p_sp, l_sp)
 
+
+def compute_tool_end_counts(
+    target_tool_end,
+    predicted_tool_end,
+    cur_label_id_eval,
+    skills_end_id,
+    tools_id,
+    actions_id,
+):
+    """
+    Returns correct & total counts for tool_end under
+    three GT label groups.
+    """
+
+    # ---- flatten everything ----
+    target = np.asarray(target_tool_end).reshape(-1)
+    pred = np.asarray(predicted_tool_end).reshape(-1)
+    labels = np.asarray(cur_label_id_eval).reshape(-1)
+
+    # correctness mask
+    correct_mask = (target == pred)
+
+    # convert id lists → sets (fast lookup)
+    skills_set = set(skills_end_id)
+    tools_set = set(tools_id)
+    actions_set = set(actions_id)
+
+    results = {}
+
+    def compute_group(name, id_set):
+        group_mask = np.isin(labels, list(id_set))
+
+        total = group_mask.sum()
+        correct = (correct_mask & group_mask).sum()
+
+        results[name] = {
+            "correct": int(correct),
+            "total": int(total),
+            "acc": float(correct / total) if total > 0 else 0.0,
+        }
+
+    # ---- compute three groups ----
+    compute_group("toolend_skills_end", skills_set)
+    compute_group("toolend_tools", tools_set)
+    compute_group("toolend_actions", actions_set)
+
+    return results
+
 def compute_metrics(
     eval_preds,
     tune_tool_end=False,
@@ -83,26 +132,29 @@ def compute_metrics(
     - If tune_tool_end: Focus on Binary Classifier accuracy for the heads.
     - If not tune_tool_end: Focus on Token Generation accuracy (Special A/B).
     """
-    (lm_preds, predicted_tool_end, target_tool_end_eval, cur_pred_id_eval, cur_label_id_eval), labels = eval_preds
+    (lm_preds, predicted_tool_end, target_tool_end, cur_pred_id_eval, cur_label_id_eval), labels = eval_preds
     metrics = {}
     
+    valid_mask = cur_label_id_eval!=skills_end_id 
+    pred_token = cur_pred_id_eval[valid_mask]
+    gt_token = cur_label_id_eval[valid_mask]
+    if valid_mask.any():
+        metrics["special_token"] = (pred_token == gt_token).mean()
+    else:
+        metrics["special_token"] = 0.0
+
     # Common mask for valid LM tokens
-    
     if tune_tool_end:
+        result = compute_tool_end_counts(target_tool_end, predicted_tool_end, cur_label_id_eval, [skills_end_id], [tools_id], [actions_id])
+        metrics['detailed'] = result
+
         # --- BRANCH 1: AUXILIARY HEAD EVALUATION ---
-        metrics["tool_end_total"] = (target_tool_end_eval == predicted_tool_end).mean()
-        if (target_tool_end_eval==1).any():
-            metrics["tool_end_true"] = (target_tool_end_eval[target_tool_end_eval==1] == predicted_tool_end[target_tool_end_eval==1]).mean()
+        metrics["tool_end_total"] = (target_tool_end == predicted_tool_end).mean()
+        if (target_tool_end==1).any():
+            metrics["tool_end_true"] = (target_tool_end[target_tool_end==1] == predicted_tool_end[target_tool_end==1]).mean()
         else:
             metrics["tool_end_true"] = 0.0
-    else:
-        valid_mask = cur_label_id_eval!=skills_end_id 
-        pred_token = cur_pred_id_eval[valid_mask]
-        gt_token = cur_label_id_eval[valid_mask]
-        if valid_mask.any():
-            metrics["special_token"] = (pred_token == gt_token).mean()
-        else:
-            metrics["special_token"] = 0.0
+
     return metrics
 
 class TrainRunner:
@@ -286,8 +338,7 @@ class TrainRunner:
     def eval(self):
         print("***** Running Evaluation *****")
         metrics = self.trainer.evaluate()
-
         if self.rank == 0:
             wandb.log(metrics)
-            print(metrics)            
+            pprint.pprint(metrics)            
         return metrics

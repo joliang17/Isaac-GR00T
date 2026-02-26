@@ -700,6 +700,9 @@ class EagleBackbone(nn.Module):
             tuple: (logits, labels, total_loss, base_loss_avg, special_loss_avg, ...)
         """
 
+        def masked_mean(losses, mask, device):
+            return losses[mask].mean() if mask.any() else torch.tensor(0.0, device=device)
+
         def find_last_step(input_ids, labels):
             """
             Identifies the start of the final 'assistant' response in the sequence.
@@ -758,31 +761,25 @@ class EagleBackbone(nn.Module):
         # Standard Causal Shift: Predict t+1 given t
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
+        device = shift_labels.device
 
         #########################################
         # --- 4. Auxiliary Loss: Tool & Tool End Prediction ---
-        toolend_loss_avg = torch.tensor(0.0, device=shift_labels.device)
-        tool_loss_avg = torch.tensor(0.0, device=shift_labels.device)
+        toolend_loss_avg = torch.tensor(0.0, device=device)
+        tool_loss_avg = torch.tensor(0.0, device=device)
         predicted_tool_end, target_tool_end = None, None
 
         if self.pred_nextstep and self.tune_tool_end:
-            # Logic: Find the valid 'last token' of the sequence to predict if the tool has ended.
-            seq_len = final_mask.size(1)
-            range_tensor = torch.arange(seq_len, device=final_mask.device).unsqueeze(0)
+            # last valid token per row (or -1 if all padding)
+            idx = torch.where(final_mask, torch.arange(final_mask.size(1), device=device)[None, :], -1).amax(dim=1)
+            valid_toolend_mask = idx.ne(-1)
 
-            # Use masked_indices to find the true end of the sequence (ignoring padding)
-            masked_indices = torch.where(final_mask, range_tensor, -1)
-            last_token_indices = masked_indices.max(dim=1).values
-            valid_rows_mask = last_token_indices != -1
+            if valid_toolend_mask.any():
+                b_dx = torch.arange(logits.size(0), device=device)[valid_toolend_mask]
+                s_idx = idx[valid_toolend_mask]
 
-            if valid_rows_mask.any():
-                batch_indices = torch.arange(logits.size(0), device=logits.device)[valid_rows_mask]
-                selected_indices = last_token_indices[valid_rows_mask]
-
-                # Extract hidden state at the last valid step
-                selected_hidden = outputs.hidden_states[-1][batch_indices, selected_indices]
-                # Get the actual token ID at the next step (the ground truth for classification)
-                selected_targets_ids = eagle_input['input_ids'][batch_indices, selected_indices+1]
+                selected_hidden = outputs.hidden_states[-1][b_dx, s_idx]
+                selected_targets_ids = eagle_input['input_ids'][b_dx, s_idx+1]
                 
                 # Create binary classification targets
                 target_tool_end = (selected_targets_ids == self.skills_end).long()  # Is next token [TOOLS_END]?
@@ -792,7 +789,7 @@ class EagleBackbone(nn.Module):
                 tool_end_logits_step = self.tool_end_head(selected_hidden)
                 tool_logits_step = self.tool_head(selected_hidden)
 
-                weights = torch.tensor([1.0, 5.0]).to(tool_end_logits_step.device) # [Neg_Weight, Pos_Weight]
+                weights = torch.tensor([1.0, 5.0]).to(device) # [Neg_Weight, Pos_Weight]
                 tool_loss_fct = nn.CrossEntropyLoss(reduction='mean', weight=weights)
 
                 toolend_loss_avg = tool_loss_fct(tool_end_logits_step, target_tool_end)
@@ -810,9 +807,7 @@ class EagleBackbone(nn.Module):
         num_special_B = self.special_token_ids_B.numel()
         num_special_total = num_special_A + num_special_B
         
-        special_loss_A = None
-        special_loss_B = None
-        base_loss = None
+        special_loss_A = special_loss_B = base_loss = None
 
         if num_special_total == 0:
             # Case A: Standard Vocabulary Only (No special tokens added)
@@ -822,8 +817,8 @@ class EagleBackbone(nn.Module):
         else:
             # Case B: Hybrid Vocabulary
             # We must split the loss because Base tokens and Special tokens live in different embedding spaces.
-            special_ids_A = self.special_token_ids_A.to(shift_labels.device)
-            special_ids_B = self.special_token_ids_B.to(shift_labels.device)
+            special_ids_A = self.special_token_ids_A.to(device)
+            special_ids_B = self.special_token_ids_B.to(device)
             all_special_ids = torch.cat([special_ids_A, special_ids_B])
             
             # Create boolean masks to partition the batch into Base vs Special
@@ -831,99 +826,48 @@ class EagleBackbone(nn.Module):
             special_mask_B = torch.isin(shift_labels, special_ids_B) & valid_mask
             special_token_mask = torch.isin(shift_labels, all_special_ids) & valid_mask
             base_mask = valid_mask & ~special_mask_A & ~special_mask_B
-            
-            per_token_loss = shift_logits.new_zeros(shift_labels.shape, dtype=shift_logits.dtype)
-
-            # Get size of the original LLM head to define the boundary
-            base_lm_head = self.eagle_model.get_output_embeddings().base_head
-            base_vocab_size = base_lm_head.out_features
-            
+                        
             flat_logits = shift_logits.view(-1, shift_logits.size(-1))
             flat_labels = shift_labels.view(-1)
             per_token_losses_flat = F.cross_entropy(flat_logits, flat_labels, reduction='none', ignore_index=-100)
             per_token_losses = per_token_losses_flat.view(shift_labels.size())
 
-            loss_weights = torch.ones_like(per_token_losses)
-            loss_weights[special_mask_A] = self.special_token_loss_weight
-            loss_weights[special_mask_B] = self.special_token_loss_weight
-            valid_tokens_mask = (shift_labels != -100)
-            weighted_losses = per_token_losses * loss_weights
+            weights = per_token_losses.new_ones(per_token_losses.shape)
+            weights[special_mask_A | special_mask_B] = self.special_token_loss_weight
+            loss = (per_token_losses * weights)[valid_mask].mean()
 
-            loss = weighted_losses[valid_tokens_mask].sum() / valid_tokens_mask.sum()
+            base_loss       = masked_mean(per_token_losses, base_mask, device)
+            special_loss_A  = masked_mean(per_token_losses, special_mask_A, device)
+            special_loss_B  = masked_mean(per_token_losses, special_mask_B, device)
 
-            # 4. Now you can use your masks as intended
-            if base_mask.any():
-                base_loss = per_token_losses[base_mask].mean()
-            else:
-                base_loss = torch.tensor(0.0, device=shift_labels.device)
+            global_pred_ids = shift_logits.argmax(dim=-1)
+            curr_preds  = global_pred_ids[special_token_mask]
+            curr_labels = shift_labels[special_token_mask]
 
-            if special_mask_A.any():
-                special_loss_A = per_token_losses[special_mask_A].mean()
-            else:
-                special_loss_A = torch.tensor(0.0, device=shift_labels.device)
+        ######################################
+        # loss avg per type
+        if self.tune_tool_end:
+            # only update tool end head
+            loss = (self.tool_end_loss_weight * toolend_loss_avg)
 
-            if special_mask_B.any():
-                special_loss_B = per_token_losses[special_mask_B].mean()
-            else:
-                special_loss_B = torch.tensor(0.0, device=shift_labels.device)
+        # #######################
+        # # DEBUG
+        if False:
 
-            if special_token_mask.any():
-                global_pred_ids = shift_logits.argmax(dim=-1)
-                curr_preds = global_pred_ids[special_token_mask]
-                curr_labels = shift_labels[special_token_mask]
-            else:
-                # Fallback to empty tensors if no special tokens exist in this batch
-                curr_preds = torch.empty(0, dtype=torch.long, device=shift_labels.device)
-                curr_labels = torch.empty(0, dtype=torch.long, device=shift_labels.device)
+            pred_text = self.eagle_tokenizer.batch_decode(curr_preds, skip_special_tokens=False)
+            label_text = self.eagle_tokenizer.batch_decode(curr_labels, skip_special_tokens=False)
 
-            ######################################
-            # loss avg per type
-            if self.tune_tool_end:
-                # loss = loss + (self.tool_end_loss_weight * tool_loss_avg) + (self.tool_end_loss_weight * toolend_loss_avg)
-                # loss = loss + (self.tool_end_loss_weight * toolend_loss_avg)
-                loss = (self.tool_end_loss_weight * toolend_loss_avg)
+            print(f"Preds:  {''.join(pred_text)}")
+            print(f"Labels: {''.join(label_text)}")
 
-            # #######################
-            # # DEBUG
-            if False:
+            if predicted_tool_end is not None:
+                toolend_correct = (predicted_tool_end == target_tool_end)
+                if (target_tool_end == 1).any().item():
+                    print(f"Matches: {toolend_correct.tolist()}")
+                    # import pdb;pdb.set_trace()
 
-                # 1. Get the predicted IDs for the entire sequence at once
-                # shape: [Batch, Seq]
-                # Since shift_logits is [Batch, Seq, Full_Vocab], the result is already standard Token IDs.
-                global_pred_ids = shift_logits.argmax(dim=-1)
-
-                # Helper function to decode and print specific groups
-                def debug_print_group(name, mask):
-                    # Ensure we only look at positions that are in the mask AND have a valid label
-                    valid_mask = mask & (shift_labels != -100)
-                    
-                    if not valid_mask.any():
-                        return
-
-                    # Extract IDs
-                    curr_preds = global_pred_ids[valid_mask]
-                    curr_labels = shift_labels[valid_mask]
-
-                    # Decode
-                    # We use skip_special_tokens=False so we can see the special tokens explicitly
-                    pred_text = self.eagle_tokenizer.batch_decode(curr_preds, skip_special_tokens=False)
-                    label_text = self.eagle_tokenizer.batch_decode(curr_labels, skip_special_tokens=False)
-
-                    print(f"\n--- [DEBUG] {name} ---")
-                    print(f"Preds:  {''.join(pred_text)}")
-                    print(f"Labels: {''.join(label_text)}")
-
-                debug_print_group("All Tokens", shift_labels != -100)
-
-                if predicted_tool_end is not None:
-                    toolend_correct = (predicted_tool_end == target_tool_end)
-                    if (target_tool_end == 1).any().item():
-                        print(f"Matches: {toolend_correct.tolist()}")
-                        import pdb;pdb.set_trace()
-
-                # import pdb; pdb.set_trace()
+            import pdb; pdb.set_trace()
             
-        # return logits, labels, loss, base_loss, special_loss_A, special_loss_B
         return logits, labels, loss, base_loss, special_loss_A, special_loss_B, predicted_tool_end, target_tool_end, curr_preds, curr_labels
         
 

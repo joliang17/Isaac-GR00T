@@ -284,6 +284,7 @@ def main(config: ArgsConfig):
 
     if config.do_eval:
         eval_sanity_set = Subset(train_dataset, indices=range(int(0.01 * len(train_dataset))))
+        # eval_sanity_set = Subset(train_dataset, indices=range(20))
     else:
         eval_sanity_set = None
 
