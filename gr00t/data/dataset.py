@@ -651,6 +651,7 @@ class LeRobotSingleDataset(Dataset):
             # ttype 1 represents skill-level data (include [ACTIONS] / [TOOL_END] only).
             if ttype == 1:
                 if random.random() > skill_ratio:
+                    # downsample the skill level data
                     continue
                 skill_cnt += 1
             else:
@@ -660,8 +661,10 @@ class LeRobotSingleDataset(Dataset):
 
             available_indices = list(range(T))
             tool_end_indices = set()
-            # Only fetch text if needed for Action DS or Tool Upsampling
-            need_text = (ttype == 0 and action_ratio < 1.0) or (toolend_ratio > 1.0) or self.frame_type == 'key'
+            # Previous: Only fetch text if needed for Action DS or Toolend Upsampling
+            # Now: fetch text if include trajectory data or Toolend Upsampling or key-frame selection
+            # need_text = (ttype == 0 and action_ratio < 1.0) or (toolend_ratio > 1.0) or self.frame_type == 'key'
+            need_text = ttype == 0 or toolend_ratio > 1.0 or self.frame_type == 'key'
 
             step_descs = []
             if need_text:
@@ -673,7 +676,7 @@ class LeRobotSingleDataset(Dataset):
                 # Logic: Extract step-wise data (only 1 step per window)
                 #########################################
                 for idx in range(T):
-                    if len(step_descs) > 0:
+                    if need_text and len(step_descs) > 0:
                         desc = step_descs[idx]
                         if isinstance(desc, list) and len(desc) == 1:
                             desc = desc[0]
@@ -700,6 +703,9 @@ class LeRobotSingleDataset(Dataset):
                     if len(history_indices) <= self.window_length:
                         continue
                     
+                    # get uniformed data from history
+                    # TODO: check whether the current last step is a skill (start with [TOOLS])
+                    # for previous history, check whether there are [TOOLS] include. Recognize a period that has same desc ([TOOLS] instruction) as a skill group. During uniformly extract key frame function, only extract 1 idx from each skill group. 
                     window = self._get_uniform_keyframes(tid, history_indices,)
                     all_windows.append(window)
                     
