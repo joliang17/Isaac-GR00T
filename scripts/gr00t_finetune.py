@@ -245,6 +245,12 @@ def main(config: ArgsConfig):
             toolend_upsample_ratio=config.toolend_upsample_ratio,
             # action_only=config.tune_diffusion_model,
         )
+
+        if config.do_eval:
+            eval_sanity_set = Subset(train_dataset, indices=range(int(0.01 * len(train_dataset))))
+            # eval_sanity_set = Subset(train_dataset, indices=range(20))
+        else:
+            eval_sanity_set = None
     else:
         single_datasets = []
         for p in config.dataset_path:
@@ -282,11 +288,11 @@ def main(config: ArgsConfig):
         )
         print(f"Loaded {len(single_datasets)} datasets, with {config.dataset_path} ")
 
-    if config.do_eval:
-        eval_sanity_set = Subset(train_dataset, indices=range(int(0.01 * len(train_dataset))))
-        # eval_sanity_set = Subset(train_dataset, indices=range(20))
-    else:
-        eval_sanity_set = None
+        if config.do_eval:
+            eval_sanity_set = Subset(single_datasets[0], indices=range(int(0.01 * len(single_datasets[0]))))
+            # eval_sanity_set = Subset(train_dataset, indices=range(20))
+        else:
+            eval_sanity_set = None
 
     # ------------ step 2: load model ------------
     # First, get the data config to determine action horizon

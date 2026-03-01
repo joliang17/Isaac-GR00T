@@ -733,6 +733,10 @@ class EagleBackbone(nn.Module):
         if "eagle_llm_labels" not in vl_input:
             return torch.tensor(0.0, device=next(self.parameters()).device)
 
+        # Debug:
+        # with open('infer_step_2.pkl', 'rb') as f: 
+        #     vl_input, (input_ids_added, attention_mask_added, token_to_append) = pickle.load(f)
+
         #########################################
         # 1. Prepare Inputs
         # Filter keys to match model signature (remove 'eagle_' prefix)
@@ -767,7 +771,7 @@ class EagleBackbone(nn.Module):
         # --- 4. Auxiliary Loss: Tool & Tool End Prediction ---
         toolend_loss_avg = torch.tensor(0.0, device=device)
         tool_loss_avg = torch.tensor(0.0, device=device)
-        predicted_tool_end, target_tool_end = None, None
+        predicted_tool_end = target_tool_end = torch.tensor(0.0, device=device)
 
         if self.pred_nextstep and self.tune_tool_end:
             # last valid token per row (or -1 if all padding)
@@ -1186,7 +1190,6 @@ class EagleBackbone(nn.Module):
             return final_kv_cache, decoded_text
 
         def generate_text_kvcache(input_ids, attention_mask, token_to_append, past_key_values):
-            # import pdb;pdb.set_trace()
             # 1. Check History Length
             past_kv_len = 0
             if past_key_values is not None:
@@ -1311,7 +1314,6 @@ class EagleBackbone(nn.Module):
         attention_mask_added = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
         # final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values)
         final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, None)
-        # import pdb;pdb.set_trace()
         # if self.tools_id in router_token_id:
         #     import pdb;pdb.set_trace()
 

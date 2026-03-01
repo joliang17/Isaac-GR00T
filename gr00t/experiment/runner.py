@@ -48,7 +48,7 @@ def preprocess_logits_for_metrics(logits, labels):
         p_sp = logits.get("cur_pred_id_eval")
         l_sp = logits.get("cur_label_id_eval")
         p_tt = logits.get("all_pred_id_eval")
-        l_tt = logits.get("all_pred_id_eval")
+        l_tt = logits.get("all_label_id_eval")
     else:
         lm_logits = logits
         p_te = t_te = p_sp = l_sp = p_tt = l_tt = None
@@ -140,6 +140,7 @@ def compute_metrics(
     (lm_preds, predicted_tool_end, target_tool_end, cur_pred_id_eval, cur_label_id_eval, all_pred_id_eval, all_label_id_eval), labels = eval_preds
     pred_text = tokenizer.batch_decode(all_pred_id_eval, skip_special_tokens=False)
     gt_text = tokenizer.batch_decode(all_label_id_eval, skip_special_tokens=False)
+    import pdb;pdb.set_trace()
     
     gt_str = ''.join(gt_text)
     pred_str = ''.join(pred_text)

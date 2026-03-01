@@ -518,7 +518,7 @@ class LeRobotSingleDataset(Dataset):
         trajectory_lengths = []
         trajectory_type = []
         # DEBUG
-        for episode in episode_metadata:
+        for episode in episode_metadata
             video_path = str(self.get_video_path(episode["episode_index"], 'image'))
             okay, msg = check_video_with_videoreader(video_path)
             if not okay:
@@ -667,9 +667,31 @@ class LeRobotSingleDataset(Dataset):
             need_text = ttype == 0 or toolend_ratio > 1.0 or self.frame_type == 'key'
 
             step_descs = []
+            skill_group_ids = None
             if need_text:
                 step_descs = [self.get_step_data(tid, idx)['annotation.step_description'] for idx in range(T)]
-
+                skill_group_end_indices = None
+                if len(step_descs) > 0:
+                    skill_group_ids = [0] * T
+                    curr_group = 0
+                    last_tool_desc = None
+                    last_was_tool = False
+                    for idx, desc in enumerate(step_descs):
+                        if isinstance(desc, list) and len(desc) == 1:
+                            desc = desc[0]
+                        pred_desc = desc.split('\t')[-1]
+                        is_tool = isinstance(pred_desc, str) and pred_desc.startswith('[TOOLS]')
+                        if is_tool:
+                            if not last_was_tool or pred_desc != last_tool_desc:
+                                curr_group += 1
+                                last_tool_desc = pred_desc
+                            last_was_tool = True
+                        else:
+                            curr_group += 1
+                            last_tool_desc = None
+                            last_was_tool = False
+                        skill_group_ids[idx] = curr_group
+            
             if self.skill_level == 'step' and ttype == 1:
                 #########################################
                 # BRANCH A: SKILL DATA (ttype == 1)
@@ -697,15 +719,38 @@ class LeRobotSingleDataset(Dataset):
 
             # NEW LOGIC: Trajectory-level keyframe selection
             elif self.frame_type == 'key' and ttype == 0:
-                for end_idx in range(T):
-                    # For every ending timestep, look at history
-                    history_indices = list(range(end_idx + 1))
-                    if len(history_indices) <= self.window_length:
-                        continue
-                    
-                    # get uniformed data from history
-                    # TODO: check whether the current last step is a skill (start with [TOOLS])
-                    # for previous history, check whether there are [TOOLS] include. Recognize a period that has same desc ([TOOLS] instruction) as a skill group. During uniformly extract key frame function, only extract 1 idx from each skill group. 
+                prev_group_candidates = []
+                current_group_candidates = []
+                current_group_id = skill_group_ids[0] if skill_group_ids is not None and len(skill_group_ids) > 0 else None
+                for end_idx in range(T):                    
+                    if len(skill_group_ids) > end_idx:
+                        if end_idx > 0:
+                            gid = skill_group_ids[end_idx]
+                            if gid != current_group_id:
+                                if current_group_candidates:
+                                    prev_group_candidates.append(current_group_candidates)
+                                current_group_candidates = []
+                                current_group_id = gid
+
+                        if len(step_descs) > 0:
+                            desc = step_descs[end_idx]
+                            if isinstance(desc, list) and len(desc) == 1:
+                                desc = desc[0]
+                            if '[ACTIONS]' not in desc:
+                                current_group_candidates.append(end_idx)
+                        
+                        if len(prev_group_candidates) == 0:
+                            if end_idx > 0:
+                                max_pick = 5 if end_idx >= 5 else end_idx
+                                n_pick = random.randint(1, max_pick)
+                                history_indices = sorted(random.sample(range(end_idx), n_pick))
+                                history_indices.append(end_idx)
+                            else:
+                                history_indices = [end_idx]
+                        else:
+                            history_indices = [random.choice(candidates) for candidates in prev_group_candidates]
+                            history_indices.append(end_idx)
+                            history_indices.sort()
                     window = self._get_uniform_keyframes(tid, history_indices,)
                     all_windows.append(window)
                     
@@ -738,16 +783,9 @@ class LeRobotSingleDataset(Dataset):
                         if toolend_ratio > 1.0:
                             if '[TOOLS_END]' in desc:
                                 tool_end_indices.add(idx)
-                        
-                        # if self.frame_type == 'key':
-                        #     # for trajectory level data (ttype==0): only save key frame in trajectory
-                        #     # ony save steps if prefix is not [ACTIONS] (or mid step of [ACTIONS])
-                        #     # for skill level data (ttype==1): step only?
-                        #     if 'TOOLS' in desc:
-                        #         list_key.append(idx, )
-                        #     pass
 
                     if len(list_act) > 0:
+                        # downsample the modification action steps
                         action_steps = [x[0] for x in list_act if x[1] == 1]
                         other_steps = [x[0] for x in list_act if x[1] == 0]
                         n_keep = int(len(action_steps) * action_ratio)
@@ -761,25 +799,12 @@ class LeRobotSingleDataset(Dataset):
                 # --- 3. Window Generation (Slicing Strategies) ---
                 windows_to_process = [] 
 
-                if mode == 'fixed':
-                    # Non-overlapping windows of length `wl`
-                    curr = 0
-                    while curr + wl <= n_available:
-                        windows_to_process.append(available_indices[curr : curr + wl])
-                        curr += wl
+                # Sliding window approach: shift by `stride`, then generate prefixes up to `wl`.
+                group_ids = None
+                if skill_group_ids is not None:
+                    group_ids = [skill_group_ids[idx] for idx in available_indices]
 
-                elif mode == 'block_prefix':
-                    # Generates windows of increasing length (prefix modeling) starting from intervals of `wl`.
-                    curr = 0
-                    while curr < n_available:
-                        max_len_here = min(wl, n_available - curr)
-                        if max_len_here >= min_seq_len:
-                            for length in range(min_seq_len, max_len_here + 1):
-                                windows_to_process.append(available_indices[curr : curr + length])
-                        curr += wl
-
-                elif mode == 'sliding_prefix':
-                    # Sliding window approach: shift by `stride`, then generate prefixes up to `wl`.
+                if group_ids is None:
                     last_start = n_available - min_seq_len
                     curr = 0
                     while curr <= last_start:
@@ -787,6 +812,50 @@ class LeRobotSingleDataset(Dataset):
                         for length in range(min_seq_len, max_len_here + 1):
                             windows_to_process.append(available_indices[curr : curr + length])
                         curr += stride
+                else:
+                    segments = []
+                    last_gid = None
+                    current = None
+                    for idx, gid in zip(available_indices, group_ids):
+                        if current is None or gid != last_gid:
+                            current = [idx]
+                            segments.append(current)
+                            last_gid = gid
+                        else:
+                            current.append(idx)
+
+                    n_segments = len(segments)
+                    if n_segments >= min_seq_len:
+                        def pick_from_segment(seg):
+                            # Pick on demand to increase diversity across windows.
+                            if len(seg) == 1:
+                                return seg[0]
+                            return seg[random.randrange(len(seg))]
+
+                        max_seg_len = max(len(seg) for seg in segments)
+                        resample_count = 1 if max_seg_len <= 1 else min(max_seg_len, 4)
+                        end_segments = list(range(0, n_segments, stride))
+                        if end_segments[-1] != n_segments - 1:
+                            end_segments.append(n_segments - 1)
+                        for end_seg in end_segments:
+                            end_segment = segments[end_seg]
+                            local_resample = resample_count if len(end_segment) > 1 else 1
+                            for _ in range(local_resample):
+                                priority = [pick_from_segment(end_segment)]
+                                needed_max = min(wl, end_seg + 1)
+                                for i in range(end_seg - 1, -1, -1):
+                                    priority.append(pick_from_segment(segments[i]))
+                                    if len(priority) >= needed_max:
+                                        break
+
+                                max_len_here = min(wl, len(priority))
+                                if max_len_here < min_seq_len:
+                                    continue
+                                
+                                lengths = (max_len_here,)
+                                for length in lengths:
+                                    step_indices = list(reversed(priority[:length]))
+                                    windows_to_process.append(step_indices)
 
                 #########################################
                 # --- 4. Final Processing & Upsampling ---
