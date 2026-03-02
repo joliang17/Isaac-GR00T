@@ -91,10 +91,7 @@ def eval_libero(cfg) -> None:
         inside_tools = True
         # for step t, regenerate the action with the new instructions
         obs_dict_base = process_observation(obs, task_instruct, headless=cfg.headless)
-        # obs_dict_base = process_observation(obs, task.language, headless=cfg.headless)
         obs_dict_tools = process_observation(obs, "[INFER]" + tools_instruct, headless=cfg.headless)
-        # obs_dict = process_observation(obs, "[INFER]" + '[INFER_CNT]' + tools_output, headless=cfg.headless)
-        # obs_dict_tools = process_observation(obs, "[INFER]" + '[SKILL_MODE]' + tools_instruct, headless=cfg.headless)
 
         action_chunk_our, cur_tools_output, _, action_chunk_bs = gr00t_policy.get_action(
             obs_dict_tools, observations_base=obs_dict_base, 
@@ -184,12 +181,12 @@ def eval_libero(cfg) -> None:
 
             # Setup
             t = 0
-            prev_t = 0
-            prev_traj_t = 0
             top_view = []
             wrist_view = []
+            list_video_saved = [0, ]
             traj_top_view = []
             traj_wrist_view = []
+            list_traj_saved = [0, ]
             list_output = []
             
             if cfg.task_suite_name == "libero_spatial":
@@ -228,25 +225,29 @@ def eval_libero(cfg) -> None:
                         t += 1
                         continue
 
-                    # # Get preprocessed image
+                    # Get preprocessed image
                     img, wrist_img = get_libero_image(obs)
 
-                    # # Save preprocessed image for replay video
-                    if t != prev_t:
+                    # Save preprocessed image for replay video
+                    if list_video_saved[-1] != t:
+                        # only save new frames if not saved before
                         top_view.append(img)
                         wrist_view.append(wrist_img)
+                        list_video_saved.append(t)
+
                     # high_level_instruct = '[TRAJ_MODE]' + task.language
                     high_level_instruct = task.language
 
                     if not inside_tools:
-                        if t != prev_traj_t:
+                        if list_traj_saved[-1] != t:
+                            # only saved new image if not saved before
                             traj_top_view.append(img)
                             traj_wrist_view.append(wrist_img)
+                            list_traj_saved.append(t)
 
                         # on trajectory level
                         if task_instruction == '':
                             task_instruction = task.language
-                            # cur_instr = '[TRAJ_MODE]' + task_instruction
                             cur_instr = task_instruction
                         else:
                             # not the starting step of the trajectory
@@ -262,35 +263,60 @@ def eval_libero(cfg) -> None:
                         else:
                             obs_dict = process_observation(obs, "[INFER]" + cur_instr, headless=cfg.headless)
 
-                        # TODO: create obs_dict by providing list images (no previous history)
-                        with open(f"saved_img1.pkl", 'rb') as f: (agg_images, concated_text) = pickle.load(f)
-                        list_top = [agg_images[0], agg_images[2]]
-                        list_wri = [agg_images[1], agg_images[3]]
-                        list_top = resize_images(list_top)  # (256, 256)
-                        list_wri = resize_images(list_wri)
-                        list_seg = concated_text.split('<image-1><image-2>')[1:]
-                        task_instruction = list_seg[0].split('<|im_end|>')[0]
-                        list_gene = [item.split('assistant\n')[-1].split('<|im_start|>')[0] for item in list_seg]
+                        if cfg.traj_history == 'no':
+                            # no history at all (both trajectory and sample)
+                            past_key_values_traj = None
+                        else:
+                            if cfg.history_type == 'reinput':
+                                # input history by reinput previous images
+                                past_key_values_traj = None
 
-                        obs_dict['video.image'] = np.array([np.array(img) for img in list_top])  # [N, H, W, C]
-                        obs_dict['video.wrist_image'] = np.array([np.array(img) for img in list_wri])  # [N, H, W, C]
-                        obs_dict['annotation.human.action.task_description'] = ['[INFER][PreCreate]<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1><image-2>turn on the stove and put the moka pot on it<|im_end|>\n<|im_start|>assistant\n[TOOLS] turn on the hot plate<|im_end|>\n<|im_start|>user\n<image-1><image-2>turn on the stove and put the moka pot on it<|im_end|>\n<|im_start|>assistant\n[', ]  # the last one is current ground truth
-                        import pdb;pdb.set_trace()
+                                # DEBUG: create obs_dict by providing list images (no previous history)
+                                with open(f"saved_img1.pkl", 'rb') as f: (agg_images, concated_text) = pickle.load(f)
+                                list_top = [agg_images[0], agg_images[2]]
+                                list_wri = [agg_images[1], agg_images[3]]
+                                list_top = resize_images(list_top)  # (256, 256)
+                                list_wri = resize_images(list_wri)
+                                list_seg = concated_text.split('<image-1><image-2>')[1:]
+                                task_instruction = list_seg[0].split('<|im_end|>')[0]
+                                list_gene = [item.split('assistant\n')[-1].split('<|im_start|>')[0] for item in list_seg]
+
+                                # obs_dict['video.image'] = np.array([np.array(img) for img in list_top])  # [N, H, W, C]
+                                # obs_dict['video.wrist_image'] = np.array([np.array(img) for img in list_wri])  # [N, H, W, C]
+                                # obs_dict['annotation.human.action.task_description'] = ['[INFER][PreCreate]<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1><image-2>turn on the stove and put the moka pot on it<|im_end|>\n<|im_start|>assistant\n[TOOLS] turn on the hot plate<|im_end|>\n<|im_start|>user\n<image-1><image-2>turn on the stove and put the moka pot on it<|im_end|>\n<|im_start|>assistant\n[', ]  # the last one is current ground truth
+
+
+                                list_sel_top = top_view[-5:]
+                                list_sel_wri = traj_wrist_view[-5:]
+                                list_sel_output = list_output[-4:]
+                                obs_dict['video.image'] = np.array(list_sel_top)  # [N, H, W, C]
+                                obs_dict['video.wrist_image'] = np.array(list_sel_wri)  # [N, H, W, C]
+                                instruct_text = '[INFER][PreCreate]<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n'
+                                for prev_t in range(len(list_sel_top)):
+                                    instruct_text += f"<|im_start|>user\n<image-1><image-2>{task.language}<|im_end|>\n<|im_start|>assistant\n"
+                                    if prev_t < len(list_sel_output):
+                                        instruct_text += f"{list_sel_output[t]}"
+                                        instruct_text += "<|im_end|>\n"
+                                obs_dict['annotation.human.action.task_description'] = [instruct_text, ]
+                                import pdb;pdb.set_trace()
+
+
+                            else:
+                                # input history by kv cache
+                                pass 
 
                         action_chunk_our, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(
                             obs_dict, observations_base=obs_dict_base, img_count=traj_img_count,
                             past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
-
-                        prev_traj_t = t
 
                         if tools_output != '' and tools_output != '[ACTIONS]':
                             # generated skill instructions
                             # start a new inference session, generate actions to achieve the tools, until finish
                             no_action = True
                             inside_tools = True
-                            tools_output = tools_output.replace('[TOOLS]', '')
-                            print(f"At timestep {t}, Call Tools: {tools_output}")
-                            list_output.append(tools_output)
+                            print(f"At timestep {t}, Call Tools: {tools_output.replace('[TOOLS]', '')}")
+                            list_output.append(tools_output.strip())
+                            tools_output = tools_output.replace('[TOOLS]', '').strip()
 
                             # action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, call_baseline=call_baseline)
                         else:
@@ -302,11 +328,17 @@ def eval_libero(cfg) -> None:
                     else:
                         # skill instruction is already included in past_key_values_traj
                         action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, task_instruct=task.language, call_baseline=call_baseline, if_debug=if_debug)
+                        if t == 89:
+                            final_action = False
+                            no_action = True
+                            inside_tools = False
+                            print(f"back to trajectory")
+
                         last_skill_idx = t
                         prev_tool_instruction = tools_output
-                        if not inside_tools:
-                            import pdb;pdb.set_trace()
-                            save_img(img_array=img, filename=f"cases/skill_end_{t}")
+                        # if not inside_tools:
+                        #     # import pdb;pdb.set_trace()
+                        #     save_img(img_array=img, filename=f"cases/skill_end_{t}")
 
                     if not no_action:
                         # Execute action in environment
@@ -315,7 +347,6 @@ def eval_libero(cfg) -> None:
                             task_successes += 1
                             total_successes += 1
                             break
-                        prev_t = t
                         t += 1
                         if t % 10 == 0:
                             print(f"current t: {t}")
@@ -382,5 +413,11 @@ if __name__ == "__main__":
     parser.add_argument("--data_config", type=str, default="libero_traj_arms")
     parser.add_argument("--denoising_steps", type=int, default=8)
     parser.add_argument("--model_name", type=str, default='')
+    parser.add_argument("--history_type", type=str, default='reinput', help="kvcache / reinput")
+    parser.add_argument("--traj_history", type=str, default='yes', help="yes / no")
     args = parser.parse_args()
     eval_libero(args)
+
+    # no & reinput: no kvcache at all, no history at all: single step inference for both trajectory and sample level data
+    # yes & kvcache: kvcache for trajectory level data, no history for sample level data
+    # yes & reinput: reinput all previous image for trajectory level data
