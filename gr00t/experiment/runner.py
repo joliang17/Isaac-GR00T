@@ -16,6 +16,7 @@
 import json
 import os
 from pathlib import Path
+import traceback
 
 import torch
 import numpy as np
@@ -137,52 +138,52 @@ def compute_metrics(
     - If tune_tool_end: Focus on Binary Classifier accuracy for the heads.
     - If not tune_tool_end: Focus on Token Generation accuracy (Special A/B).
     """
-    (lm_preds, predicted_tool_end, target_tool_end, cur_pred_id_eval, cur_label_id_eval, all_pred_id_eval, all_label_id_eval), labels = eval_preds
-    pred_text = tokenizer.batch_decode(all_pred_id_eval, skip_special_tokens=False)
-    gt_text = tokenizer.batch_decode(all_label_id_eval, skip_special_tokens=False)
-    import pdb;pdb.set_trace()
-    
-    gt_str = ''.join(gt_text)
-    pred_str = ''.join(pred_text)
-    gt_lines = gt_str.splitlines(keepends=True)
-
-    pred_groups = []
-    pos = 0
-
-    for line in gt_lines:
-        L = len(line)
-        pred_groups.append(pred_str[pos:pos+L])
-        pos += L
-
-    gt_groups = [l.rstrip('\n') for l in gt_lines]
-    pred_groups = [l.rstrip('\n') for l in pred_groups]
-    
-    for gt, pred in zip(gt_groups, pred_groups):
-        print('-' * 20)
-        print(f"Labels: {gt}")
-        print(f"Preds : {pred}")
-
     metrics = {}
-    valid_mask = cur_label_id_eval!=skills_end_id 
-    pred_token = cur_pred_id_eval[valid_mask]
-    gt_token = cur_label_id_eval[valid_mask]
-    if valid_mask.any():
-        metrics["special_token"] = (pred_token == gt_token).mean()
-    else:
-        metrics["special_token"] = 0.0
+    try:
+        (lm_preds, predicted_tool_end, target_tool_end, cur_pred_id_eval, cur_label_id_eval, all_pred_id_eval, all_label_id_eval), labels = eval_preds
+        pred_text = tokenizer.batch_decode(all_pred_id_eval, skip_special_tokens=False)
+        gt_text = tokenizer.batch_decode(all_label_id_eval, skip_special_tokens=False)
+        
+        newline_id = tokenizer("\n", add_special_tokens=False)["input_ids"][0]
+        gt_groups = []
+        pred_groups = []
+        start = 0
 
-    # Common mask for valid LM tokens
-    if tune_tool_end:
-        result = compute_tool_end_counts(target_tool_end, predicted_tool_end, cur_label_id_eval, [skills_end_id], [tools_id], [actions_id])
-        metrics['detailed'] = result
+        for i, tid in enumerate(all_label_id_eval):
+            if tid == newline_id:
+                gt_chunk = all_label_id_eval[start:i+1]
+                pred_chunk = all_pred_id_eval[start:i+1]
 
-        # --- BRANCH 1: AUXILIARY HEAD EVALUATION ---
-        metrics["tool_end_total"] = (target_tool_end == predicted_tool_end).mean()
-        if (target_tool_end==1).any():
-            metrics["tool_end_true"] = (target_tool_end[target_tool_end==1] == predicted_tool_end[target_tool_end==1]).mean()
+                gt_groups.append(tokenizer.decode(gt_chunk))
+                pred_groups.append(tokenizer.decode(pred_chunk))
+
+                start = i + 1
+        for gt, pred in zip(gt_groups, pred_groups):
+            print('-' * 20)
+            print(f"Labels: {gt}")
+            print(f"Preds : {pred}")
+
+        valid_mask = cur_label_id_eval!=skills_end_id 
+        pred_token = cur_pred_id_eval[valid_mask]
+        gt_token = cur_label_id_eval[valid_mask]
+        if valid_mask.any():
+            metrics["special_token"] = (pred_token == gt_token).mean()
         else:
-            metrics["tool_end_true"] = 0.0
+            metrics["special_token"] = 0.0
 
+        # Common mask for valid LM tokens
+        if tune_tool_end:
+            result = compute_tool_end_counts(target_tool_end, predicted_tool_end, cur_label_id_eval, [skills_end_id], [tools_id], [actions_id])
+            metrics['detailed'] = result
+
+            # --- BRANCH 1: AUXILIARY HEAD EVALUATION ---
+            metrics["tool_end_total"] = (target_tool_end == predicted_tool_end).mean()
+            if (target_tool_end==1).any():
+                metrics["tool_end_true"] = (target_tool_end[target_tool_end==1] == predicted_tool_end[target_tool_end==1]).mean()
+            else:
+                metrics["tool_end_true"] = 0.0
+    except:
+        traceback.print_exc()
     return metrics
 
 class TrainRunner:

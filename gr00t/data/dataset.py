@@ -518,7 +518,7 @@ class LeRobotSingleDataset(Dataset):
         trajectory_lengths = []
         trajectory_type = []
         # DEBUG
-        for episode in episode_metadata
+        for episode in episode_metadata:
             video_path = str(self.get_video_path(episode["episode_index"], 'image'))
             okay, msg = check_video_with_videoreader(video_path)
             if not okay:
@@ -833,7 +833,7 @@ class LeRobotSingleDataset(Dataset):
                             return seg[random.randrange(len(seg))]
 
                         max_seg_len = max(len(seg) for seg in segments)
-                        resample_count = 1 if max_seg_len <= 1 else min(max_seg_len, 4)
+                        resample_count = 1 if max_seg_len <= 1 else min(max_seg_len, 2)
                         end_segments = list(range(0, n_segments, stride))
                         if end_segments[-1] != n_segments - 1:
                             end_segments.append(n_segments - 1)
@@ -1145,7 +1145,8 @@ class LeRobotSingleDataset(Dataset):
                 list_transformed_steps_added.append(added_item)
 
             concated_text = "".join(list_transformed_steps_added)
-
+            # print(concated_text)
+            # import pdb;pdb.set_trace()
             #########################################
             # 5. Extract Physical Actions/States
             # We only keep state/action tensors for steps that actually involve physical movement.

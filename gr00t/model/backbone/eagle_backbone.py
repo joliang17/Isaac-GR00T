@@ -875,7 +875,7 @@ class EagleBackbone(nn.Module):
                 if (target_tool_end == 1).any().item():
                     print(f"Matches: {toolend_correct.tolist()}")
                     # import pdb;pdb.set_trace()
-
+            with open(f"sample_saved.pkl", 'wb') as f: pickle.dump((vl_input, valid_mask), f)
             import pdb; pdb.set_trace()
             
         return logits, labels, loss, base_loss, special_loss_A, special_loss_B, predicted_tool_end, target_tool_end, curr_preds, curr_labels, text_preds, text_labels
@@ -1189,7 +1189,7 @@ class EagleBackbone(nn.Module):
             decoded_text = self.eagle_tokenizer.batch_decode(full_ids)[0]
             return final_kv_cache, decoded_text
 
-        def generate_text_kvcache(input_ids, attention_mask, token_to_append, past_key_values):
+        def generate_text_kvcache(input_ids, attention_mask, token_to_append, past_key_values, vlm_input):
             # 1. Check History Length
             past_kv_len = 0
             if past_key_values is not None:
@@ -1222,13 +1222,13 @@ class EagleBackbone(nn.Module):
                 "return_dict_in_generate": True, 
                 "output_hidden_states": True, }
             
-            if "eagle_pixel_values" in vl_input and vl_input["eagle_pixel_values"] is not None:
-                generation_inputs["pixel_values"] = vl_input["eagle_pixel_values"]
-                if "eagle_image_sizes" in vl_input:
-                    generation_inputs["image_sizes"] = vl_input["eagle_image_sizes"]
+            if "eagle_pixel_values" in vlm_input and vlm_input["eagle_pixel_values"] is not None:
+                generation_inputs["pixel_values"] = vlm_input["eagle_pixel_values"]
+                if "eagle_image_sizes" in vlm_input:
+                    generation_inputs["image_sizes"] = vlm_input["eagle_image_sizes"]
             else:
                 generation_inputs["pixel_values"] = None
-
+            
             # 4. Run Generation
             gen_output = self.eagle_model.generate(**generation_inputs)
 
@@ -1247,6 +1247,29 @@ class EagleBackbone(nn.Module):
             vl_input = BatchFeature(data=dict(vl_input))
 
         self.set_frozen_modules_to_eval_mode()
+
+        # DEBUG: loading training data with history to check whether the model can generate correct tool set
+        with open(f"sample_saved.pkl", 'rb') as f: 
+            vl_input_ori, valid_mask_ori = pickle.load(f)
+        
+        vl_input_new = vl_input_ori.copy()
+        full_input_ids = vl_input_ori["eagle_input_ids"][:1, ]
+        valid_mask = valid_mask_ori[:1, ]
+        original_mask = F.pad(valid_mask, (1, 0), value=0)
+        is_not_padding = (full_input_ids != self.pad_id)
+        clean_mask = (~original_mask) & is_not_padding
+        # input ids with no padding
+        input_ids = full_input_ids[clean_mask].unsqueeze(0)
+        attention_mask = vl_input_ori["eagle_attention_mask"][:1, ][clean_mask].unsqueeze(0)
+        vl_input_new['eagle_input_ids'] = input_ids
+        vl_input_new['eagle_attention_mask'] = attention_mask
+        vl_input_new['eagle_pixel_values'] = vl_input_new['eagle_pixel_values'][:4, ]
+        vl_input_new['eagle_image_sizes'] = vl_input_new['eagle_image_sizes'][:4]
+        vl_input_new['eagle_num_images'] = vl_input_new['eagle_num_images'][:1]
+        vl_input_new['eagle_llm_labels'] = vl_input_new['eagle_llm_labels'][:1]
+        vl_input = vl_input_new
+        
+        import pdb;pdb.set_trace()
         
         input_ids = vl_input["eagle_input_ids"]
         attention_mask = vl_input["eagle_attention_mask"]
@@ -1255,15 +1278,10 @@ class EagleBackbone(nn.Module):
         router_cache = copy.deepcopy(past_key_values) if past_key_values is not None else None
 
         if inside_tool:
-            allowed_ids = torch.tensor(
-                        [self.actions_id, self.skills_end], 
-                        device=device, dtype=torch.long
-                    )
+            allowed_ids = torch.tensor([self.actions_id, self.skills_end], device=device, dtype=torch.long)
         else:
-            allowed_ids = torch.tensor(
-                        [self.tools_id, self.actions_id, self.skills_end], 
-                        device=device, dtype=torch.long
-                    )
+            allowed_ids = torch.tensor([self.tools_id, self.actions_id, self.skills_end], device=device, dtype=torch.long)
+        
         # 1. Forward Pass (Single Step)
         # We use your custom forward to get logits AND hidden states
         logits, eagle_embeds, eagle_masks, _, last_HS = self.forward_eagle(vl_input, past_key_values=router_cache)
@@ -1313,9 +1331,9 @@ class EagleBackbone(nn.Module):
         input_ids_added = torch.cat([vl_input["eagle_input_ids"][:1], token_to_append], dim=1)
         attention_mask_added = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
         # final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values)
-        final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, None)
+        final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values=None, vlm_input=vl_input)
         # if self.tools_id in router_token_id:
-        #     import pdb;pdb.set_trace()
+        import pdb;pdb.set_trace()
 
         backbone_outputs = BatchFeature({
             "backbone_features": eagle_embeds,
