@@ -10,6 +10,7 @@ import sys
 import pathlib
 import traceback
 import pickle
+import random
 # --- path bootstrap: make GR00T and LIBERO importable ---
 import sys, os, pathlib, importlib.util
 
@@ -69,6 +70,15 @@ from libero.libero import benchmark
 set_seed(42)
 log_dir = "logs/"
 os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
+
+
+from PIL import Image
+
+def resize_images(image_list, size=(256, 256)):
+    return [
+        img.resize(size, Image.BICUBIC)
+        for img in image_list
+    ]
 
 
 def save_img(img_array, filename):
@@ -252,19 +262,26 @@ def eval_libero(cfg) -> None:
                         else:
                             obs_dict = process_observation(obs, "[INFER]" + cur_instr, headless=cfg.headless)
 
-                        # # select 4 steps from previous timesteps and add to observation
-                        # selected_t = random.sample(range(len(traj_top_view)), 4)
-                        # sel_top = [traj_top_view[i] for i in selected_t]
-                        # sel_wrist = [traj_wrist_view[i] for i in selected_t]
-                        # sel_instruction = [list_output[i] for i in selected_t]
-                        # obs_dict['top_previous'] = np.array(sel_top)
-                        # obs_dict['wrist_previous'] = np.array(sel_wrist)
-                        # obs_dict['annotation.human.action.task_description'] = sel_instruction
-                        # import pdb;pdb.set_trace()
+                        # TODO: create obs_dict by providing list images (no previous history)
+                        with open(f"saved_img1.pkl", 'rb') as f: (agg_images, concated_text) = pickle.load(f)
+                        list_top = [agg_images[0], agg_images[2]]
+                        list_wri = [agg_images[1], agg_images[3]]
+                        list_top = resize_images(list_top)  # (256, 256)
+                        list_wri = resize_images(list_wri)
+                        list_seg = concated_text.split('<image-1><image-2>')[1:]
+                        task_instruction = list_seg[0].split('<|im_end|>')[0]
+                        list_gene = [item.split('assistant\n')[-1].split('<|im_start|>')[0] for item in list_seg]
+
+                        obs_dict['video.image'] = np.array([np.array(img) for img in list_top])  # [N, H, W, C]
+                        obs_dict['video.wrist_image'] = np.array([np.array(img) for img in list_wri])  # [N, H, W, C]
+                        obs_dict['annotation.human.action.task_description'] = ['[INFER][PreCreate]<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1><image-2>turn on the stove and put the moka pot on it<|im_end|>\n<|im_start|>assistant\n[TOOLS] turn on the hot plate<|im_end|>\n<|im_start|>user\n<image-1><image-2>turn on the stove and put the moka pot on it<|im_end|>\n<|im_start|>assistant\n[', ]  # the last one is current ground truth
+                        import pdb;pdb.set_trace()
 
                         action_chunk_our, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(
                             obs_dict, observations_base=obs_dict_base, img_count=traj_img_count,
                             past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
+
+                        prev_traj_t = t
 
                         if tools_output != '' and tools_output != '[ACTIONS]':
                             # generated skill instructions
@@ -281,7 +298,6 @@ def eval_libero(cfg) -> None:
                             no_action = False
                             # import pdb;pdb.set_trace()
                             final_action = reformat_action(action_chunk_bs, action_chunk_our, call_baseline=call_baseline)
-                            prev_traj_t = t
 
                     else:
                         # skill instruction is already included in past_key_values_traj

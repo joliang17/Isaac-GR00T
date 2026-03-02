@@ -1145,8 +1145,6 @@ class LeRobotSingleDataset(Dataset):
                 list_transformed_steps_added.append(added_item)
 
             concated_text = "".join(list_transformed_steps_added)
-            # print(concated_text)
-            # import pdb;pdb.set_trace()
             #########################################
             # 5. Extract Physical Actions/States
             # We only keep state/action tensors for steps that actually involve physical movement.
@@ -1170,6 +1168,10 @@ class LeRobotSingleDataset(Dataset):
             dict_output['action'] = list_transformed_action
             dict_output['action_mask'] = list_transformed_action_mask
 
+            if False:
+                print(concated_text)
+                import pdb;pdb.set_trace()
+                with open(f"saved_img4.pkl", 'wb') as f: pickle.dump((agg_images, concated_text), f)
         return dict_output
 
 

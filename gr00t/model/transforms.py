@@ -127,14 +127,16 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 in_infer = False
                 for t_id in range(len(curr_text_list)):
                     if '[INFER_CNT]' in curr_text_list[t_id]: 
-                        # only for inference stage
+                        # only for inference stage: if it is not the first step, do not add system instruction
                         curr_text_list[t_id] = curr_text_list[t_id].replace('<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n', '').replace('[INFER_CNT]', '')
                         in_infer = True
                     if '[INFER]' in curr_text_list[t_id]: 
                         # only for inference stage
                         curr_text_list[t_id] = curr_text_list[t_id].replace('[INFER]', '')
                         in_infer = True
-                
+                    if '[PreCreate]' in curr_text_list[t_id]:
+                        curr_text_list[t_id] = curr_text_list[t_id].split('[PreCreate]')[1]
+
                 if in_infer:
                     v["step_annotation"] = curr_text_list
 
@@ -166,11 +168,6 @@ def collate(features: List[dict], eagle_processor) -> dict:
             batch["eagle_num_images"] = torch.tensor(num_images_list, dtype=torch.long)
 
             labels = user_input_label(eagle_inputs, eagle_processor.tokenizer)
-            # import pdb;pdb.set_trace()
-            # if '[TRAJ_MODE]' in text_list:
-            #     import pdb;pdb.set_trace()
-            #     print_masked_tokens(input_ids=eagle_inputs['input_ids'][1].tolist(), labels=labels[1].tolist(), tokenizer=eagle_processor.tokenizer)
-
             batch["eagle_llm_labels"] = labels
 
         elif key in ("pixel_values", "image_grid_thw", "attention_mask", "input_ids"):
@@ -322,8 +319,11 @@ class GR00TTransform(InvertibleModalityTransform):
                 video: [V, T, C, H, W]
         Returns: required input with the format `BatchFeature`
         """
+
+        # import pdb;pdb.set_trace()
+        # from PIL import Image; import os; os.makedirs("saved_images", exist_ok=True); [Image.fromarray(batch["images"][v,t].transpose(1,2,0)).save(f"saved_images/v{v}_t{t}.png") for v in range(batch["images"].shape[0]) for t in range(batch["images"].shape[1])]
+
         images = batch["images"]  # [V, T, C, H, W]
-        images.shape[0]
 
         np_images = rearrange(images, "v t c h w -> (t v) c h w")
         text_content = []

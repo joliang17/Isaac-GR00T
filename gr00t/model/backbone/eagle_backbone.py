@@ -1132,7 +1132,7 @@ class EagleBackbone(nn.Module):
                 "special_token_A_loss":      out["special_token_A_loss"],
                 "special_token_B_loss":      out["special_token_B_loss"],
                 "orig_batch_size":         out["eagle_embeds"].size(0),
-            "past_key_values": None,
+                "past_key_values": None,
                 "logits": out["logits"], 
                 "labels": out["labels"], 
                 "predicted_tool_end_eval": out["predicted_tool_end_eval"], 
@@ -1267,12 +1267,21 @@ class EagleBackbone(nn.Module):
         vl_input_new['eagle_image_sizes'] = vl_input_new['eagle_image_sizes'][:4]
         vl_input_new['eagle_num_images'] = vl_input_new['eagle_num_images'][:1]
         vl_input_new['eagle_llm_labels'] = vl_input_new['eagle_llm_labels'][:1]
-        vl_input = vl_input_new
+        # vl_input = vl_input_new
         
         import pdb;pdb.set_trace()
         
         input_ids = vl_input["eagle_input_ids"]
         attention_mask = vl_input["eagle_attention_mask"]
+        
+        # DEBUG: check whether input are the same
+        # torch.equal(input_ids, vl_input_new['eagle_input_ids'] )
+        # torch.equal(attention_mask, vl_input_new['eagle_attention_mask'] )
+        # torch.equal(vl_input['eagle_pixel_values'], vl_input_new['eagle_pixel_values'] )
+        # torch.equal(vl_input['eagle_image_sizes'], vl_input_new['eagle_image_sizes'] )
+        # torch.equal(vl_input['eagle_num_images'], vl_input_new['eagle_num_images'] )
+        # torch.equal(vl_input['eagle_llm_labels'], vl_input_new['eagle_llm_labels'] )
+        
         batch_size = input_ids.size(0)
         device = input_ids.device
         router_cache = copy.deepcopy(past_key_values) if past_key_values is not None else None
@@ -1332,8 +1341,8 @@ class EagleBackbone(nn.Module):
         attention_mask_added = torch.cat([vl_input["eagle_attention_mask"][:1], torch.ones_like(token_to_append)], dim=1)
         # final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values)
         final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values=None, vlm_input=vl_input)
-        # if self.tools_id in router_token_id:
-        import pdb;pdb.set_trace()
+        if self.tools_id in router_token_id:
+            import pdb;pdb.set_trace()
 
         backbone_outputs = BatchFeature({
             "backbone_features": eagle_embeds,
