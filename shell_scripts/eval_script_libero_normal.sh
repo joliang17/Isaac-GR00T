@@ -1,9 +1,10 @@
 #!/bin/bash
 
-#SBATCH --job-name=libero_eval_prefix
-#SBATCH --output=libero_eval_prefix.log
-#SBATCH --error=libero_eval_prefix.log
+#SBATCH --job-name=libero_eval_normal
+#SBATCH --output=libero_eval_normal.log
+#SBATCH --error=libero_eval_normal.log
 #SBATCH --time=48:00:00
+#SBATCH --dependency=afterok:6377106
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director
 #SBATCH --qos=cml-high_long
@@ -29,7 +30,7 @@ python3 libero_scripts/libero_eval.py \
     --num_trials_per_task 5 \
     --port 5555 \
     --headless True \
-    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_skillprefix/checkpoint-60000" \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_finetuned/checkpoint-60000" \
     --embodiment_tag new_embodiment \
     --data_config libero_original \
     --denoising_steps 8 \

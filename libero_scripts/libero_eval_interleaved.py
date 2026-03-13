@@ -349,7 +349,7 @@ def eval_libero(cfg) -> None:
                     print(f"Caught exception: {e}")
                     log_file.write(f"Caught exception: {e}\n")
                     # sys.exit(-1)
-                    # break
+                    break
 
             task_episodes += 1
             total_episodes += 1

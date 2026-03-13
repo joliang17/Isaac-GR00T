@@ -24,7 +24,8 @@ export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 
 DATASET=libero_base
-TASK_NAME=libero_skillprefix
+# TASK_NAME=libero_skillprefix
+TASK_NAME=libero_finetuned
 
   # --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero_base_action" \
 
