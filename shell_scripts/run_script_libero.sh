@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=libero_training
-#SBATCH --output=slurm_output/libero_training.log
-#SBATCH --error=slurm_output/libero_training.log
+#SBATCH --job-name=libero_training_skill
+#SBATCH --output=slurm_output/libero_training_skill.log
+#SBATCH --error=slurm_output/libero_training_skill.log
 #SBATCH --time=48:00:00
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director
@@ -24,22 +24,22 @@ export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 
 DATASET=libero_base
-TASK_NAME=libero_training_v6
+TASK_NAME=libero_skillprefix
 
-  # --dataset-path "/fs/nexus-scratch/yliang17/Research/VLA/LIBERO_10_lerobot" \
+  # --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero_base_action" \
 
 python scripts/gr00t_finetune.py \
-  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero_base_action" \
   --num-gpus 1 \
+  --dataset-path "/fs/nexus-scratch/yliang17/Research/VLA/LIBERO_10_lerobot" \
   --windowing_mode "step" \
   --batch-size 16 \
   --data_config "libero_original" \
   --video_backend "torchvision_av" \
   --save_steps 30000 \
   --max_steps 60000 \
-  --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_base_action" \
-  --run_name libero_base_action \
-  --tune_diffusion_model
+  --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
+  --run_name "${TASK_NAME}" \
+  --tune_diffusion_model \
   # --dataloader_num_workers 0
 
 # python scripts/gr00t_finetune.py \

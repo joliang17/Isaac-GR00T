@@ -13,22 +13,22 @@
 
 
 source /etc/profile.d/modules.sh
-module add cuda/12.4.1
+module add cuda/12.9.1
 module add gcc/11.2.0
 
 source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 
 WANDB_PROJECT="vla_tooluse"
-TASK_NAME="stage2_onlyembA_nextstep_skip_action"
-
-model_path="stage2_onlyembA_nextstep_skip_action"
-model_folder="${model_path}"
+TASK_NAME="debug_eval"
 
 
-python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_both_v5_noid --num-gpus 1 --batch-size 2 --window_length=5 --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 200 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --dataloader_num_workers=0 --windowing_mode "sliding_prefix" --run_name "tt_nextstep_skip_action" --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_nextstep_skip_action_toolhead_only_v6_rerun/checkpoint-6000"  --tune_tool_end --do_eval
+python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_ta_both_v6_noid/ --num-gpus 1 --batch-size 2 --window_length=5 --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 200 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --dataloader_num_workers=0 --windowing_mode "sliding_prefix" --run_name "tt_nextstep_skip_action" --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_nextstep_skip_action_toolhead_only_0301_v2/checkpoint-6000"  --tune_tool_end
+#  --do_eval
+
+# python scripts/gr00t_finetune.py --dataset-path /fs/nexus-projects/wilddiffusion/vla/LIBERO/traj_video_both_v5_noid --num-gpus 1 --batch-size 2 --window_length=5 --data_config libero_traj_arms_2 --video_backend torchvision_av --save_steps 200 --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/tt" --dataloader_num_workers=0 --windowing_mode "sliding_prefix" --run_name "tt_nextstep_skip_action" --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage1_nextstep_3ds_merged/checkpoint-10000"  --tune_tool_end --do_eval
 
 # --frame_type="key"
---do_eval
+# --do_eval
 #  --tune_special_A 
 
 

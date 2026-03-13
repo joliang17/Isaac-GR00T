@@ -116,7 +116,7 @@ def eval_libero(cfg) -> None:
         else:
             action_chunk = action_chunk_our
             # normalize = False
-            normalize = True
+            normalize = False
         
         # action tokens are generated
         final_action = convert_to_libero_action(action_chunk, action_keys, normalize=normalize)
@@ -157,7 +157,7 @@ def eval_libero(cfg) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+    for task_id in tqdm.tqdm(range(3, num_tasks_in_suite, 1)):
         # Get task
         task = task_suite.get_task(task_id)
 
@@ -196,8 +196,8 @@ def eval_libero(cfg) -> None:
             elif cfg.task_suite_name == "libero_goal":
                 max_steps = 600  # longest training demo has 270 steps
             elif cfg.task_suite_name == "libero_10":
-                max_steps = 550  # longest training demo has 505 steps
-                # max_steps = 1000  # longest training demo has 505 steps
+                # max_steps = 550  # longest training demo has 505 steps
+                max_steps = 1000  # longest training demo has 505 steps
             elif cfg.task_suite_name == "libero_90":
                 max_steps = 400  # longest training demo has 373 steps
 
@@ -271,22 +271,21 @@ def eval_libero(cfg) -> None:
                                 # input history by reinput previous images
                                 past_key_values_traj = None
 
-                                # DEBUG: create obs_dict by providing list images (no previous history)
-                                with open(f"saved_img1.pkl", 'rb') as f: (agg_images, concated_text) = pickle.load(f)
-                                list_top = [agg_images[0], agg_images[2]]
-                                list_wri = [agg_images[1], agg_images[3]]
-                                list_top = resize_images(list_top)  # (256, 256)
-                                list_wri = resize_images(list_wri)
-                                list_seg = concated_text.split('<image-1><image-2>')[1:]
-                                task_instruction = list_seg[0].split('<|im_end|>')[0]
-                                list_gene = [item.split('assistant\n')[-1].split('<|im_start|>')[0] for item in list_seg]
+                                # # DEBUG: create obs_dict by providing list images (no previous history)
+                                # with open(f"saved_img1.pkl", 'rb') as f: (agg_images, concated_text) = pickle.load(f)
+                                # list_top = [agg_images[0], agg_images[2]]
+                                # list_wri = [agg_images[1], agg_images[3]]
+                                # list_top = resize_images(list_top)  # (256, 256)
+                                # list_wri = resize_images(list_wri)
+                                # list_seg = concated_text.split('<image-1><image-2>')[1:]
+                                # task_instruction = list_seg[0].split('<|im_end|>')[0]
+                                # list_gene = [item.split('assistant\n')[-1].split('<|im_start|>')[0] for item in list_seg]
 
                                 # obs_dict['video.image'] = np.array([np.array(img) for img in list_top])  # [N, H, W, C]
                                 # obs_dict['video.wrist_image'] = np.array([np.array(img) for img in list_wri])  # [N, H, W, C]
                                 # obs_dict['annotation.human.action.task_description'] = ['[INFER][PreCreate]<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image-1><image-2>turn on the stove and put the moka pot on it<|im_end|>\n<|im_start|>assistant\n[TOOLS] turn on the hot plate<|im_end|>\n<|im_start|>user\n<image-1><image-2>turn on the stove and put the moka pot on it<|im_end|>\n<|im_start|>assistant\n[', ]  # the last one is current ground truth
 
-
-                                list_sel_top = top_view[-5:]
+                                list_sel_top = traj_top_view[-5:]
                                 list_sel_wri = traj_wrist_view[-5:]
                                 list_sel_output = list_output[-4:]
                                 obs_dict['video.image'] = np.array(list_sel_top)  # [N, H, W, C]
@@ -295,19 +294,15 @@ def eval_libero(cfg) -> None:
                                 for prev_t in range(len(list_sel_top)):
                                     instruct_text += f"<|im_start|>user\n<image-1><image-2>{task.language}<|im_end|>\n<|im_start|>assistant\n"
                                     if prev_t < len(list_sel_output):
-                                        instruct_text += f"{list_sel_output[t]}"
+                                        instruct_text += f"{list_sel_output[prev_t]}"
                                         instruct_text += "<|im_end|>\n"
                                 obs_dict['annotation.human.action.task_description'] = [instruct_text, ]
-                                import pdb;pdb.set_trace()
-
 
                             else:
                                 # input history by kv cache
                                 pass 
 
-                        action_chunk_our, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(
-                            obs_dict, observations_base=obs_dict_base, img_count=traj_img_count,
-                            past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
+                        action_chunk_our, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
 
                         if tools_output != '' and tools_output != '[ACTIONS]':
                             # generated skill instructions
@@ -327,18 +322,16 @@ def eval_libero(cfg) -> None:
 
                     else:
                         # skill instruction is already included in past_key_values_traj
+                        # TODO: why cannot predict tool end this time?
                         action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, task_instruct=task.language, call_baseline=call_baseline, if_debug=if_debug)
-                        if t == 89:
-                            final_action = False
-                            no_action = True
-                            inside_tools = False
-                            print(f"back to trajectory")
+                        if not inside_tools and t == list_traj_saved[-1]:
+                            import pdb;pdb.set_trace()
 
                         last_skill_idx = t
                         prev_tool_instruction = tools_output
-                        # if not inside_tools:
-                        #     # import pdb;pdb.set_trace()
-                        #     save_img(img_array=img, filename=f"cases/skill_end_{t}")
+                        if not inside_tools:
+                            # import pdb;pdb.set_trace()
+                            save_img(img_array=img, filename=f"cases/skill_end_{t}")
 
                     if not no_action:
                         # Execute action in environment
@@ -355,8 +348,8 @@ def eval_libero(cfg) -> None:
                     traceback.print_exc()
                     print(f"Caught exception: {e}")
                     log_file.write(f"Caught exception: {e}\n")
-                    sys.exit(-1)
-                    break
+                    # sys.exit(-1)
+                    # break
 
             task_episodes += 1
             total_episodes += 1
@@ -374,7 +367,7 @@ def eval_libero(cfg) -> None:
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
             )
             log_file.flush()
-            sys.exit(0)
+            # sys.exit(0)
 
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")

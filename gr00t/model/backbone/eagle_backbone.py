@@ -793,7 +793,7 @@ class EagleBackbone(nn.Module):
                 tool_end_logits_step = self.tool_end_head(selected_hidden)
                 tool_logits_step = self.tool_head(selected_hidden)
 
-                weights = torch.tensor([1.0, 5.0]).to(device) # [Neg_Weight, Pos_Weight]
+                weights = torch.tensor([1.0, 9.0]).to(device) # [Neg_Weight, Pos_Weight]
                 tool_loss_fct = nn.CrossEntropyLoss(reduction='mean', weight=weights)
 
                 toolend_loss_avg = tool_loss_fct(tool_end_logits_step, target_tool_end)
@@ -874,9 +874,10 @@ class EagleBackbone(nn.Module):
                 toolend_correct = (predicted_tool_end == target_tool_end)
                 if (target_tool_end == 1).any().item():
                     print(f"Matches: {toolend_correct.tolist()}")
-                    # import pdb;pdb.set_trace()
-            with open(f"sample_saved.pkl", 'wb') as f: pickle.dump((vl_input, valid_mask), f)
-            import pdb; pdb.set_trace()
+                    # with open(f"sample_saved.pkl", 'wb') as f: pickle.dump((vl_input, valid_mask, eagle_input, outputs.hidden_states[0], tool_end_logits_step, selected_hidden[0]), f)
+                    # import sys;sys.exit(0)
+                    import pdb;pdb.set_trace()
+            # import pdb; pdb.set_trace()
             
         return logits, labels, loss, base_loss, special_loss_A, special_loss_B, predicted_tool_end, target_tool_end, curr_preds, curr_labels, text_preds, text_labels
         
@@ -1154,8 +1155,8 @@ class EagleBackbone(nn.Module):
            - ACTION: Return hidden states for policy head.
         """
         def generate_text_kvcache_ori(input_ids, attention_mask, token_to_append, ):
-            if past_key_values is not None:
-                import pdb;pdb.set_trace()
+            # if past_key_values is not None:
+            #     import pdb;pdb.set_trace()
             gene_cache = copy.deepcopy(past_key_values) if past_key_values is not None else None
             past_kv_len = gene_cache.get_seq_length() if gene_cache is not None else 0
             current_input_len = input_ids.shape[1]
@@ -1250,7 +1251,7 @@ class EagleBackbone(nn.Module):
 
         # # DEBUG: loading training data with history to check whether the model can generate correct tool set
         # with open(f"sample_saved.pkl", 'rb') as f: 
-        #     vl_input_ori, valid_mask_ori = pickle.load(f)
+        #     vl_input_ori, valid_mask_ori, eagle_input, tool_end_logits_step, selected_hidden = pickle.load(f)
         
         # vl_input_new = vl_input_ori.copy()
         # full_input_ids = vl_input_ori["eagle_input_ids"][:1, ]
@@ -1267,7 +1268,7 @@ class EagleBackbone(nn.Module):
         # vl_input_new['eagle_image_sizes'] = vl_input_new['eagle_image_sizes'][:4]
         # vl_input_new['eagle_num_images'] = vl_input_new['eagle_num_images'][:1]
         # vl_input_new['eagle_llm_labels'] = vl_input_new['eagle_llm_labels'][:1]
-        # # vl_input = vl_input_new
+        # vl_input = vl_input_new
         
         input_ids = vl_input["eagle_input_ids"]
         attention_mask = vl_input["eagle_attention_mask"]
@@ -1280,6 +1281,7 @@ class EagleBackbone(nn.Module):
         # torch.equal(vl_input['eagle_num_images'], vl_input_new['eagle_num_images'] )
         # torch.equal(vl_input['eagle_llm_labels'], vl_input_new['eagle_llm_labels'] )
         
+        # import pdb;pdb.set_trace()
         batch_size = input_ids.size(0)
         device = input_ids.device
         router_cache = copy.deepcopy(past_key_values) if past_key_values is not None else None
@@ -1320,7 +1322,7 @@ class EagleBackbone(nn.Module):
             if mask_end.any():
                 # import pdb;pdb.set_trace()
                 router_token_id_head = torch.tensor(self.skills_end, device=device)
-                import pdb;pdb.set_trace()
+                # import pdb;pdb.set_trace()
 
             # if if_debug:
             #     import pdb;pdb.set_trace()
@@ -1340,6 +1342,7 @@ class EagleBackbone(nn.Module):
         # final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values)
         final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values=past_key_values, vlm_input=vl_input)
         # if self.tools_id in router_token_id:
+        #     print(decoded_text)
         #     import pdb;pdb.set_trace()
 
         backbone_outputs = BatchFeature({

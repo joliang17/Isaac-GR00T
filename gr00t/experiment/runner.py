@@ -178,12 +178,15 @@ def compute_metrics(
 
             # --- BRANCH 1: AUXILIARY HEAD EVALUATION ---
             metrics["tool_end_total"] = (target_tool_end == predicted_tool_end).mean()
+            metrics["tool_end_FP"] = (target_tool_end[target_tool_end==0] == predicted_tool_end[target_tool_end==0]).mean()
             if (target_tool_end==1).any():
-                metrics["tool_end_true"] = (target_tool_end[target_tool_end==1] == predicted_tool_end[target_tool_end==1]).mean()
+                metrics["tool_end_TP"] = (target_tool_end[target_tool_end==1] == predicted_tool_end[target_tool_end==1]).mean()
             else:
-                metrics["tool_end_true"] = 0.0
-    except:
+                metrics["tool_end_TP"] = 0.0
+    except Exception as e:
+        print(e)
         traceback.print_exc()
+        # import pdb;pdb.set_trace()
     return metrics
 
 class TrainRunner:
