@@ -1,6 +1,4 @@
-import os
-import sys
-import pathlib
+from pathlib import Path
 import traceback
 # --- path bootstrap: make GR00T and LIBERO importable ---
 import sys, os, pathlib, importlib.util
@@ -62,6 +60,11 @@ os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
 
 skill_prefix = """The robot executes atomic manipulation skills.\nYour job is to select the NEXT skill the robot should execute.\n\nAvailable skills and definitions:\n1. grasp: Closing the gripper around an object to establish a stable hold that enables subsequent manipulation.\n2. approach: Moving the end-effector toward a target object or location without making contact.\n3. move: Transporting a grasped object through free space toward a target location when the object has not yet reached its final placement pose.\n4. release: Opening the gripper to place or drop a currently grasped object once it has reached the intended target placement location.\n5. push: Applying lateral contact force to slide an object across a surface without grasping or securing it in the gripper.\n6. pull: Applying contact force to draw an object or handle toward the robot without grasping it.\n7. insert: Placing or guiding an object into a tightly constrained slot, holder, rack, cavity, or opening where geometric alignment and fitting against surrounding boundaries are required. Do not use insert for simply placing an object into an open container such as a basket, tray, or bin.\n8. extract: Removing an object from a spatially constrained location such as a slot, holder, or container.\n9. rotate: Turning a grasped or contacted object around its primary rotational axis without changing its position in space, such as a button.\n10. flip: Changing an object\'s orientation by turning it over or reversing its facing direction.\n11. open: Actuating a hinged, sliding, or articulated component to expose the interior of an enclosure.\n12. close: Actuating a hinged, sliding, or articulated component to seal or cover an enclosure.\n\nDecision rules:\n\n1. If the gripper is far from the target object → choose "approach"\n2. If the gripper is touching the object and needs to hold it → choose "grasp"\n3. If the robot is holding an object and transporting it → choose "move"\n4. If the robot needs to release an object → choose "release"\n5. If the robot slides an object without grasping → choose "push"\n6. If the robot pulls a handle or object → choose "pull"\n7. If the robot places an object into a constrained space → choose "insert"\n8. If the robot removes an object from a constrained space → choose "extract"\n9. If the robot turns an object in place → choose "rotate"\n10. If the robot flips an object orientation → choose "flip"\n11. If the robot actuates a door or drawer to expose interior → choose "open"\n12. If the robot closes a door or drawer → choose "close"\n\nInstructions:\n\n- Look at the image and understand the current robot state.\n- Read the task instruction.\n- Decide the NEXT skill needed.\n\nThink briefly about the scene\n"""
 
+def extract_name(s):
+    if "/" in s and not s.startswith("/"):
+        return s.split("/")[0]        # repo format
+    else:
+        return Path(s).parts[-2]     # filesystem path
 
 def eval_libero(cfg) -> None:
     print(f"Normalized action or not: {args.normalize_action}")
@@ -87,6 +90,12 @@ def eval_libero(cfg) -> None:
         denoising_steps=args.denoising_steps,
         device="cuda" if torch.cuda.is_available() else "cpu",
     )
+    try:
+        model_name = extract_name(args.model_path)
+    except:
+        import hashlib
+        model_name = hashlib.md5(args.model_path.encode()).hexdigest()[:8]
+        print(f"Model path: {args.model_path}, saved folder: {model_name}")
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
@@ -159,7 +168,10 @@ def eval_libero(cfg) -> None:
                         wrist_view.append(wrist_img)
 
                         # Query model to get action
-                        obs_dict = process_observation(obs, skill_prefix + task_description, headless=args.headless)
+                        if args.add_prefix:
+                            obs_dict = process_observation(obs, skill_prefix + task_description, headless=args.headless)
+                        else:
+                            obs_dict = process_observation(obs, task_description, headless=args.headless)
                         _, _, _, action_chunk = gr00t_policy.get_action(obs_dict, mode='baseline')
                         # if normalize=True: gripper from model: [0, 1] will be normalized to [-1, 1]
                         # if original training data is not normalized (-1, 1), no need ro norm (normalize_action = False)
@@ -177,8 +189,8 @@ def eval_libero(cfg) -> None:
                             break
 
                         t += 1
-                        if t % 10 == 0:
-                            print(f"current t: {t}")
+                        # if t % 10 == 0:
+                        #     print(f"current t: {t}")
 
                     except Exception as e:
                         traceback.print_exc()
@@ -191,7 +203,7 @@ def eval_libero(cfg) -> None:
                 total_episodes += 1
 
                 # Save a replay video of the episode
-                save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, )
+                save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, model_name=model_name)
 
                 # Log current results
                 print(f"Success: {done}")
@@ -241,6 +253,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_config", type=str, default="libero_original")
     parser.add_argument("--denoising_steps", type=int, default=8)
     parser.add_argument("--normalize_action", action="store_true", help="Enable action normalization")
+    parser.add_argument("--add_prefix", type=bool, default=False)
     args = parser.parse_args()
 
     eval_libero(args)

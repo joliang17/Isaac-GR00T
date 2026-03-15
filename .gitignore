@@ -130,3 +130,5 @@ rollouts/*
 
 *.slurm
 slurm_scripts/*
+
+*.pkl

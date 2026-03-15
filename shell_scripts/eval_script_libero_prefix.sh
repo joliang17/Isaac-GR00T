@@ -34,16 +34,4 @@ python3 libero_scripts/libero_eval.py \
     --denoising_steps 8 \
     --normalize_action \
     --add_prefix
-    # --model_path youliangtan/gr00t-n1.5-libero-long-posttrain \
-
-# python3 libero_scripts/libero_eval_interleaved.py \
-#     --task_suite_name libero_10 \
-#     --num_steps_wait 10 \
-#     --num_trials_per_task 2 \
-#     --embodiment_tag new_embodiment \
-#     --data_config libero_traj_arms_2 \
-#     --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage2_nextstep_skip_action_toolhead_only_v4/checkpoint-6000" \
-#     --model_name "stage2_nextstep_skip_action_toolhead_only_v4" \
-#     --denoising_steps 8 \
-#     --call_baseline
 

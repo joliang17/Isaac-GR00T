@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=libero_eval_normal
-#SBATCH --output=slurm_output/libero_eval_normal.log
-#SBATCH --error=slurm_output/libero_eval_normal.log
+#SBATCH --job-name=libero_eval_gr00t
+#SBATCH --output=slurm_output/libero_eval_gr00t.log
+#SBATCH --error=slurm_output/libero_eval_gr00t.log
 #SBATCH --time=48:00:00
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director
@@ -21,14 +21,15 @@ source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 export OPENAI_API_KEY=""
 base_dir="/fs/nexus-scratch/yliang17/Research/VLA/saved_folder/checkpoint"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
+# export CUDA_VISIBLE_DEVICES="1"
 
 python3 libero_scripts/libero_eval.py \
     --task_suite_name libero_10 \
     --num_steps_wait 10 \
-    --num_trials_per_task 10\
+    --num_trials_per_task 10 \
     --port 5555 \
     --headless True \
-    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_finetuned/checkpoint-60000" \
+    --model_path youliangtan/gr00t-n1.5-libero-long-posttrain \
     --embodiment_tag new_embodiment \
     --data_config libero_original \
     --denoising_steps 8 \
