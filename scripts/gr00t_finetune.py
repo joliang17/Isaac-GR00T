@@ -14,6 +14,15 @@
 # limitations under the License.
 
 import os
+CACHE_DIR = "/fs/nexus-projects/wilddiffusion/cache"
+CACHE_DIR = os.getenv("CACHE_DIR", CACHE_DIR)
+
+os.environ["HF_HOME"] = CACHE_DIR
+os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
+os.environ["HF_MODULES_CACHE"] = CACHE_DIR
+os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -26,11 +35,12 @@ from transformers import TrainingArguments
 
 from gr00t.data.dataset import LeRobotMixtureDataset, LeRobotSingleDataset
 from gr00t.data.schema import EmbodimentTag
-from gr00t.experiment.data_config import load_data_config
+from gr00t.experiment.data_config import DATA_CONFIG_MAP, load_data_config
 from gr00t.experiment.runner import TrainRunner
 from gr00t.model.gr00t_n1 import GR00T_N1_5
 from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING
 from gr00t.utils.peft import get_lora_model
+torch.autograd.set_detect_anomaly(True)
 
 
 @dataclass
@@ -43,6 +53,8 @@ class ArgsConfig:
 
     output_dir: str = "/tmp/gr00t"
     """Directory to save model checkpoints."""
+
+    run_name: str = "vla_tooluse"
 
     data_config: str = "fourier_gr1_arms_only"
     """
@@ -87,6 +99,9 @@ class ArgsConfig:
 
     # Advanced training parameters
     learning_rate: float = 1e-4
+    """Learning rate for training."""
+
+    grad_norm: float = 1.0
     """Learning rate for training."""
 
     weight_decay: float = 1e-5
@@ -345,7 +360,7 @@ def main(config: ArgsConfig):
     # 2.1 modify training args
     training_args = TrainingArguments(
         output_dir=config.output_dir,
-        run_name=None,
+        run_name=config.run_name,
         remove_unused_columns=False,
         deepspeed="",
         gradient_checkpointing=False,
@@ -378,6 +393,7 @@ def main(config: ArgsConfig):
         ddp_find_unused_parameters=False,
         ddp_bucket_cap_mb=100,
         torch_compile_mode=None,
+        # max_grad_norm=config.grad_norm,
     )
 
     # 2.2 run experiment

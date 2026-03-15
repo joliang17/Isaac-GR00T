@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 
 import torch
+import numpy as np
 from transformers import TrainingArguments, set_seed
 
 from gr00t.data.dataset import LeRobotMixtureDataset, LeRobotSingleDataset
