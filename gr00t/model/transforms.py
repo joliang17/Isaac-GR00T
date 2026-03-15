@@ -44,15 +44,16 @@ def formalize_language(language: str) -> str:
     return language
 
 
-def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
-    eagle_processor = AutoProcessor.from_pretrained(
-        eagle_path, trust_remote_code=True, use_fast=True
+def build_vlm_processor(processor_path: str) -> ProcessorMixin:
+    processor = AutoProcessor.from_pretrained(
+        processor_path, trust_remote_code=True, use_fast=True
     )
-    eagle_processor.tokenizer.padding_side = "left"
-    return eagle_processor
+    if hasattr(processor, "tokenizer") and processor.tokenizer is not None:
+        processor.tokenizer.padding_side = "left"
+    return processor
 
 
-def collate(features: List[dict], eagle_processor) -> dict:
+def collate(features: List[dict], eagle_processor: ProcessorMixin) -> dict:
     batch = {}
     keys = features[0].keys()
 
@@ -63,8 +64,8 @@ def collate(features: List[dict], eagle_processor) -> dict:
             text_list = []
             image_inputs = []
             for v in values:
-                curr_text_list = v["text_list"]
-                curr_image_inputs = v["image_inputs"]
+                curr_text_list = v.get("text_list", v.get("text", []))
+                curr_image_inputs = v.get("image_inputs", v.get("images", []))
                 text_list += curr_text_list
                 image_inputs += curr_image_inputs
             eagle_inputs = eagle_processor(
@@ -86,7 +87,7 @@ def collate(features: List[dict], eagle_processor) -> dict:
 class DefaultDataCollator(DataCollatorMixin):
     def __init__(self, eagle_path: str = DEFAULT_EAGLE_PATH):
         super().__init__()
-        self.eagle_processor = build_eagle_processor(eagle_path)
+        self.eagle_processor = build_vlm_processor(eagle_path)
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         return collate(features, self.eagle_processor)
@@ -104,7 +105,7 @@ class GR00TTransform(InvertibleModalityTransform):
     formalize_language: bool = Field(default=False, description="Formalize language if True.")
     embodiment_tag_mapping: dict[str, int] = Field(
         description="The projector index of each embodiment tag.",
-        default=EMBODIMENT_TAG_MAPPING,
+        default_factory=lambda: dict(EMBODIMENT_TAG_MAPPING),
     )
     language_dropout_prob: float = Field(
         default=0.0,
@@ -114,7 +115,8 @@ class GR00TTransform(InvertibleModalityTransform):
     # Private attributes to keep track of shapes/dimensions across apply/unapply
     _language_key: Optional[list[str]] = PrivateAttr(default=None)
 
-    eagle_processor: ProcessorMixin = Field(default=build_eagle_processor(DEFAULT_EAGLE_PATH))
+    processor_path: str = Field(default=DEFAULT_EAGLE_PATH)
+    eagle_processor: Optional[ProcessorMixin] = Field(default=None)
 
     # XEmbDiT arguments
     default_instruction: str = Field(default="Perform the default behavior.")
@@ -125,6 +127,14 @@ class GR00TTransform(InvertibleModalityTransform):
 
     max_length: int = 512
     embodiment_tag: EmbodimentTag | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        pass
+
+    def _get_eagle_processor(self) -> ProcessorMixin:
+        if self.eagle_processor is None:
+            self.eagle_processor = build_vlm_processor(self.processor_path)
+        return self.eagle_processor
 
     def set_metadata(self, dataset_metadata: DatasetMetadata):
         """Set the metadata for the transform."""
@@ -198,17 +208,14 @@ class GR00TTransform(InvertibleModalityTransform):
             }
         ]
 
-        text_list = [
-            self.eagle_processor.apply_chat_template(
+        eagle_processor = self._get_eagle_processor()
+        if hasattr(eagle_processor, "apply_chat_template"):
+            text = eagle_processor.apply_chat_template(
                 eagle_conversation, tokenize=False, add_generation_prompt=True
             )
-        ]
-        image_inputs, video_inputs = self.eagle_processor.process_vision_info(eagle_conversation)
-        eagle_content = {
-            "image_inputs": image_inputs,
-            "video_inputs": video_inputs,
-            "text_list": text_list,
-        }
+        else:
+            text = lang
+        eagle_content = {"images": eagle_images, "text": [text]}
         inputs = {}
         inputs["eagle_content"] = eagle_content
         return inputs
@@ -342,7 +349,7 @@ class GR00TTransform(InvertibleModalityTransform):
         data_split = [tree.map_structure(lambda x: x[i], data) for i in range(batch_size)]
         # Process each element.
         data_split_processed = [self.apply_single(elem) for elem in data_split]
-        return collate(data_split_processed, self.eagle_processor)
+        return collate(data_split_processed, self._get_eagle_processor())
 
     def apply(self, data: dict) -> dict:
         is_batched, batch_size = self.check_keys_and_batch_size(data)

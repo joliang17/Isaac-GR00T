@@ -456,7 +456,6 @@ if __name__ == "__main__":
                 str(script_path),
                 *raw_args_list,
             ]
-
             print("Running torchrun command: ", cmd)
             env = os.environ.copy()
             env["IS_TORCHRUN"] = "1"

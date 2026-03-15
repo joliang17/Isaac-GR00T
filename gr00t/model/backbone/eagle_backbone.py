@@ -16,14 +16,15 @@ import os
 
 import torch
 from torch import nn
-from transformers import AutoConfig, AutoModel
+from transformers import Qwen3VLForConditionalGeneration
 from transformers.feature_extraction_utils import BatchFeature
 
 import gr00t
 
-DEFAULT_EAGLE_PATH = os.path.join(
-    os.path.dirname(gr00t.__file__), "model", "backbone", "eagle2_hg_model"
-)
+# DEFAULT_EAGLE_PATH = os.path.join(
+#     os.path.dirname(gr00t.__file__), "model", "backbone", "eagle2_hg_model"
+# )
+DEFAULT_EAGLE_PATH = "Qwen/Qwen3-VL-2B-Instruct"
 
 
 class EagleBackbone(nn.Module):
@@ -47,18 +48,20 @@ class EagleBackbone(nn.Module):
         super().__init__()
         assert not reproject_vision, "Reproject vision is not implemented here, set to False"
 
-        config = AutoConfig.from_pretrained(DEFAULT_EAGLE_PATH, trust_remote_code=True)
-        self.eagle_model = AutoModel.from_config(config, trust_remote_code=True)
+        model_path = DEFAULT_EAGLE_PATH
+        self.eagle_model = Qwen3VLForConditionalGeneration.from_pretrained(model_path, trust_remote_code=True, device_map='cuda')
+        # self.eagle_model.tie_weights()
+        # print(self.eagle_model.lm_head.weight.is_meta)
+        # print(self.eagle_model.lm_head.weight.data_ptr() == self.eagle_model.model.language_model.embed_tokens.weight.data_ptr())
 
         if project_to_dim is not None:
             self.eagle_linear = torch.nn.Linear(2048, project_to_dim)
         else:
             self.eagle_linear = torch.nn.Identity()
 
-        # needed since we don't use these layers. Also saves compute
-        while len(self.eagle_model.language_model.model.layers) > select_layer:
-            self.eagle_model.language_model.model.layers.pop(-1)
-
+        # # needed since we don't use these layers. Also saves compute
+        # while len(self.eagle_model.language_model.model.layers) > select_layer:
+        #     self.eagle_model.language_model.model.layers.pop(-1)
         self.select_layer = select_layer
         self.set_trainable_parameters(tune_llm, tune_visual)
 
@@ -68,10 +71,11 @@ class EagleBackbone(nn.Module):
         for p in self.parameters():
             p.requires_grad = True
         if not tune_llm:
-            self.eagle_model.language_model.requires_grad_(False)
+            # self.eagle_model.language_model.requires_grad_(False)
+            self.eagle_model.model.language_model.requires_grad_(False)
         if not tune_visual:
-            self.eagle_model.vision_model.requires_grad_(False)
-            self.eagle_model.mlp1.requires_grad_(False)
+            self.eagle_model.model.visual.requires_grad_(False)
+
         print(f"Tune backbone llm: {self.tune_llm}")
         print(f"Tune backbone visual: {self.tune_visual}")
         # Check if any parameters are still trainable. If not, print a warning.
@@ -89,10 +93,10 @@ class EagleBackbone(nn.Module):
         need to call model.eval() for the frozen modules.
         """
         if self.training:
-            if self.eagle_model.language_model and not self.tune_llm:
-                self.eagle_model.language_model.eval()
-            if self.eagle_model.vision_model and not self.tune_visual:
-                self.eagle_model.vision_model.eval()
+            if self.eagle_model.model.language_model and not self.tune_llm:
+                self.eagle_model.model.language_model.eval()
+            if self.eagle_model.model.visual and not self.tune_visual:
+                self.eagle_model.model.visual.eval()
 
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
@@ -104,8 +108,7 @@ class EagleBackbone(nn.Module):
             for k, v in vl_input.items()
             if k.startswith(eagle_prefix)
         }
-        del eagle_input["image_sizes"]
-
+        eagle_input.pop("image_sizes", None)
         eagle_output = self.eagle_model(**eagle_input, output_hidden_states=True, return_dict=True)
         eagle_features = eagle_output.hidden_states[self.select_layer]
 
@@ -123,7 +126,7 @@ class EagleBackbone(nn.Module):
             dummy_term = torch.tensor(
                 0.0, device=eagle_embeds.device, dtype=eagle_embeds.dtype, requires_grad=True
             )
-            for param in self.eagle_model.vision_model.parameters():
+            for param in self.eagle_model.model.visual.parameters():
                 if param.requires_grad:
                     dummy_term = dummy_term + 0.0 * param.sum()
             eagle_embeds = eagle_embeds + dummy_term

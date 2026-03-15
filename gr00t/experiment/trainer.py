@@ -21,8 +21,12 @@ import numpy as np
 import torch
 import transformers
 from torch.utils.data import Dataset, Sampler
+try:
+    from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+except ImportError:
+    from transformers.trainer import ALL_LAYERNORM_LAYERS
+
 from transformers.trainer import (
-    ALL_LAYERNORM_LAYERS,
     TRAINER_STATE_NAME,
     TrainerState,
     get_last_checkpoint,
@@ -70,8 +74,10 @@ class DualBrainTrainer(transformers.Trainer):
             [np.core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.UInt32DType]
         )
 
-    def _get_train_sampler(self):
-        return BaseSampler(self.train_dataset, shuffle=True, seed=self.args.seed)
+    def _get_train_sampler(self, train_dataset=None):
+        if train_dataset is None:
+            train_dataset = self.train_dataset
+        return BaseSampler(train_dataset, shuffle=True, seed=self.args.seed)
 
     def _get_eval_sampler(self, eval_dataset):
         return BaseSampler(eval_dataset, shuffle=False)

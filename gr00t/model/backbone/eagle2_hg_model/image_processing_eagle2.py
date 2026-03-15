@@ -15,7 +15,7 @@
 """Image processor class for LLaVa-Onevision."""
 
 import math
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 from transformers.image_processing_utils import (
@@ -34,7 +34,6 @@ from transformers.image_utils import IMAGENET_STANDARD_MEAN  # 0.5, 0.5, 0.5
 from transformers.image_utils import IMAGENET_STANDARD_STD  # 0.5, 0.5, 0.5
 from transformers.image_utils import (
     ChannelDimension,
-    ImageInput,
     PILImageResampling,
     get_image_size,
     infer_channel_dimension_format,
@@ -45,6 +44,11 @@ from transformers.image_utils import (
     validate_preprocess_arguments,
 )
 from transformers.utils import TensorType, is_vision_available, logging
+
+try:
+    from transformers.image_utils import ImageInput
+except ImportError:
+    ImageInput = Any
 
 logger = logging.get_logger(__name__)
 

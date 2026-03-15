@@ -13,7 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Tuple
 
 import numpy as np
@@ -202,6 +204,7 @@ class GR00T_N1_5(PreTrainedModel):
         tune_llm = kwargs.pop("tune_llm", False)
         tune_projector = kwargs.pop("tune_projector", True)
         tune_diffusion_model = kwargs.pop("tune_diffusion_model", True)
+        torch_dtype = kwargs.pop("torch_dtype", None)
 
         print(f"Loading pretrained dual brain from {pretrained_model_name_or_path}")
         print(f"Tune backbone vision tower: {tune_visual}")
@@ -221,10 +224,57 @@ class GR00T_N1_5(PreTrainedModel):
             )
             local_model_path = pretrained_model_name_or_path
 
-        pretrained_model = super().from_pretrained(
-            local_model_path, local_model_path=local_model_path, **kwargs
-        )
+        model_path = Path(local_model_path)
+        dit_prefix = "action_head."
+        dit_state_dict = {}
 
+        def load_safetensors_file(file_path: Path, keys: list[str] | None = None):
+            from safetensors import safe_open
+
+            with safe_open(str(file_path), framework="pt", device="cpu") as f:
+                load_keys = keys
+                if load_keys is None:
+                    load_keys = [key for key in f.keys() if key.startswith(dit_prefix)]
+                for key in load_keys:
+                    dit_state_dict[key] = f.get_tensor(key)
+
+        def load_torch_file(file_path: Path, keys: list[str] | None = None):
+            shard_state_dict = torch.load(file_path, map_location="cpu", weights_only=True)
+            if keys is None:
+                keys = [key for key in shard_state_dict if key.startswith(dit_prefix)]
+            for key in keys:
+                dit_state_dict[key] = shard_state_dict[key]
+
+        def load_index_file(index_path: Path, load_fn):
+            with index_path.open() as f:
+                weight_map = json.load(f)["weight_map"]
+
+            shard_to_keys = {}
+            for key, shard_name in weight_map.items():
+                if key.startswith(dit_prefix):
+                    shard_to_keys.setdefault(shard_name, []).append(key)
+
+            for shard_name, keys in shard_to_keys.items():
+                load_fn(model_path / shard_name, keys)
+
+        if (model_path / "model.safetensors.index.json").exists():
+            load_index_file(model_path / "model.safetensors.index.json", load_safetensors_file)
+        elif (model_path / "model.safetensors").exists():
+            load_safetensors_file(model_path / "model.safetensors")
+        elif (model_path / "pytorch_model.bin.index.json").exists():
+            load_index_file(model_path / "pytorch_model.bin.index.json", load_torch_file)
+        elif (model_path / "pytorch_model.bin").exists():
+            load_torch_file(model_path / "pytorch_model.bin")
+        else:
+            for file_path in sorted(model_path.glob("*.safetensors")):
+                load_safetensors_file(file_path)
+
+        config = cls.config_class.from_pretrained(local_model_path)
+        pretrained_model = cls(config, local_model_path=local_model_path)
+        pretrained_model.load_state_dict(dit_state_dict, strict=False)
+        if isinstance(torch_dtype, torch.dtype):
+            pretrained_model = pretrained_model.to(dtype=torch_dtype)
+    
         pretrained_model.backbone.set_trainable_parameters(
             tune_visual=tune_visual, tune_llm=tune_llm
         )

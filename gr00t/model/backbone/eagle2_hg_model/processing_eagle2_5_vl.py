@@ -34,10 +34,15 @@ from packaging import version
 from PIL import Image
 from torchvision import io
 from transformers.feature_extraction_utils import BatchFeature
-from transformers.image_utils import ImageInput, VideoInput
 from transformers.processing_utils import ProcessingKwargs, ProcessorMixin, Unpack
 from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
 from transformers.utils import logging
+
+try:
+    from transformers.image_utils import ImageInput, VideoInput
+except ImportError:
+    ImageInput = Any
+    VideoInput = Any
 
 logger = logging.get_logger(__name__)
 

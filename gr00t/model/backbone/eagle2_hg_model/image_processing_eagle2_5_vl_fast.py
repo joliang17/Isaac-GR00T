@@ -7,25 +7,16 @@
 from functools import partial
 
 # copy from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llava_onevision/image_processing_llava_onevision_fast.py
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
+from transformers import image_processing_utils_fast as image_processing_utils_fast
 from transformers.image_processing_utils import BatchFeature, get_patch_output_size
-from transformers.image_processing_utils_fast import (
-    BASE_IMAGE_PROCESSOR_FAST_DOCSTRING,
-    BASE_IMAGE_PROCESSOR_FAST_DOCSTRING_PREPROCESS,
-    BaseImageProcessorFast,
-    DefaultFastImageProcessorKwargs,
-    group_images_by_shape,
-    reorder_images,
-)
 from transformers.image_utils import IMAGENET_STANDARD_MEAN  # 0.5, 0.5, 0.5
 from transformers.image_utils import IMAGENET_STANDARD_STD  # 0.5, 0.5, 0.5
 from transformers.image_utils import (
     ChannelDimension,
-    ImageInput,
     PILImageResampling,
     SizeDict,
-    VideoInput,
     get_image_size,
     make_flat_list_of_images,
     validate_kwargs,
@@ -37,6 +28,25 @@ from transformers.utils import (
     is_torch_available,
     is_torchvision_v2_available,
 )
+
+BASE_IMAGE_PROCESSOR_FAST_DOCSTRING = getattr(
+    image_processing_utils_fast, "BASE_IMAGE_PROCESSOR_FAST_DOCSTRING", ""
+)
+BASE_IMAGE_PROCESSOR_FAST_DOCSTRING_PREPROCESS = getattr(
+    image_processing_utils_fast, "BASE_IMAGE_PROCESSOR_FAST_DOCSTRING_PREPROCESS", ""
+)
+BaseImageProcessorFast = image_processing_utils_fast.BaseImageProcessorFast
+DefaultFastImageProcessorKwargs = getattr(
+    image_processing_utils_fast, "DefaultFastImageProcessorKwargs", object
+)
+group_images_by_shape = image_processing_utils_fast.group_images_by_shape
+reorder_images = image_processing_utils_fast.reorder_images
+
+try:
+    from transformers.image_utils import ImageInput, VideoInput
+except ImportError:
+    ImageInput = Any
+    VideoInput = Any
 
 if is_torch_available():
     import torch
