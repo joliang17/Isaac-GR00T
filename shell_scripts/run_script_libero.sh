@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=libero_training_skill
-#SBATCH --output=slurm_output/libero_training_skill.log
-#SBATCH --error=slurm_output/libero_training_skill.log
+#SBATCH --job-name=libero_training_hidden
+#SBATCH --output=slurm_output/libero_training_hidden.log
+#SBATCH --error=slurm_output/libero_training_hidden.log
 #SBATCH --time=48:00:00
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director
@@ -22,7 +22,7 @@ export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 
 DATASET=libero_base
-TASK_NAME=new_vlm
+TASK_NAME=libero_qwenbackbone_4b
 
 PYTHONPATH=/fs/nexus-scratch/yliang17/Research/VLA/GR00T_vlm \
 python scripts/gr00t_finetune.py \

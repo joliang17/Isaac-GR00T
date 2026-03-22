@@ -223,10 +223,25 @@ class GR00T_N1_5(PreTrainedModel):
                 f"Model not found or avail in the huggingface hub. Loading from local path: {pretrained_model_name_or_path}"
             )
             local_model_path = pretrained_model_name_or_path
-
         model_path = Path(local_model_path)
         dit_prefix = "action_head."
-        dit_state_dict = {}
+        eagle_linear_prefix = "model.eagle_backbone.eagle_linear."
+        local_eagle_linear_prefix = "backbone.eagle_linear."
+        pretrained_state_dict = {}
+
+        def should_load_key(key: str) -> bool:
+            return (
+                key.startswith(dit_prefix)
+                # or key.startswith(eagle_linear_prefix)
+                or key.startswith(local_eagle_linear_prefix)
+            )
+
+        def maybe_store_key(key: str, tensor: torch.Tensor):
+            if key.startswith(dit_prefix) or key.startswith(local_eagle_linear_prefix):
+                pretrained_state_dict[key] = tensor
+            elif key.startswith(eagle_linear_prefix):
+                remapped_key = local_eagle_linear_prefix + key.removeprefix(eagle_linear_prefix)
+                pretrained_state_dict[remapped_key] = tensor
 
         def load_safetensors_file(file_path: Path, keys: list[str] | None = None):
             from safetensors import safe_open
@@ -234,16 +249,16 @@ class GR00T_N1_5(PreTrainedModel):
             with safe_open(str(file_path), framework="pt", device="cpu") as f:
                 load_keys = keys
                 if load_keys is None:
-                    load_keys = [key for key in f.keys() if key.startswith(dit_prefix)]
+                    load_keys = [key for key in f.keys() if should_load_key(key)]
                 for key in load_keys:
-                    dit_state_dict[key] = f.get_tensor(key)
+                    maybe_store_key(key, f.get_tensor(key))
 
         def load_torch_file(file_path: Path, keys: list[str] | None = None):
             shard_state_dict = torch.load(file_path, map_location="cpu", weights_only=True)
             if keys is None:
-                keys = [key for key in shard_state_dict if key.startswith(dit_prefix)]
+                keys = [key for key in shard_state_dict if should_load_key(key)]
             for key in keys:
-                dit_state_dict[key] = shard_state_dict[key]
+                maybe_store_key(key, shard_state_dict[key])
 
         def load_index_file(index_path: Path, load_fn):
             with index_path.open() as f:
@@ -251,9 +266,10 @@ class GR00T_N1_5(PreTrainedModel):
 
             shard_to_keys = {}
             for key, shard_name in weight_map.items():
-                if key.startswith(dit_prefix):
+                if should_load_key(key):
                     shard_to_keys.setdefault(shard_name, []).append(key)
 
+            import pdb;pdb.set_trace()
             for shard_name, keys in shard_to_keys.items():
                 load_fn(model_path / shard_name, keys)
 
@@ -271,7 +287,7 @@ class GR00T_N1_5(PreTrainedModel):
 
         config = cls.config_class.from_pretrained(local_model_path)
         pretrained_model = cls(config, local_model_path=local_model_path)
-        pretrained_model.load_state_dict(dit_state_dict, strict=False)
+        pretrained_model.load_state_dict(pretrained_state_dict, strict=False)
         if isinstance(torch_dtype, torch.dtype):
             pretrained_model = pretrained_model.to(dtype=torch_dtype)
     

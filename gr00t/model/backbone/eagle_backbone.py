@@ -24,7 +24,7 @@ import gr00t
 # DEFAULT_EAGLE_PATH = os.path.join(
 #     os.path.dirname(gr00t.__file__), "model", "backbone", "eagle2_hg_model"
 # )
-DEFAULT_EAGLE_PATH = "Qwen/Qwen3-VL-2B-Instruct"
+DEFAULT_EAGLE_PATH = "Qwen/Qwen3-VL-4B-Instruct"
 
 
 class EagleBackbone(nn.Module):
@@ -54,10 +54,12 @@ class EagleBackbone(nn.Module):
         # print(self.eagle_model.lm_head.weight.is_meta)
         # print(self.eagle_model.lm_head.weight.data_ptr() == self.eagle_model.model.language_model.embed_tokens.weight.data_ptr())
 
-        if project_to_dim is not None:
-            self.eagle_linear = torch.nn.Linear(2048, project_to_dim)
-        else:
-            self.eagle_linear = torch.nn.Identity()
+        hidden_size = self.eagle_model.lm_head.in_features
+        self.eagle_linear = torch.nn.Linear(hidden_size, 2048)
+        # if project_to_dim is not None:
+        #     self.eagle_linear = torch.nn.Linear(hidden_size, project_to_dim)
+        # else:
+        #     self.eagle_linear = torch.nn.Identity()
 
         # # needed since we don't use these layers. Also saves compute
         # while len(self.eagle_model.language_model.model.layers) > select_layer:

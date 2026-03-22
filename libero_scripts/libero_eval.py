@@ -50,11 +50,10 @@ from libero_scripts.utils import (
     summarize_obs,
     set_seed
 )
-from libero_scripts.gpt_call import generate_instruction_variants
 from gr00t.model.policy import Gr00tPolicy
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from libero.libero import benchmark
-set_seed(42)
+set_seed(53)
 log_dir = "logs/"
 os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
 
@@ -114,7 +113,6 @@ def eval_libero(cfg) -> None:
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
             ori_desc = task.language
-            # dict_variant, _ = generate_instruction_variants(task_description)
 
             # empty description
             list_description = [ori_desc]
@@ -172,7 +170,9 @@ def eval_libero(cfg) -> None:
                             obs_dict = process_observation(obs, skill_prefix + task_description, headless=args.headless)
                         else:
                             obs_dict = process_observation(obs, task_description, headless=args.headless)
-                        _, _, _, action_chunk = gr00t_policy.get_action(obs_dict, mode='baseline')
+
+
+                        action_chunk = gr00t_policy.get_action(obs_dict)
                         # if normalize=True: gripper from model: [0, 1] will be normalized to [-1, 1]
                         # if original training data is not normalized (-1, 1), no need ro norm (normalize_action = False)
                         action = convert_to_libero_action(action_chunk, action_keys, normalize=args.normalize_action)

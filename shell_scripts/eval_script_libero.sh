@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=libero_eval_prefix
-#SBATCH --output=slurm_output/libero_eval_prefix.log
-#SBATCH --error=slurm_output/libero_eval_prefix.log
+#SBATCH --job-name=libero_eval_hidden_4b
+#SBATCH --output=slurm_output/libero_eval_hidden_4b.log
+#SBATCH --error=slurm_output/libero_eval_hidden_4b.log
 #SBATCH --time=48:00:00
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director
@@ -28,14 +28,27 @@ python3 libero_scripts/libero_eval.py \
     --num_trials_per_task 10 \
     --port 5555 \
     --headless True \
-    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_skillprefix/checkpoint-60000" \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_qwenbackbone_4b/checkpoint-60000" \
     --embodiment_tag new_embodiment \
     --data_config libero_original \
     --denoising_steps 8 \
     --normalize_action \
-    --add_prefix
+    # --add_prefix 
     # --model_path youliangtan/gr00t-n1.5-libero-long-posttrain \
 
+
+python3 libero_scripts/libero_eval.py \
+    --task_suite_name libero_10 \
+    --num_steps_wait 10 \
+    --num_trials_per_task 10 \
+    --port 5555 \
+    --headless True \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_qwenbackbone_4b/checkpoint-60000" \
+    --embodiment_tag new_embodiment \
+    --data_config libero_original \
+    --denoising_steps 8 \
+    --normalize_action \
+    
 # python3 libero_scripts/libero_eval_interleaved.py \
 #     --task_suite_name libero_10 \
 #     --num_steps_wait 10 \
