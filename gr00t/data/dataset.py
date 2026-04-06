@@ -1180,7 +1180,6 @@ class LeRobotSingleDataset(Dataset):
                 print(concated_text)
                 import pdb;pdb.set_trace()
                 with open(f"saved_img4.pkl", 'wb') as f: pickle.dump((agg_images, concated_text), f)
-            import pdb;pdb.set_trace()
         
         return dict_output
 
