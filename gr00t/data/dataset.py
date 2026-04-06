@@ -1058,12 +1058,13 @@ class LeRobotSingleDataset(Dataset):
             #########################################
             trajectory_id, base_index = self.all_steps[index]
             dict_transformed = self.transforms(self.get_step_data(trajectory_id, base_index))
-            # ADDED: add skill prefix:
-            ori_text = dict_transformed['eagle_content']['text_list'][0]
-            before = ori_text.split('user\n')[0] + 'user\n'
-            after = skill_prefix + ori_text.split('user\n')[1]
-            new_text = before + after
-            dict_transformed['eagle_content']['text_list'][0] = new_text
+            # # ADDED: add skill prefix:
+            # ori_text = dict_transformed['eagle_content']['text_list'][0]
+            # before = ori_text.split('user\n')[0] + 'user\n'
+            # after = skill_prefix + ori_text.split('user\n')[1]
+            # new_text = before + after
+            # dict_transformed['eagle_content']['text_list'][0] = new_text
+            # state: (1,64); action: (16, 32); action_mask: (16, 32)
             return dict_transformed
         else:
             #########################################
@@ -1179,6 +1180,8 @@ class LeRobotSingleDataset(Dataset):
                 print(concated_text)
                 import pdb;pdb.set_trace()
                 with open(f"saved_img4.pkl", 'wb') as f: pickle.dump((agg_images, concated_text), f)
+            import pdb;pdb.set_trace()
+        
         return dict_output
 
 
@@ -1867,6 +1870,7 @@ class LeRobotMixtureDataset(Dataset):
             dict_output['state_mask'] = list_transformed_state_mask
             dict_output['action'] = list_transformed_action
             dict_output['action_mask'] = list_transformed_action_mask
+            import pdb;pdb.set_trace()
             return dict_output
 
     def __len__(self) -> int:
