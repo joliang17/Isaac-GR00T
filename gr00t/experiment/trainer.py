@@ -90,9 +90,10 @@ class DualBrainTrainer(transformers.Trainer):
         loss = outputs["loss"]
 
         # Suppose model also returns other losses
-        for key, value in outputs.items():
-            if '_loss' in key:
-                wandb.log({key: value.item()})
+        if self.args.process_index == 0:
+            for key, value in outputs.items():
+                if '_loss' in key:
+                    wandb.log({key: value.item()})
 
         return (loss, outputs) if return_outputs else loss
 
