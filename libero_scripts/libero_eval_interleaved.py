@@ -215,6 +215,7 @@ def eval_libero(cfg) -> None:
             no_action = False
             if_debug = False
             last_skill_idx = -1
+            cached_final_action = None
             
             while t < max_steps + cfg.num_steps_wait:
                 try:
@@ -302,30 +303,41 @@ def eval_libero(cfg) -> None:
                                 # input history by kv cache
                                 pass 
 
-                        action_chunk_our, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
+                        t_eff = t - cfg.num_steps_wait
+                        if cached_final_action is None or t_eff % 16 == 0:
+                            action_chunk_our, tools_output, past_key_values_traj, action_chunk_bs = gr00t_policy.get_action(obs_dict, observations_base=obs_dict_base, img_count=traj_img_count, past_key_values=past_key_values_traj, mode='interleaved', call_baseline=call_baseline, )
 
-                        if tools_output != '' and tools_output != '[ACTIONS]':
-                            # generated skill instructions
-                            # start a new inference session, generate actions to achieve the tools, until finish
-                            no_action = True
-                            inside_tools = True
-                            print(f"At timestep {t}, Call Tools: {tools_output.replace('[TOOLS]', '')}")
-                            list_output.append(tools_output.strip())
-                            tools_output = tools_output.replace('[TOOLS]', '').strip()
+                            if tools_output != '' and tools_output != '[ACTIONS]':
+                                # generated skill instructions
+                                # start a new inference session, generate actions to achieve the tools, until finish
+                                # no_action = True
+                                # inside_tools = True
+                                print(f"At timestep {t}, Call Tools: {tools_output.replace('[TOOLS]', '')}")
+                                list_output.append(tools_output.strip())
+                                tools_output = tools_output.replace('[TOOLS]', '').strip()
 
-                            # action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, call_baseline=call_baseline)
+                                no_action = False
+                                # import pdb;pdb.set_trace()
+                                final_action = reformat_action(action_chunk_bs, action_chunk_our, call_baseline=call_baseline)
+
+
+                                # action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, call_baseline=call_baseline)
+                            else:
+                                list_output.append('[ACTIONS]')
+                                no_action = False
+                                # import pdb;pdb.set_trace()
+                                final_action = reformat_action(action_chunk_bs, action_chunk_our, call_baseline=call_baseline)
+
+                            cached_final_action = final_action
                         else:
-                            list_output.append('[ACTIONS]')
+                            # Reuse cached action (model runs every 16 timesteps)
                             no_action = False
-                            # import pdb;pdb.set_trace()
-                            final_action = reformat_action(action_chunk_bs, action_chunk_our, call_baseline=call_baseline)
+                            final_action = cached_final_action
 
                     else:
                         # skill instruction is already included in past_key_values_traj
                         # TODO: why cannot predict tool end this time?
                         action_chunk_our, action_chunk_bs, final_action, no_action, inside_tools = call_tool(obs=obs, tools_instruct=tools_output, task_instruct=task.language, call_baseline=call_baseline, if_debug=if_debug)
-                        if not inside_tools and t == list_traj_saved[-1]:
-                            import pdb;pdb.set_trace()
 
                         last_skill_idx = t
                         prev_tool_instruction = tools_output

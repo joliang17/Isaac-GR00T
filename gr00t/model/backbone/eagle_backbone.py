@@ -1345,8 +1345,8 @@ class EagleBackbone(nn.Module):
         # final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values)
         final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values=past_key_values, vlm_input=vl_input)
         # if self.tools_id in router_token_id:
-        #     print(decoded_text)
-        #     import pdb;pdb.set_trace()
+        # print(decoded_text)
+        # import pdb;pdb.set_trace()
 
         backbone_outputs = BatchFeature({
             "backbone_features": eagle_embeds,
