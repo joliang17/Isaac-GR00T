@@ -1,14 +1,13 @@
 #!/bin/bash
 
-#SBATCH --job-name=libero_training_skill
-#SBATCH --output=slurm_output/libero_training_skill.log
-#SBATCH --error=slurm_output/libero_training_skill.log
+#SBATCH --job-name=libero_training_skill2
+#SBATCH --output=slurm_output/libero_training_skill2.log
+#SBATCH --error=slurm_output/libero_training_skill2.log
 #SBATCH --time=48:00:00
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director
 #SBATCH --qos=cml-high_long
 #SBATCH --gres=gpu:a100:1 
-#SBATCH --nodelist=cml32
 #SBATCH --cpus-per-task=3
 #SBATCH --mem=32G
 
@@ -24,8 +23,8 @@ export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 
 DATASET=libero_base
-# TASK_NAME=libero_skillprefix
-TASK_NAME=libero_finetuned
+TASK_NAME=libero_empty_prefix
+# TASK_NAME=libero_finetuned
 
   # --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero_base_action" \
 
@@ -41,7 +40,7 @@ python scripts/gr00t_finetune.py \
   --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
   --run_name "${TASK_NAME}" \
   --tune_diffusion_model \
-  # --dataloader_num_workers 0
+  --dataloader_num_workers 0
 
 # python scripts/gr00t_finetune.py \
 #   --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero_base_action_unnorm" \

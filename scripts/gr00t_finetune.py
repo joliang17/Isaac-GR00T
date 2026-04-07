@@ -99,10 +99,15 @@ class ArgsConfig:
 
     toolend_upsample_ratio: float = 1.0
     """
-    Upsampling ratio for windows containing [TOOLS_END]. 
-    1.0 = no upsampling. 
+    Upsampling ratio for windows containing [TOOLS_END].
+    1.0 = no upsampling.
     3.0 = repeat window 3 times.
     """
+
+    skill_annotation_path: str | None = None
+    """Path to JSON skill-annotation file. When set, overrides per-frame parquet annotation.
+    Format: {episode_id: {segments: [{start_frame, end_frame, skill, ...}]}}
+    If None, falls back to reading annotation.step_description from the parquet dataset."""
 
     max_steps: int = 10000
     """Maximum number of training steps."""
@@ -243,6 +248,7 @@ def main(config: ArgsConfig):
             skill_inclusion_ratio=config.skill_inclusion_ratio,
             action_ds_ratio=config.action_ds_ratio,
             toolend_upsample_ratio=config.toolend_upsample_ratio,
+            skill_annotation_path=config.skill_annotation_path,
             # action_only=config.tune_diffusion_model,
         )
 
@@ -269,6 +275,7 @@ def main(config: ArgsConfig):
                 skill_inclusion_ratio=config.skill_inclusion_ratio,
                 action_ds_ratio=config.action_ds_ratio,
                 toolend_upsample_ratio=config.toolend_upsample_ratio,
+                skill_annotation_path=config.skill_annotation_path,
                 # action_only=config.tune_diffusion_model,
             )
             single_datasets.append(dataset)

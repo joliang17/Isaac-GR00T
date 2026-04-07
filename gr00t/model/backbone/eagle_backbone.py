@@ -869,6 +869,7 @@ class EagleBackbone(nn.Module):
             # print(f"Labels: {''.join(gt_label)}")
             print(f"Preds:  {''.join(pred_text)}")
             print(f"Labels:  {''.join(gt_text)}")
+            # TODO: why there are 3 \n in the beginning of gt_text?
 
             if predicted_tool_end is not None:
                 toolend_correct = (predicted_tool_end == target_tool_end)
@@ -876,8 +877,8 @@ class EagleBackbone(nn.Module):
                     print(f"Matches: {toolend_correct.tolist()}")
                     # with open(f"sample_saved.pkl", 'wb') as f: pickle.dump((vl_input, valid_mask, eagle_input, outputs.hidden_states[0], tool_end_logits_step, selected_hidden[0]), f)
                     # import sys;sys.exit(0)
-                    import pdb;pdb.set_trace()
-            # import pdb; pdb.set_trace()
+                    # import pdb;pdb.set_trace()
+            import pdb; pdb.set_trace()
             
         return logits, labels, loss, base_loss, special_loss_A, special_loss_B, predicted_tool_end, target_tool_end, curr_preds, curr_labels, text_preds, text_labels
         
@@ -1037,7 +1038,7 @@ class EagleBackbone(nn.Module):
             return ([], [], torch.empty((0,), dtype=torch.long, device=device),
                 torch.empty((0,), dtype=torch.long, device=device),
                     torch.empty((0,), dtype=torch.long, device=device),)
-
+        import pdb;pdb.set_trace()
         return (
             segments,
             segments_mask,
@@ -1064,7 +1065,6 @@ class EagleBackbone(nn.Module):
         embeds_tensor, masks_tensor = None, None
         logits, labels = None, None
         predicted_tool_end, target_tool_end, special_preds, special_labels, text_preds, text_labels = None, None, None, None, None, None
-
         if len(step_input) != 0:
 
             # Compute generated loss
@@ -1072,7 +1072,10 @@ class EagleBackbone(nn.Module):
                 vl_input)
 
             # extract action token hidden states based on action_pad_ids
-            has_actions = (vl_input['eagle_input_ids'] == self.actions_id).any().item()
+            has_actions = (
+                (vl_input['eagle_input_ids'] == self.actions_id) |
+                (vl_input['eagle_input_ids'] == self.tools_id)
+            ).any().item()
             if has_actions:
                 list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
                 # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0])

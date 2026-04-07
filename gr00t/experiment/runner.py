@@ -163,6 +163,7 @@ def compute_metrics(
             print(f"Labels: {gt}")
             print(f"Preds : {pred}")
 
+        import pdb;pdb.set_trace()
         valid_mask = cur_label_id_eval!=skills_end_id 
         pred_token = cur_pred_id_eval[valid_mask]
         gt_token = cur_label_id_eval[valid_mask]

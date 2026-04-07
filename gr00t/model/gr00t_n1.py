@@ -284,8 +284,19 @@ class GR00T_N1_5(PreTrainedModel):
                 action_head_outputs['action_head_skipped'] = False
                 
             elif token_id == self.backbone.tools_id:
-                # Step 2b: keep generating tool tokens until we observe [EOT]
-                action_head_outputs = create_empty_actions(backbone_inputs, batch_size)
+                if getattr(self, 'skill_action_mode', False):
+                    # skill_action mode: generate full skill text, then run action head.
+                    token_id, tools_output, backbone_outputs = self.backbone.generate(
+                        backbone_inputs,
+                        max_token=max_generation_steps,
+                        past_key_values=backbone_outputs.get('past_key_values'),
+                        inside_tool=True,
+                    )
+                    action_head_outputs = self.action_head.get_action(backbone_outputs, action_inputs)
+                    action_head_outputs['action_head_skipped'] = False
+                else:
+                    # Legacy mode: [TOOLS] does not immediately produce actions.
+                    action_head_outputs = create_empty_actions(backbone_inputs, batch_size)
 
             elif token_id == self.backbone.skills_end:
                 # Step 2c: refers to the end of a skill execution

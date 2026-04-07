@@ -1,8 +1,8 @@
 #!/bin/bash
 
 #SBATCH --job-name=libero_eval_normal
-#SBATCH --output=slurm_output/libero_eval_normal.log
-#SBATCH --error=slurm_output/libero_eval_normal.log
+#SBATCH --output=slurm_output/libero_eval_normal1.log
+#SBATCH --error=slurm_output/libero_eval_normal1.log
 #SBATCH --time=48:00:00
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director

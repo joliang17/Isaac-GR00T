@@ -188,7 +188,8 @@ class LeRobotSingleDataset(Dataset):
         windowing_mode: str = 'sliding_prefix',
         skill_level: str = 'window',
         frame_type: str = 'normal',
-        action_only: bool = False
+        action_only: bool = False,
+        skill_annotation_path: str | None = None,
     ):
         """
         Initialize the dataset.
@@ -235,12 +236,34 @@ class LeRobotSingleDataset(Dataset):
         self.toolend_upsample_ratio = toolend_upsample_ratio
         self.action_only = action_only
 
+        # --- Skill Annotation (JSON-based, new data format) ---
+        self.skill_annotation_path = skill_annotation_path
+        self._skill_lookup: dict | None = None
+        if skill_annotation_path is not None:
+            with open(skill_annotation_path, 'r') as _f:
+                _raw = json.load(_f)
+            self._skill_lookup = {}
+            for _ep_key, _ep_val in _raw.items():
+                _segs = []
+                for _seg in _ep_val.get('segments', []):
+                    _skill_text = (
+                        _seg.get('skill') or
+                        _seg.get('chain_of_thought') or
+                        _seg.get('primary_action_verb', '[ACTIONS]')
+                    )
+                    _segs.append((_seg['start_frame'], _seg['end_frame'], _skill_text))
+                self._skill_lookup[int(_ep_key)] = _segs
+            total_segs = sum(len(v) for v in self._skill_lookup.values())
+            print(f"[skill_annotation] Loaded {len(self._skill_lookup)} episodes, "
+                  f"{total_segs} skill segments from {skill_annotation_path}")
+
         # --- Windowing Logic Control ---
-        # Options: 'step', 'fixed', 'block_prefix', 'sliding_prefix'
+        # Options: 'step', 'fixed', 'block_prefix', 'sliding_prefix', 'skill_action'
         # "step": original GR00T settings
         # "fixed": Produces 1-10, 11-20, 21-30 (Fixed length, jumps by length).
         # "block_prefix": Produces 1-2...1-10, 11-12... (Expands prefixes, then jumps to next block).
         # "sliding_prefix": Produces 1-2...1-10, 2-3... (Expands prefixes, slides by 1).
+        # "skill_action": single-frame, [TOOLS]/[ACTIONS] target, 16-step action chunk for all frames
 
         self.frame_type = frame_type
         self.windowing_mode = windowing_mode
@@ -283,11 +306,14 @@ class LeRobotSingleDataset(Dataset):
 
         print(f"Initialized dataset {self.dataset_name} with {embodiment_tag}")
 
-        if self.windowing_mode != 'step':
+        if self.windowing_mode == 'step':
+            print(f"Loading {len(self._all_steps)} data for original gr00t experiments")
+        elif self.windowing_mode == 'skill_action':
+            self._window_steps = self._get_all_windows_skill_action()
+            print(f"Loading {len(self._window_steps)} skill_action windows")
+        else:
             self._window_steps = self._get_all_windows()
             print(f"Loading {len(self._window_steps)} data for tool-use experiments")
-        else:
-            print(f"Loading {len(self._all_steps)} data for original gr00t experiments")
 
         # Check if the dataset is valid
         self._check_integrity()
@@ -534,14 +560,17 @@ class LeRobotSingleDataset(Dataset):
 
             trajectory_ids.append(episode["episode_index"])
             trajectory_lengths.append(episode["length"])
-            if self.windowing_mode != 'step': 
+            if self.windowing_mode != 'step':
                 # only for tool-usage experiments
-                tasks = episode["tasks"]
-                tool_task = [item for item in tasks if "[TOOLS]" in item]
-                if len(tool_task) > 0:
-                    trajectory_type.append(0)
+                if self._skill_lookup is not None:
+                    # New format: use JSON annotation to detect skill episodes
+                    has_skills = len(self._skill_lookup.get(episode["episode_index"], [])) > 0
+                    trajectory_type.append(0 if has_skills else 1)
                 else:
-                    trajectory_type.append(1)
+                    # Old format: check [TOOLS] in task strings from parquet
+                    tasks = episode["tasks"]
+                    tool_task = [item for item in tasks if "[TOOLS]" in item]
+                    trajectory_type.append(0 if len(tool_task) > 0 else 1)
             else:
                 # baselines
                 trajectory_type.append(0)
@@ -607,6 +636,82 @@ class LeRobotSingleDataset(Dataset):
             
         return [(tid, idx) for idx in key_indices]
 
+
+    def _get_skill_text(self, tid: int, frame_idx: int) -> str:
+        """Return '[TOOLS] {skill_text}' if frame_idx falls inside a skill segment, else '[ACTIONS]'.
+
+        Dispatch:
+          - If self._skill_lookup is set (JSON-annotated new format): O(n_segments) lookup.
+          - Otherwise: read annotation.step_description from parquet (old format).
+        """
+        if self._skill_lookup is not None:
+            for start, end, skill_text in self._skill_lookup.get(tid, []):
+                if start <= frame_idx <= end:
+                    return f"[TOOLS] {skill_text}"
+            return "[ACTIONS]"
+        else:
+            # Old format: step_description already contains '[TOOLS] ...' or '[ACTIONS]'
+            step_data = self.get_step_data(tid, frame_idx)
+            desc = step_data.get('annotation.step_description', ['[ACTIONS]'])
+            if isinstance(desc, list):
+                desc = desc[0] if desc else '[ACTIONS]'
+            return desc if isinstance(desc, str) else '[ACTIONS]'
+
+    def _get_all_windows_skill_action(self) -> list[list[tuple[int, int]]]:
+        """
+        Single-frame windows for skill+action training (windowing_mode='skill_action').
+
+        New data format: task field = "{episode_instruction}" only (no [TOOLS]/[ACTIONS]).
+        Skill classification comes from self._skill_lookup (JSON) or annotation.step_description.
+        Each window = [(trajectory_id, frame_index)] — always exactly 1 frame.
+        Actions are included for both [TOOLS] and [ACTIONS] frames.
+
+        Sampling controls:
+          skill_inclusion_ratio : episode-level — randomly drop ttype=1 episodes
+          action_ds_ratio       : frame-level  — randomly drop pure [ACTIONS] frames
+          stride                : step spacing within each episode
+        """
+        stride       = max(1, int(self.stride))
+        skill_ratio  = float(self.skill_inclusion_ratio)
+        action_ratio = float(self.action_ds_ratio)
+
+        all_windows: list[list[tuple[int, int]]] = []
+        skill_cnt = 0
+        traj_cnt  = 0
+
+        for tid, T, ttype in tqdm(
+            zip(self.trajectory_ids, self.trajectory_lengths, self.trajectory_types),
+            total=len(self.trajectory_ids),
+            desc="Building skill_action windows",
+        ):
+            if T <= 0:
+                continue
+
+            # Episode-level downsampling for ttype=1 (no [TOOLS] episodes)
+            if ttype == 1:
+                if random.random() > skill_ratio:
+                    continue
+                skill_cnt += 1
+            else:
+                traj_cnt += 1
+
+            # Per-frame iteration with stride
+            for idx in range(0, T, stride):
+                if action_ratio < 1.0:
+                    desc = self._get_skill_text(tid, idx)
+                    # Stochastically drop pure [ACTIONS] frames
+                    if '[TOOLS]' not in desc:
+                        if random.random() > action_ratio:
+                            continue
+
+                all_windows.append([(tid, idx)])
+
+        total     = len(all_windows)
+        total_eps = skill_cnt + traj_cnt
+        ratio     = round(skill_cnt / total_eps, 4) if total_eps > 0 else 0.0
+        print(f"[skill_action windows] total={total} | "
+              f"traj_eps={traj_cnt} skill_eps={skill_cnt} (ratio={ratio})")
+        return all_windows
 
     def _get_all_windows(self) -> list[list[tuple[int, int]]]:
         """
@@ -1066,6 +1171,56 @@ class LeRobotSingleDataset(Dataset):
             # dict_transformed['eagle_content']['text_list'][0] = new_text
             # state: (1,64); action: (16, 32); action_mask: (16, 32)
             return dict_transformed
+
+        elif self.windowing_mode == 'skill_action':
+            #########################################
+            # Single-Frame Skill+Action Training
+            # New data format: task = "{instruction}" only; [TOOLS]/[ACTIONS] from JSON or parquet.
+            # Actions included for BOTH [TOOLS] and [ACTIONS] frames.
+            #########################################
+            (tid, frame_idx) = self._window_steps[index][0]
+            dict_transformed = self.transforms(self.get_step_data(tid, frame_idx))
+
+            # Determine [TOOLS]/[ACTIONS] target (JSON lookup or parquet annotation)
+            skill_text = self._get_skill_text(tid, frame_idx)
+            is_tool_frame = skill_text.startswith('[TOOLS]')
+
+            # Inject skill_prefix into user prompt
+            ori_text = dict_transformed['eagle_content']['text_list'][0]
+            # before = ori_text.split('user\n')[0] + 'user\n'
+            # after  = skill_prefix + ori_text.split('user\n')[1]
+            # new_text = before + after
+            # dict_transformed['eagle_content']['text_list'][0] = new_text
+            dict_transformed['eagle_content']['text_list'][0] = ori_text + f"{skill_text}<|im_end|>\n"
+
+            # Override step_annotation with JSON-derived target for CE loss
+            if self._skill_lookup is not None:
+                dict_transformed['eagle_content']['step_annotation'] = [skill_text]
+
+            # actions_is_pad mask: True for [TOOLS] frames (action may be zeros in Stage 1)
+            # TODO: add actions is pad = True for actions if does not belongs to current skill
+            # if next 16 steps all belongs to current skill: all false
+            # if next 16 steps all belongs to current [ACTIONS]: all false
+            # if only part of the 16 steps belongs to current skill and others belong to next skill / actions: add actions_is_pad = True to other steps and do not calculate the loss.
+            dict_transformed['actions_is_pad'] = is_tool_frame
+
+            # --- Debug: print first 3 samples per dataset to verify pipeline ---
+            if not hasattr(self, '_sa_debug_count'):
+                self._sa_debug_count = 0
+            if self._sa_debug_count < 3:
+                anno_before = dict_transformed['eagle_content']['step_annotation']
+                action_shape = dict_transformed['action'].shape if hasattr(dict_transformed.get('action', None), 'shape') else 'N/A'
+                print(f"\n[skill_action DEBUG #{self._sa_debug_count}] dataset={self.dataset_name}")
+                print(f"  tid={tid}  frame={frame_idx}  is_tool={is_tool_frame}")
+                print(f"  skill_text   : {skill_text!r}")
+                print(f"  step_annotation: {anno_before}")
+                print(f"  action.shape : {action_shape}")
+                print(f"  text_list[0] (first 200 chars): {ori_text[:200]!r}")
+                print(f"  annotation_source: {'JSON' if self._skill_lookup is not None else 'parquet'}")
+                self._sa_debug_count += 1
+            
+            return dict_transformed
+
         else:
             #########################################
             # Trajectory / Sequence Training
@@ -1771,6 +1926,44 @@ class LeRobotMixtureDataset(Dataset):
             # Legacy / Single Step Mode
             #########################################
             return dataset.transforms(dataset.get_step_data(ids, base_index))
+
+        elif dataset.windowing_mode == 'skill_action':
+            #########################################
+            # Single-Frame Skill+Action Training (Mixture Dataset)
+            # ids = window index into dataset._window_steps
+            #########################################
+            (tid, frame_idx) = dataset._window_steps[ids][0]
+            dict_transformed = dataset.transforms(dataset.get_step_data(tid, frame_idx))
+
+            skill_text = dataset._get_skill_text(tid, frame_idx)
+            is_tool_frame = skill_text.startswith('[TOOLS]')
+
+            ori_text = dict_transformed['eagle_content']['text_list'][0]
+            before = ori_text.split('user\n')[0] + 'user\n'
+            after  = skill_prefix + ori_text.split('user\n')[1]
+            new_text = before + after
+            dict_transformed['eagle_content']['text_list'][0] = new_text
+
+            if dataset._skill_lookup is not None:
+                dict_transformed['eagle_content']['step_annotation'] = [skill_text]
+
+            dict_transformed['actions_is_pad'] = is_tool_frame
+
+            # --- Debug: print first 3 samples per sub-dataset ---
+            if not hasattr(dataset, '_sa_debug_count'):
+                dataset._sa_debug_count = 0
+            if dataset._sa_debug_count < 3:
+                action_shape = dict_transformed['action'].shape if hasattr(dict_transformed.get('action', None), 'shape') else 'N/A'
+                print(f"\n[skill_action MIX DEBUG #{dataset._sa_debug_count}] dataset={dataset.dataset_name}")
+                print(f"  tid={tid}  frame={frame_idx}  is_tool={is_tool_frame}")
+                print(f"  skill_text   : {skill_text!r}")
+                print(f"  step_annotation: {dict_transformed['eagle_content']['step_annotation']}")
+                print(f"  action.shape : {action_shape}")
+                print(f"  text_list[0] (first 200 chars): {new_text[:200]!r}")
+                print(f"  annotation_source: {'JSON' if dataset._skill_lookup is not None else 'parquet'}")
+                dataset._sa_debug_count += 1
+
+            return dict_transformed
 
         else:
             #########################################
