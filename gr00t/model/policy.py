@@ -161,6 +161,7 @@ class Gr00tPolicy(BasePolicy):
         device: Union[int, str] = "cuda" if torch.cuda.is_available() else "cpu",
         data_config: str='libero_original',
         call_baseline: bool=False,
+        skill_action_mode: bool=False,
     ):
         """
         Initialize the Gr00tPolicy.
@@ -209,6 +210,9 @@ class Gr00tPolicy(BasePolicy):
 
         # Load model
         self._load_model(model_path)
+
+        if skill_action_mode:
+            self.model.skill_action_mode = True
 
         # ADDED: Load transforms
         self._load_metadata(os.path.join(self.model_path, "experiment_cfg"))

@@ -37,14 +37,13 @@ python scripts/gr00t_finetune.py \
   --gradient_accumulation_steps 4 \
   --data_config "libero_traj_arms_2" \
   --video_backend "torchvision_av" \
-  --save_steps 3 \
-  --max_steps 6000 \
+  --save_steps 5000 \
+  --max_steps 10000 \
   --output_dir "${ROOT_FOLDER}/GR00T/checkpoint/${TASK_NAME}" \
   --run_name ${TASK_NAME} \
   --grad_norm 1.0 \
   --tune_special_A \
-  --action_ds_ratio=0.5 \
-  --dataloader_num_workers 0 \
+  --tune_special_B \
   --do_eval
 
 

@@ -475,7 +475,6 @@ class Eagle2_5_VLForConditionalGeneration(Eagle2_5_VLPreTrainedModel, Generation
                 generate_kwargs["max_new_tokens"] = max(1, generate_kwargs["max_new_tokens"])
 
             # 5. Run Generation (Text Only Phase)
-            import pdb;pdb.set_trace()
             dummy_history = torch.zeros(
                 (input_ids.shape[0], past_len), 
                 dtype=torch.long, 
@@ -495,8 +494,6 @@ class Eagle2_5_VLForConditionalGeneration(Eagle2_5_VLPreTrainedModel, Generation
                 output_hidden_states=output_hidden_states,
                 **generate_kwargs
             )
-            import pdb;pdb.set_trace()
-            
             # 6. Concat: [Input Prompt] + [Generated Output]
             # Standard generate() usually returns [input, output], so we replicate that.
             final_output = torch.cat([input_ids, generated_ids], dim=1)

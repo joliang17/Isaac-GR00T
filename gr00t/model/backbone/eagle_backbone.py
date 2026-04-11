@@ -878,12 +878,10 @@ class EagleBackbone(nn.Module):
                     # with open(f"sample_saved.pkl", 'wb') as f: pickle.dump((vl_input, valid_mask, eagle_input, outputs.hidden_states[0], tool_end_logits_step, selected_hidden[0]), f)
                     # import sys;sys.exit(0)
                     # import pdb;pdb.set_trace()
-            import pdb; pdb.set_trace()
-            
         return logits, labels, loss, base_loss, special_loss_A, special_loss_B, predicted_tool_end, target_tool_end, curr_preds, curr_labels, text_preds, text_labels
         
 
-    def split_by_img_id(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor):
+    def split_by_img_id(self, vl_input, eagle_logits: torch.Tensor, eagle_mask: torch.Tensor, skill_action_mode: bool = False):
         """
         Segments the sequence into individual 'turns' and filters for Physical Action contexts.
 
@@ -1011,13 +1009,22 @@ class EagleBackbone(nn.Module):
                 tol_first = first_pos(tol_rel)
 
                 # CRITICAL FILTER:
-                # 1. Must contain an [ACTIONS] token.
-                # 2. If a [TOOLS] token exists, [ACTIONS] must appear *before* it.
+                # 1. Must contain an [ACTIONS] token — OR, in skill_action_mode, a [TOOLS] token.
+                # 2. If a [TOOLS] token exists, [ACTIONS] must appear *before* it (non-skill_action).
+                # skill_action_mode: [TOOLS] frames are included; the slice covers the full turn
+                # (image + task instruction + [TOOLS] token + skill text) so the action head
+                # sees all context. [ACTIONS] frames retain the original trimmed-before-[ACTIONS]
+                # behaviour for backward compatibility.
                 if act_first is None:
+                    if skill_action_mode and tol_first is not None:
+                        # [TOOLS] frame in skill_action mode: use full turn (end_boundary already
+                        # set to temp_end_boundary in the fallback above)
+                        pass
+                    else:
+                        continue
+                elif tol_first is not None and tol_first < act_first:
                     continue
-                if tol_first is not None and tol_first < act_first:
-                    continue
-                
+
                 # Define final slice indices
                 end_exclusive = end_boundary + 1
                 if end_exclusive <= start_pos:
@@ -1038,7 +1045,6 @@ class EagleBackbone(nn.Module):
             return ([], [], torch.empty((0,), dtype=torch.long, device=device),
                 torch.empty((0,), dtype=torch.long, device=device),
                     torch.empty((0,), dtype=torch.long, device=device),)
-        import pdb;pdb.set_trace()
         return (
             segments,
             segments_mask,
@@ -1077,7 +1083,7 @@ class EagleBackbone(nn.Module):
                 (vl_input['eagle_input_ids'] == self.tools_id)
             ).any().item()
             if has_actions:
-                list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask)
+                list_eagle_emb, list_eagle_mask, seg_batch, seg_start, seg_end  = self.split_by_img_id(vl_input, eagle_embeds, eagle_mask, skill_action_mode=getattr(self, 'skill_action_mode', False))
                 # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0])
                 # self.eagle_tokenizer.decode(vl_input['eagle_input_ids'][0][1668:2208])
                 embeds_tensor, masks_tensor = flatten_actions(list_eagle_emb, list_eagle_mask)
@@ -1345,8 +1351,8 @@ class EagleBackbone(nn.Module):
         # final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values)
         final_kv_cache, decoded_text = generate_text_kvcache(input_ids_added, attention_mask_added, token_to_append, past_key_values=past_key_values, vlm_input=vl_input)
         # if self.tools_id in router_token_id:
-        # print(decoded_text)
-        # import pdb;pdb.set_trace()
+        #     print(decoded_text)
+        #     import pdb;pdb.set_trace()
 
         backbone_outputs = BatchFeature({
             "backbone_features": eagle_embeds,

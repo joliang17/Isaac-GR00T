@@ -23,7 +23,8 @@ export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 
 DATASET=libero_base
-TASK_NAME=libero_empty_prefix
+TASK_NAME=libero_10_base
+CUDA_VISIBLE_DEVICES=1
 # TASK_NAME=libero_finetuned
 
   # --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero_base_action" \
@@ -40,7 +41,7 @@ python scripts/gr00t_finetune.py \
   --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
   --run_name "${TASK_NAME}" \
   --tune_diffusion_model \
-  --dataloader_num_workers 0
+  # --dataloader_num_workers 0
 
 # python scripts/gr00t_finetune.py \
 #   --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero_base_action_unnorm" \

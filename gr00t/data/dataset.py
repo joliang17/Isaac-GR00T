@@ -2062,7 +2062,6 @@ class LeRobotMixtureDataset(Dataset):
             dict_output['state_mask'] = list_transformed_state_mask
             dict_output['action'] = list_transformed_action
             dict_output['action_mask'] = list_transformed_action_mask
-            import pdb;pdb.set_trace()
             return dict_output
 
     def __len__(self) -> int:
