@@ -109,6 +109,11 @@ class ArgsConfig:
     Format: {episode_id: {segments: [{start_frame, end_frame, skill, ...}]}}
     If None, falls back to reading annotation.step_description from the parquet dataset."""
 
+    skill_label_type: str = 'skill'
+    """Which JSON field to use as the skill label for [TOOLS] frames.
+    'skill': full phrase, e.g. "pick up the white mug".
+    'primary_action_verb': atomic verb only, e.g. "pick"."""
+
     max_steps: int = 10000
     """Maximum number of training steps."""
 
@@ -249,6 +254,7 @@ def main(config: ArgsConfig):
             action_ds_ratio=config.action_ds_ratio,
             toolend_upsample_ratio=config.toolend_upsample_ratio,
             skill_annotation_path=config.skill_annotation_path,
+            skill_label_type=config.skill_label_type,
             # action_only=config.tune_diffusion_model,
         )
 
@@ -276,6 +282,7 @@ def main(config: ArgsConfig):
                 action_ds_ratio=config.action_ds_ratio,
                 toolend_upsample_ratio=config.toolend_upsample_ratio,
                 skill_annotation_path=config.skill_annotation_path,
+                skill_label_type=config.skill_label_type,
                 # action_only=config.tune_diffusion_model,
             )
             single_datasets.append(dataset)
@@ -453,7 +460,12 @@ def main(config: ArgsConfig):
         # check wether head & embeddings shared the same weight
         if config.windowing_mode != 'step':
             model.action_head.requires_grad_(train_action_head)
-    
+
+    # skill_action_v2: enable skill_action_mode so split_by_img_id includes [TOOLS] frames
+    if config.windowing_mode == 'skill_action':
+        model.backbone.skill_action_mode = True
+        print("[skill_action_v2] backbone.skill_action_mode = True")
+
     _ = list_trainable_parameter_names(model)
             
     # 2.1 modify training args

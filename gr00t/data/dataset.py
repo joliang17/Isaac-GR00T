@@ -190,6 +190,7 @@ class LeRobotSingleDataset(Dataset):
         frame_type: str = 'normal',
         action_only: bool = False,
         skill_annotation_path: str | None = None,
+        skill_label_type: str = 'skill',
     ):
         """
         Initialize the dataset.
@@ -238,6 +239,7 @@ class LeRobotSingleDataset(Dataset):
 
         # --- Skill Annotation (JSON-based, new data format) ---
         self.skill_annotation_path = skill_annotation_path
+        self.skill_label_type = skill_label_type
         self._skill_lookup: dict | None = None
         if skill_annotation_path is not None:
             with open(skill_annotation_path, 'r') as _f:
@@ -246,11 +248,13 @@ class LeRobotSingleDataset(Dataset):
             for _ep_key, _ep_val in _raw.items():
                 _segs = []
                 for _seg in _ep_val.get('segments', []):
-                    _skill_text = (
-                        _seg.get('skill') or
-                        _seg.get('chain_of_thought') or
-                        _seg.get('primary_action_verb', '[ACTIONS]')
-                    )
+                    if self.skill_label_type == 'primary_action_verb':
+                        _skill_text = _seg.get('primary_action_verb', '[ACTIONS]')
+                    else:  # default: 'skill'
+                        _skill_text = (
+                            _seg.get('skill') or
+                            _seg.get('primary_action_verb', '[ACTIONS]')
+                        )
                     _segs.append((_seg['start_frame'], _seg['end_frame'], _skill_text))
                 self._skill_lookup[int(_ep_key)] = _segs
             total_segs = sum(len(v) for v in self._skill_lookup.values())
@@ -1197,12 +1201,30 @@ class LeRobotSingleDataset(Dataset):
             if self._skill_lookup is not None:
                 dict_transformed['eagle_content']['step_annotation'] = [skill_text]
 
-            # actions_is_pad mask: True for [TOOLS] frames (action may be zeros in Stage 1)
-            # TODO: add actions is pad = True for actions if does not belongs to current skill
-            # if next 16 steps all belongs to current skill: all false
-            # if next 16 steps all belongs to current [ACTIONS]: all false
-            # if only part of the 16 steps belongs to current skill and others belong to next skill / actions: add actions_is_pad = True to other steps and do not calculate the loss.
-            dict_transformed['actions_is_pad'] = is_tool_frame
+            # actions_is_pad mask (bool tensor, shape [action_horizon]):
+            # True = this action step extends beyond the current skill segment → skip in loss.
+            # For frames fully within their segment: all False.
+            _action = dict_transformed.get('action', None)
+            action_horizon = _action.shape[0] if hasattr(_action, 'shape') else 16
+            if self._skill_lookup is not None and is_tool_frame:
+                _seg_end = None
+                for _s, _e, _ in self._skill_lookup.get(tid, []):
+                    if _s <= frame_idx <= _e:
+                        _seg_end = _e
+                        break
+                if _seg_end is not None:
+                    import torch as _torch
+                    _pad = _torch.tensor(
+                        [(frame_idx + t) > _seg_end for t in range(action_horizon)],
+                        dtype=_torch.bool,
+                    )
+                else:
+                    import torch as _torch
+                    _pad = _torch.zeros(action_horizon, dtype=_torch.bool)
+            else:
+                import torch as _torch
+                _pad = _torch.zeros(action_horizon, dtype=_torch.bool)
+            dict_transformed['actions_is_pad'] = _pad
 
             # --- Debug: print first 3 samples per dataset to verify pipeline ---
             if not hasattr(self, '_sa_debug_count'):
@@ -1947,7 +1969,29 @@ class LeRobotMixtureDataset(Dataset):
             if dataset._skill_lookup is not None:
                 dict_transformed['eagle_content']['step_annotation'] = [skill_text]
 
-            dict_transformed['actions_is_pad'] = is_tool_frame
+            # actions_is_pad mask (bool tensor, shape [action_horizon]):
+            # True = this action step extends beyond the current skill segment → skip in loss.
+            _action_mix = dict_transformed.get('action', None)
+            action_horizon_mix = _action_mix.shape[0] if hasattr(_action_mix, 'shape') else 16
+            if dataset._skill_lookup is not None and is_tool_frame:
+                _seg_end_mix = None
+                for _s, _e, _ in dataset._skill_lookup.get(tid, []):
+                    if _s <= frame_idx <= _e:
+                        _seg_end_mix = _e
+                        break
+                if _seg_end_mix is not None:
+                    import torch as _torch
+                    _pad_mix = _torch.tensor(
+                        [(frame_idx + t) > _seg_end_mix for t in range(action_horizon_mix)],
+                        dtype=_torch.bool,
+                    )
+                else:
+                    import torch as _torch
+                    _pad_mix = _torch.zeros(action_horizon_mix, dtype=_torch.bool)
+            else:
+                import torch as _torch
+                _pad_mix = _torch.zeros(action_horizon_mix, dtype=_torch.bool)
+            dict_transformed['actions_is_pad'] = _pad_mix
 
             # --- Debug: print first 3 samples per sub-dataset ---
             if not hasattr(dataset, '_sa_debug_count'):

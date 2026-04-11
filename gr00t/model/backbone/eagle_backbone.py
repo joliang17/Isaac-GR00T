@@ -877,7 +877,7 @@ class EagleBackbone(nn.Module):
                     print(f"Matches: {toolend_correct.tolist()}")
                     # with open(f"sample_saved.pkl", 'wb') as f: pickle.dump((vl_input, valid_mask, eagle_input, outputs.hidden_states[0], tool_end_logits_step, selected_hidden[0]), f)
                     # import sys;sys.exit(0)
-                    # import pdb;pdb.set_trace()
+            import pdb;pdb.set_trace()
         return logits, labels, loss, base_loss, special_loss_A, special_loss_B, predicted_tool_end, target_tool_end, curr_preds, curr_labels, text_preds, text_labels
         
 
