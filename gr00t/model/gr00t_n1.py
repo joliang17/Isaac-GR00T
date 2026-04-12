@@ -285,13 +285,6 @@ class GR00T_N1_5(PreTrainedModel):
                 
             elif token_id == self.backbone.tools_id:
                 if getattr(self, 'skill_action_mode', False):
-                    # skill_action mode: generate full skill text, then run action head.
-                    token_id, tools_output, backbone_outputs = self.backbone.generate(
-                        backbone_inputs,
-                        max_token=max_generation_steps,
-                        past_key_values=backbone_outputs.get('past_key_values'),
-                        inside_tool=True,
-                    )
                     action_head_outputs = self.action_head.get_action(backbone_outputs, action_inputs)
                     action_head_outputs['action_head_skipped'] = False
                 else:

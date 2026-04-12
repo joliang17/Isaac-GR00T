@@ -132,10 +132,9 @@ def eval_libero(args) -> None:
                             obs_dict, mode='interleaved'
                         )
                         chunk_idx = 0
-
                         # Log routing decision at each model call
                         if tools_output and tools_output not in ('[ACTIONS]', ''):
-                            routing_str = f"[TOOLS] {tools_output.strip()}"
+                            routing_str = f"{tools_output.strip()}"
                         else:
                             routing_str = "[ACTIONS]"
                         print(f"t={t}: {routing_str}")

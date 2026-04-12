@@ -36,25 +36,11 @@ export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 #     --add_prefix
 #     # --model_path youliangtan/gr00t-n1.5-libero-long-posttrain \
 
-python -m libero_scripts.libero_eval_skill_action \
-  --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/test_run/checkpoint-10000" \
-  --model_name "next_skill_actions" \
+python libero_scripts/libero_eval_skill_action.py \
+  --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/skillaction_v2_stage2/checkpoint-60000" \
+  --model_name "skillaction_v2_stage2" \
   --data_config libero_traj_arms \
   --task_suite_name libero_10 \
   --num_trials_per_task 1 \
   --exec_horizon 6
-
-
-# python3 libero_scripts/libero_eval_interleaved.py \
-#     --task_suite_name libero_10 \
-#     --num_steps_wait 10 \
-#     --num_trials_per_task 2 \
-#     --embodiment_tag new_embodiment \
-#     --data_config libero_traj_arms_2 \
-#     --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/stage1_nextstep_0301_merged/checkpoint-6000" \
-#     --model_name "stage2_nextstep_skip_action_toolhead_only_v4" \
-#     --denoising_steps 8 \
-#     --call_baseline \
-#     --history_type 'reinput' \
-#     --traj_history 'yes'
 

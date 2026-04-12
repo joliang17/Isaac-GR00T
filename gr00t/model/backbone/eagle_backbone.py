@@ -869,8 +869,6 @@ class EagleBackbone(nn.Module):
             # print(f"Labels: {''.join(gt_label)}")
             print(f"Preds:  {''.join(pred_text)}")
             print(f"Labels:  {''.join(gt_text)}")
-            # TODO: why there are 3 \n in the beginning of gt_text?
-
             if predicted_tool_end is not None:
                 toolend_correct = (predicted_tool_end == target_tool_end)
                 if (target_tool_end == 1).any().item():
