@@ -1237,7 +1237,7 @@ class LeRobotSingleDataset(Dataset):
                 print(f"  skill_text   : {skill_text!r}")
                 print(f"  step_annotation: {anno_before}")
                 print(f"  action.shape : {action_shape}")
-                print(f"  text_list[0] (first 200 chars): {ori_text[:200]!r}")
+                print(f"  text_list[0] (first 200 chars): {dict_transformed['eagle_content']['text_list'][0][:200]!r}")
                 print(f"  annotation_source: {'JSON' if self._skill_lookup is not None else 'parquet'}")
                 self._sa_debug_count += 1
             
@@ -2006,7 +2006,6 @@ class LeRobotMixtureDataset(Dataset):
                 print(f"  text_list[0] (first 200 chars): {new_text[:200]!r}")
                 print(f"  annotation_source: {'JSON' if dataset._skill_lookup is not None else 'parquet'}")
                 dataset._sa_debug_count += 1
-
             return dict_transformed
 
         else:

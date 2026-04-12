@@ -100,9 +100,9 @@ def collate(features: List[dict], eagle_processor) -> dict:
                     while k < L and ids[k].item() != im_end_id:
                         k += 1
                     if k < L:
-                        # mask header + content + <|im_end|>
-                        labels[b, start:k+1] = -100
-                        j = k + 1
+                        # mask header + content + <|im_end|> + trailing \n
+                        labels[b, start:k+2] = -100
+                        j = k + 2
                     else:
                         break
                 else:
@@ -169,7 +169,11 @@ def collate(features: List[dict], eagle_processor) -> dict:
 
             labels = user_input_label(eagle_inputs, eagle_processor.tokenizer)
             batch["eagle_llm_labels"] = labels
-
+            
+            # # eagle_processor.tokenizer.decode(labels[0, -13:])
+            # eagle_processor.tokenizer.decode(labels[0][labels[0] != -100])
+            # eagle_processor.tokenizer.decode(eagle_inputs["input_ids"][0])
+            # import pdb;pdb.set_trace()
         elif key in ("pixel_values", "image_grid_thw", "attention_mask", "input_ids"):
             # Concat in existing batch dimension.
             batch[key] = torch.cat(values)

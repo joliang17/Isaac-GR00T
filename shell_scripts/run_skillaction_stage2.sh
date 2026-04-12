@@ -23,6 +23,7 @@ source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 
 export WANDB_PROJECT="vla_tooluse"
 TASK_NAME=skillaction_v2_stage2
+export CUDA_VISIBLE_DEVICES=1
 
 # skill_action_v2: task field = pure instruction only; all skill labels from JSON.
 # Set skill_label_type to 'primary_action_verb' to use atomic verbs instead of full phrases.
@@ -38,7 +39,7 @@ python scripts/gr00t_finetune.py \
   --save_steps 30000 \
   --max_steps 60000 \
   --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
-  --base_model_path "${ROOT_FOLDER}/GR00T/checkpoint/skillaction_v2_stage1_merged/checkpoint-6000" \
+  --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/skillaction_v2_stage1_merged/checkpoint-6000" \
   --run_name ${TASK_NAME} \
   --skill_label_type "skill" \
   --windowing_mode "skill_action" \

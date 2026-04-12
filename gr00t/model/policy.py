@@ -456,7 +456,8 @@ class Gr00tPolicy(BasePolicy):
         model = check_horizon(model)
         self.model = model
 
-        if 'GR00T-N1.5-3B' in str(model_path) or 'libero' in str(model_path):
+        if 'GR00T-N1.5-3B' in str(model_path) or (
+                'libero' in str(model_path) and 'router' not in str(model_path)):
             self.is_base = True
             self.base_path = str(model_path)
         elif 'gr00t-n1.5-libero-long-posttrain' in str(model_path):

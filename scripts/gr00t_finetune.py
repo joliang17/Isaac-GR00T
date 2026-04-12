@@ -154,6 +154,15 @@ class ArgsConfig:
     tune_trace_projector: bool = False
     """Whether to fine-tune the language model backbone."""
 
+    use_task_router: bool = False
+    """Add soft-weighted task router + learnable embedding bank appended to VLM features; freeze all other params."""
+
+    num_task_emb_slots: int = 8
+    """Number of learnable embedding slots in the task router bank (K)."""
+
+    router_hidden_dim: int = 256
+    """Hidden dim of the router MLP (backbone_dim -> hidden -> K)."""
+
     freeze_embeddings: bool = False
     """Whether to fine-tune the embedding model."""
 
@@ -435,6 +444,45 @@ def main(config: ArgsConfig):
     model.compute_dtype = "bfloat16"
     model.config.compute_dtype = "bfloat16"
 
+    # --- Task Router: inject soft-weighted embedding bank into the action head ---
+    if config.use_task_router:
+        import torch.nn as nn
+        backbone_emb_dim = model.action_head.config.backbone_embedding_dim  # 1536
+        K = config.num_task_emb_slots
+        H = config.router_hidden_dim
+
+        # Update action_head config so it serializes correctly with the checkpoint
+        model.action_head.config.use_task_router = True
+        model.action_head.config.num_task_emb_slots = K
+        model.action_head.config.router_hidden_dim = H
+
+        # Inject new modules into action head
+        model.action_head.task_emb_bank = nn.Embedding(K, backbone_emb_dim)
+        model.action_head.router = nn.Sequential(
+            nn.Linear(backbone_emb_dim, H),
+            nn.ReLU(),
+            nn.Linear(H, K),
+        )
+
+        # Move to same device as model
+        device = next(model.parameters()).device
+        model.action_head.task_emb_bank = model.action_head.task_emb_bank.to(device)
+        model.action_head.router = model.action_head.router.to(device)
+
+        # Initialize
+        nn.init.normal_(model.action_head.task_emb_bank.weight, mean=0.0, std=0.02)
+        for layer in [model.action_head.router[0], model.action_head.router[2]]:
+            nn.init.xavier_uniform_(layer.weight)
+            nn.init.zeros_(layer.bias)
+
+        # Freeze entire model, then unfreeze ONLY the router + bank
+        model.requires_grad_(False)
+        model.action_head.task_emb_bank.requires_grad_(True)
+        model.action_head.router.requires_grad_(True)
+
+        print(f"[TaskRouter] Injected task_emb_bank({K}, {backbone_emb_dim}) + router MLP (hidden={H})")
+        print(f"[TaskRouter] All model params frozen; trainable: task_emb_bank + router only")
+
     train_action_head = False
     if 'both' in config.dataset_path[0] and 'skip_action' not in config.run_name:
         train_action_head = True
@@ -456,10 +504,11 @@ def main(config: ArgsConfig):
     else:
         # tie model weight
         tie_all_special_weights(model)
-
         # check wether head & embeddings shared the same weight
-        if config.windowing_mode != 'step':
+        if config.windowing_mode not in ('step', 'skill_action', ):
             model.action_head.requires_grad_(train_action_head)
+        elif config.windowing_mode == 'skill_action':
+            model.action_head.requires_grad_(config.tune_diffusion_model)
 
     # skill_action_v2: enable skill_action_mode so split_by_img_id includes [TOOLS] frames
     if config.windowing_mode == 'skill_action':

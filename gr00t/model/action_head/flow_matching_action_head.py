@@ -148,6 +148,10 @@ class FlowmatchingActionHeadConfig(PretrainedConfig):
     expand_batch: int = field(default=None)
     use_vlln: bool = field(default=True)
 
+    use_task_router: bool = field(default=False, metadata={"help": "Whether to use soft-weighted task router."})
+    num_task_emb_slots: int = field(default=8, metadata={"help": "Number of learnable embedding slots in the task router bank."})
+    router_hidden_dim: int = field(default=256, metadata={"help": "Hidden dim of the router MLP."})
+
     vl_self_attention_cfg: dict = field(default=None)
     num_target_vision_tokens: int = field(
         default=32, metadata={"help": "Number of target vision tokens."}
@@ -211,6 +215,18 @@ class FlowmatchingActionHead(nn.Module):
 
         self.beta_dist = Beta(config.noise_beta_alpha, config.noise_beta_beta)
         self.num_timestep_buckets = config.num_timestep_buckets
+
+        if config.use_task_router:
+            K = config.num_task_emb_slots
+            H = config.router_hidden_dim
+            backbone_emb_dim = config.backbone_embedding_dim
+            self.task_emb_bank = nn.Embedding(K, backbone_emb_dim)
+            self.router = nn.Sequential(
+                nn.Linear(backbone_emb_dim, H),
+                nn.ReLU(),
+                nn.Linear(H, K),
+            )
+
         self.config = config
         self.set_trainable_parameters(config.tune_projector, config.tune_diffusion_model)
 
@@ -264,6 +280,20 @@ class FlowmatchingActionHead(nn.Module):
         backbone_features = backbone_output["backbone_features"]
         backbone_features = self.vlln(backbone_features)
         backbone_features = self.vl_self_attention(backbone_features)
+
+        if hasattr(self, 'task_emb_bank') and hasattr(self, 'router'):
+            pooled = backbone_features.mean(dim=1)                              # (B, D)
+            weights = torch.softmax(self.router(pooled), dim=-1)                # (B, K)
+            task_tokens = weights.unsqueeze(-1) * self.task_emb_bank.weight     # (B, K, D)
+            backbone_features = torch.cat([backbone_features, task_tokens], dim=1)
+            attn_mask = backbone_output.get("backbone_attention_mask")
+            if attn_mask is not None:
+                task_mask = torch.ones(
+                    attn_mask.shape[0], task_tokens.shape[1],
+                    device=attn_mask.device, dtype=attn_mask.dtype
+                )
+                backbone_output["backbone_attention_mask"] = torch.cat([attn_mask, task_mask], dim=1)
+
         backbone_output["backbone_features"] = backbone_features
         return backbone_output
 
