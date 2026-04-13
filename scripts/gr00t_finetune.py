@@ -163,6 +163,12 @@ class ArgsConfig:
     router_hidden_dim: int = 256
     """Hidden dim of the router MLP (backbone_dim -> hidden -> K)."""
 
+    router_diversity_coeff: float = 0.01
+    """Coefficient for the router load-balancing loss that encourages all K slots to be used equally. Set 0 to disable."""
+
+    router_lang_tail: int = 0
+    """If > 0, pool only the last N valid backbone tokens for routing (focuses on language instruction tokens). 0 = pool all valid tokens."""
+
     use_task_adapter: bool = False
     """Add FiLM task-conditioned adapters after state_encoder, action_encoder, and action_decoder. Requires use_task_router=True."""
 
@@ -458,6 +464,14 @@ def main(config: ArgsConfig):
         model.action_head.config.use_task_router = True
         model.action_head.config.num_task_emb_slots = K
         model.action_head.config.router_hidden_dim = H
+        model.action_head.config.router_diversity_coeff = config.router_diversity_coeff
+        model.action_head.config.router_lang_tail = config.router_lang_tail
+        # Sync to the top-level config dict that gets written to config.json
+        model.config.action_head_cfg["use_task_router"] = True
+        model.config.action_head_cfg["num_task_emb_slots"] = K
+        model.config.action_head_cfg["router_hidden_dim"] = H
+        model.config.action_head_cfg["router_diversity_coeff"] = config.router_diversity_coeff
+        model.config.action_head_cfg["router_lang_tail"] = config.router_lang_tail
 
         # Inject new modules into action head
         model.action_head.task_emb_bank = nn.Embedding(K, backbone_emb_dim)
@@ -498,6 +512,7 @@ def main(config: ArgsConfig):
 
         # Update action_head config for correct checkpoint serialization
         model.action_head.config.use_task_adapter = True
+        model.config.action_head_cfg["use_task_adapter"] = True
 
         # Inject and initialize adapters
         model.action_head.state_adapter   = TaskConditionedAdapter(input_emb_dim, backbone_emb_dim).to(device)

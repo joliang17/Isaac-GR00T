@@ -106,22 +106,33 @@ class TaskConditionedAdapter(nn.Module):
     Applies feature-wise linear modulation conditioned on a task embedding,
     enabling task-specific scaling/shifting of encoder/decoder outputs without
     modifying the frozen embodiment-specific weight matrices.
+
+    A hidden layer (task_emb_dim → task_emb_dim → feature_dim×2) increases
+    the adapter's expressive capacity compared to a single linear projection.
     """
 
     def __init__(self, feature_dim: int, task_emb_dim: int):
         super().__init__()
-        self.gamma = nn.Linear(task_emb_dim, feature_dim)
-        self.beta = nn.Linear(task_emb_dim, feature_dim)
-        # Init to identity transform so adapter is a no-op at start of training
-        nn.init.zeros_(self.gamma.weight)
-        nn.init.ones_(self.gamma.bias)
-        nn.init.zeros_(self.beta.weight)
-        nn.init.zeros_(self.beta.bias)
+        # Two-layer MLP: task_emb -> hidden -> (gamma, beta)
+        hidden_dim = task_emb_dim
+        self.mlp = nn.Sequential(
+            nn.Linear(task_emb_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, feature_dim * 2),
+        )
+        # Init final layer to near-zero so adapter starts as identity transform
+        nn.init.zeros_(self.mlp[-1].weight)
+        # bias: first half (gamma) = 1 (multiplicative identity), second half (beta) = 0
+        bias = torch.zeros(feature_dim * 2)
+        bias[:feature_dim] = 1.0
+        self.mlp[-1].bias = nn.Parameter(bias)
 
     def forward(self, x: torch.Tensor, task_emb: torch.Tensor) -> torch.Tensor:
         # x: (B, T, D),  task_emb: (B, task_emb_dim)
-        gamma = self.gamma(task_emb).unsqueeze(1)  # (B, 1, D)
-        beta = self.beta(task_emb).unsqueeze(1)    # (B, 1, D)
+        out = self.mlp(task_emb)                     # (B, 2D)
+        feature_dim = x.shape[-1]
+        gamma = out[:, :feature_dim].unsqueeze(1)    # (B, 1, D)
+        beta  = out[:, feature_dim:].unsqueeze(1)    # (B, 1, D)
         return gamma * x + beta
 
 
@@ -176,6 +187,14 @@ class FlowmatchingActionHeadConfig(PretrainedConfig):
     use_task_router: bool = field(default=False, metadata={"help": "Whether to use soft-weighted task router."})
     num_task_emb_slots: int = field(default=8, metadata={"help": "Number of learnable embedding slots in the task router bank."})
     router_hidden_dim: int = field(default=256, metadata={"help": "Hidden dim of the router MLP."})
+    router_lang_tail: int = field(
+        default=0,
+        metadata={"help": "If > 0, pool only the last N valid backbone tokens for routing (focuses on language instruction tokens at end of VLM sequence). 0 = pool all valid tokens."},
+    )
+    router_diversity_coeff: float = field(
+        default=0.01,
+        metadata={"help": "Coefficient for the router load-balancing (diversity) loss. Encourages all K slots to be used. Set 0 to disable."},
+    )
     use_task_adapter: bool = field(
         default=False,
         metadata={"help": "Add FiLM task-conditioned adapters after state_encoder, action_encoder, and action_decoder. Requires use_task_router=True."},
@@ -318,9 +337,54 @@ class FlowmatchingActionHead(nn.Module):
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
 
-    def compute_task_embedding(self, backbone_features: torch.Tensor) -> torch.Tensor:
+    def _pool_for_routing(
+        self,
+        backbone_features: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Masked mean pool backbone features for the router.
+
+        Uses the attention mask to exclude padding tokens.  If
+        ``router_lang_tail`` is set in the config (number of trailing valid
+        tokens to pool), only those tokens are used — in VLMs instruction text
+        tokens appear at the end of the sequence after image tokens, so this
+        focuses the routing signal on language rather than vision.
+
+        Args:
+            backbone_features: (B, T, D) — full backbone hidden states.
+            attn_mask: (B, T) binary mask; 1 = valid, 0 = padding.
+
+        Returns:
+            pooled: (B, D)
+        """
+        if attn_mask is None:
+            # Fallback: unmasked mean over all tokens
+            return backbone_features.mean(dim=1)
+
+        # Boolean mask
+        mask = attn_mask.bool()  # (B, T)
+
+        lang_tail = getattr(self.config, "router_lang_tail", 0)
+        if lang_tail > 0:
+            # Build a mask that keeps only the last `lang_tail` valid tokens
+            # per sample. We scan from the end and accumulate counts.
+            # reversed cumsum of the valid mask gives remaining valid tokens
+            # from each position onward (reversed).
+            rev_cumsum = mask.flip(dims=[1]).cumsum(dim=1).flip(dims=[1])  # (B, T)
+            mask = mask & (rev_cumsum <= lang_tail)
+
+        mask_f = mask.float().unsqueeze(-1)          # (B, T, 1)
+        denom  = mask_f.sum(dim=1).clamp(min=1.0)   # (B, 1)
+        pooled = (backbone_features * mask_f).sum(dim=1) / denom  # (B, D)
+        return pooled
+
+    def compute_task_embedding(
+        self,
+        backbone_features: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Returns (B, backbone_emb_dim) task embedding via router soft-weighted sum."""
-        pooled = backbone_features.mean(dim=1)                                    # (B, D)
+        pooled = self._pool_for_routing(backbone_features, attn_mask)            # (B, D)
         weights = torch.softmax(self.router(pooled), dim=-1)                      # (B, K)
         task_emb = (weights.unsqueeze(-1) * self.task_emb_bank.weight).sum(dim=1) # (B, D)
         return task_emb
@@ -331,11 +395,13 @@ class FlowmatchingActionHead(nn.Module):
         backbone_features = self.vl_self_attention(backbone_features)
 
         if hasattr(self, 'task_emb_bank') and hasattr(self, 'router'):
-            pooled = backbone_features.mean(dim=1)                              # (B, D)
+            attn_mask = backbone_output.get("backbone_attention_mask")
+            pooled = self._pool_for_routing(backbone_features, attn_mask)      # (B, D)
             weights = torch.softmax(self.router(pooled), dim=-1)                # (B, K)
             task_tokens = weights.unsqueeze(-1) * self.task_emb_bank.weight     # (B, K, D)
             backbone_features = torch.cat([backbone_features, task_tokens], dim=1)
-            attn_mask = backbone_output.get("backbone_attention_mask")
+            # Stash router weights for the diversity loss computed in forward()
+            backbone_output["_router_weights"] = weights
             if attn_mask is not None:
                 task_mask = torch.ones(
                     attn_mask.shape[0], task_tokens.shape[1],
@@ -470,6 +536,17 @@ class FlowmatchingActionHead(nn.Module):
         # Slice out only the action portion of pred and target.
         loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
         loss = loss.sum() / action_mask.sum()
+
+        # Router diversity (load-balancing) loss — maximizes routing entropy so all K
+        # embedding slots are used equally rather than collapsing to one.
+        router_weights = backbone_output.get("_router_weights")
+        if router_weights is not None and self.config.router_diversity_coeff > 0:
+            mean_w = router_weights.mean(dim=0)                                   # (K,)
+            # Negative entropy of mean routing distribution; adding this minimizes entropy
+            # which means we *maximize* it by subtracting from the loss.
+            neg_entropy = (mean_w * (mean_w + 1e-8).log()).sum()                  # scalar <= 0
+            loss = loss + self.config.router_diversity_coeff * neg_entropy
+
         output_dict = {
             "loss": loss,
         }
