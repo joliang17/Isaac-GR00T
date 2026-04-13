@@ -141,6 +141,8 @@ def eval_libero(cfg) -> None:
                 t = 0
                 top_view = []
                 wrist_view = []
+                cached_action_chunk = None
+                chunk_idx = 0
                 if cfg.task_suite_name == "libero_spatial":
                     max_steps = 220  # longest training demo has 193 steps
                 elif cfg.task_suite_name == "libero_object":
@@ -170,16 +172,19 @@ def eval_libero(cfg) -> None:
                         top_view.append(img)
                         wrist_view.append(wrist_img)
 
-                        # Query model to get action
-                        if args.add_prefix:
-                            obs_dict = process_observation(obs, skill_prefix + task_description, headless=args.headless)
-                        else:
-                            obs_dict = process_observation(obs, task_description, headless=args.headless)
-                        action_out, _, _, action_out_bs = gr00t_policy.get_action(obs_dict, mode='baseline')
-                        action_chunk = action_out if action_out is not None else action_out_bs
+                        # Re-query model if no cached chunk or chunk is exhausted
+                        if cached_action_chunk is None or chunk_idx >= cfg.action_horizon:
+                            if args.add_prefix:
+                                obs_dict = process_observation(obs, skill_prefix + task_description, headless=args.headless)
+                            else:
+                                obs_dict = process_observation(obs, task_description, headless=args.headless)
+                            action_out, _, _, action_out_bs = gr00t_policy.get_action(obs_dict, mode='baseline')
+                            cached_action_chunk = action_out if action_out is not None else action_out_bs
+                            chunk_idx = 0
                         # if normalize=True: gripper from model: [0, 1] will be normalized to [-1, 1]
                         # if original training data is not normalized (-1, 1), no need ro norm (normalize_action = False)
-                        action = convert_to_libero_action(action_chunk, action_keys, normalize=args.normalize_action)
+                        action = convert_to_libero_action(cached_action_chunk, action_keys, idx=chunk_idx, normalize=args.normalize_action)
+                        chunk_idx += 1
 
                         try:
                             # Execute action in environment
@@ -258,6 +263,12 @@ if __name__ == "__main__":
     parser.add_argument("--denoising_steps", type=int, default=8)
     parser.add_argument("--normalize_action", action="store_true", help="Enable action normalization")
     parser.add_argument("--add_prefix", action="store_true", help="Enable prefix")
+    parser.add_argument(
+        "--action_horizon",
+        type=int,
+        default=1,
+        help="Number of actions to execute from each predicted chunk before re-querying the model (default=1, i.e. query every step)"
+    )
     args = parser.parse_args()
 
     eval_libero(args)

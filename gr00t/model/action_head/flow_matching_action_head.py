@@ -100,6 +100,31 @@ class MultiEmbodimentActionEncoder(nn.Module):
         return x
 
 
+class TaskConditionedAdapter(nn.Module):
+    """FiLM adapter: γ(task_emb) * x + β(task_emb).
+
+    Applies feature-wise linear modulation conditioned on a task embedding,
+    enabling task-specific scaling/shifting of encoder/decoder outputs without
+    modifying the frozen embodiment-specific weight matrices.
+    """
+
+    def __init__(self, feature_dim: int, task_emb_dim: int):
+        super().__init__()
+        self.gamma = nn.Linear(task_emb_dim, feature_dim)
+        self.beta = nn.Linear(task_emb_dim, feature_dim)
+        # Init to identity transform so adapter is a no-op at start of training
+        nn.init.zeros_(self.gamma.weight)
+        nn.init.ones_(self.gamma.bias)
+        nn.init.zeros_(self.beta.weight)
+        nn.init.zeros_(self.beta.bias)
+
+    def forward(self, x: torch.Tensor, task_emb: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, D),  task_emb: (B, task_emb_dim)
+        gamma = self.gamma(task_emb).unsqueeze(1)  # (B, 1, D)
+        beta = self.beta(task_emb).unsqueeze(1)    # (B, 1, D)
+        return gamma * x + beta
+
+
 @dataclass
 class FlowmatchingActionHeadConfig(PretrainedConfig):
     """NOTE: N1.5 uses XEmbFlowmatchingPolicyHeadConfig as action head"""
@@ -151,6 +176,10 @@ class FlowmatchingActionHeadConfig(PretrainedConfig):
     use_task_router: bool = field(default=False, metadata={"help": "Whether to use soft-weighted task router."})
     num_task_emb_slots: int = field(default=8, metadata={"help": "Number of learnable embedding slots in the task router bank."})
     router_hidden_dim: int = field(default=256, metadata={"help": "Hidden dim of the router MLP."})
+    use_task_adapter: bool = field(
+        default=False,
+        metadata={"help": "Add FiLM task-conditioned adapters after state_encoder, action_encoder, and action_decoder. Requires use_task_router=True."},
+    )
 
     vl_self_attention_cfg: dict = field(default=None)
     num_target_vision_tokens: int = field(
@@ -227,6 +256,13 @@ class FlowmatchingActionHead(nn.Module):
                 nn.Linear(H, K),
             )
 
+        if config.use_task_adapter:
+            assert config.use_task_router, "use_task_adapter requires use_task_router=True"
+            D = config.backbone_embedding_dim
+            self.state_adapter   = TaskConditionedAdapter(config.input_embedding_dim, D)
+            self.action_adapter  = TaskConditionedAdapter(config.input_embedding_dim, D)
+            self.decoder_adapter = TaskConditionedAdapter(config.action_dim, D)
+
         self.config = config
         self.set_trainable_parameters(config.tune_projector, config.tune_diffusion_model)
 
@@ -241,6 +277,12 @@ class FlowmatchingActionHead(nn.Module):
             self.action_decoder.requires_grad_(False)
             if self.config.add_pos_embed:
                 self.position_embedding.requires_grad_(False)
+        # Task-conditioned adapters are always trainable when present —
+        # they are the task-transfer-specific modules and must update during fine-tuning.
+        for adapter_name in ("state_adapter", "action_adapter", "decoder_adapter"):
+            adapter = getattr(self, adapter_name, None)
+            if adapter is not None:
+                adapter.requires_grad_(True)
         if not tune_diffusion_model:
             self.model.requires_grad_(False)
         print(f"Tune action head projector: {self.tune_projector}")
@@ -276,6 +318,13 @@ class FlowmatchingActionHead(nn.Module):
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
 
+    def compute_task_embedding(self, backbone_features: torch.Tensor) -> torch.Tensor:
+        """Returns (B, backbone_emb_dim) task embedding via router soft-weighted sum."""
+        pooled = backbone_features.mean(dim=1)                                    # (B, D)
+        weights = torch.softmax(self.router(pooled), dim=-1)                      # (B, K)
+        task_emb = (weights.unsqueeze(-1) * self.task_emb_bank.weight).sum(dim=1) # (B, D)
+        return task_emb
+
     def process_backbone_output(self, backbone_output: BatchFeature) -> BatchFeature:
         backbone_features = backbone_output["backbone_features"]
         backbone_features = self.vlln(backbone_features)
@@ -301,6 +350,13 @@ class FlowmatchingActionHead(nn.Module):
         # Set frozen modules to eval
         self.set_frozen_modules_to_eval_mode()
 
+        # Save raw backbone features before task tokens are appended, so
+        # compute_task_embedding pools only the original VLM sequence.
+        raw_bfeats = (
+            backbone_output["backbone_features"].clone()
+            if self.config.use_task_adapter
+            else None
+        )
         backbone_output = self.process_backbone_output(backbone_output)
 
         if self.config.expand_batch is not None:
@@ -322,6 +378,12 @@ class FlowmatchingActionHead(nn.Module):
                 expanded = v.repeat(*factors)
                 action_input[k] = expanded
 
+            # Keep raw_bfeats aligned with expand_batch repetition.
+            if raw_bfeats is not None:
+                raw_bfeats = raw_bfeats.repeat(
+                    self.config.expand_batch, *([1] * (raw_bfeats.dim() - 1))
+                )
+
         # Get vision and language embeddings.
         if backbone_output.backbone_features_multi is not None:
             vl_embs = backbone_output.backbone_features_multi
@@ -340,7 +402,10 @@ class FlowmatchingActionHead(nn.Module):
 
         if num_action > 0:
             embodiment_id = embodiment_id[:1].repeat(num_action)
-        
+
+        # Compute task embedding (B, D) from raw VLM features for FiLM adapters.
+        task_emb = self.compute_task_embedding(raw_bfeats) if raw_bfeats is not None else None
+
         # Embed state.
         if len(action_input.state.shape) < 3:
             state_input = action_input.state.unsqueeze(1)
@@ -360,8 +425,12 @@ class FlowmatchingActionHead(nn.Module):
             actions = actions[padding_mask]
             action_mask = action_mask[padding_mask]
             embodiment_id = embodiment_id[padding_mask] if embodiment_id is not None else None
+            if task_emb is not None:
+                task_emb = task_emb[padding_mask]
 
         state_features = self.state_encoder(state_input, embodiment_id)
+        if task_emb is not None:
+            state_features = self.state_adapter(state_features, task_emb)
 
         noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
         t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
@@ -373,6 +442,8 @@ class FlowmatchingActionHead(nn.Module):
         # Convert (continuous) t -> discrete if needed
         t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
         action_features = self.action_encoder(noisy_trajectory, t_discretized, embodiment_id)
+        if task_emb is not None:
+            action_features = self.action_adapter(action_features, task_emb)
 
         # Maybe add position embedding.
         if self.config.add_pos_embed:
@@ -392,6 +463,8 @@ class FlowmatchingActionHead(nn.Module):
             return_all_hidden_states=False,  # NOTE (YL): not using flare now
         )
         pred = self.action_decoder(model_output, embodiment_id)
+        if task_emb is not None:
+            pred = self.decoder_adapter(pred, task_emb)
         pred_actions = pred[:, -actions.shape[1] :]
 
         # Slice out only the action portion of pred and target.
@@ -404,6 +477,12 @@ class FlowmatchingActionHead(nn.Module):
 
     @torch.no_grad()
     def get_action(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
+        # Save raw backbone features before task tokens are appended.
+        raw_bfeats = (
+            backbone_output["backbone_features"].clone()
+            if self.config.use_task_adapter
+            else None
+        )
         backbone_output = self.process_backbone_output(backbone_output)
 
         # Get vision and language embeddings.
@@ -416,10 +495,15 @@ class FlowmatchingActionHead(nn.Module):
 
         device = vl_embs.device
         batch_size = vl_embs.shape[0]
-        embodiment_id = action_input.embodiment_id       
+        embodiment_id = action_input.embodiment_id
+
+        # Compute task embedding (B, D) once for all denoising steps.
+        task_emb = self.compute_task_embedding(raw_bfeats) if raw_bfeats is not None else None
 
         # Embed state.
         state_features = self.state_encoder(action_input.state, embodiment_id)
+        if task_emb is not None:
+            state_features = self.state_adapter(state_features, task_emb)
 
         # Set initial actions as the sampled noise.
         actions = torch.randn(size=(batch_size, self.config.action_horizon, self.config.action_dim), dtype=vl_embs.dtype, device=device, )
@@ -437,6 +521,8 @@ class FlowmatchingActionHead(nn.Module):
                 size=(batch_size,), fill_value=t_discretized, device=device
             )
             action_features = self.action_encoder(actions, timesteps_tensor, embodiment_id)
+            if task_emb is not None:
+                action_features = self.action_adapter(action_features, task_emb)
             # Maybe add position embedding.
             if self.config.add_pos_embed:
                 pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
@@ -454,6 +540,8 @@ class FlowmatchingActionHead(nn.Module):
                 timestep=timesteps_tensor,
             )
             pred = self.action_decoder(model_output, embodiment_id)
+            if task_emb is not None:
+                pred = self.decoder_adapter(pred, task_emb)
 
             pred_velocity = pred[:, -self.action_horizon :]
 

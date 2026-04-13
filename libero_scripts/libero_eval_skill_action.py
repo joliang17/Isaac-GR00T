@@ -116,6 +116,8 @@ def eval_libero(args) -> None:
                     if t < args.num_steps_wait:
                         obs, reward, done, info = env.step(get_libero_dummy_action())
                         t += 1
+                        if done:
+                            break
                         continue
 
                     img, wrist_img = get_libero_image(obs)

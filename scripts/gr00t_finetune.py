@@ -163,6 +163,9 @@ class ArgsConfig:
     router_hidden_dim: int = 256
     """Hidden dim of the router MLP (backbone_dim -> hidden -> K)."""
 
+    use_task_adapter: bool = False
+    """Add FiLM task-conditioned adapters after state_encoder, action_encoder, and action_decoder. Requires use_task_router=True."""
+
     freeze_embeddings: bool = False
     """Whether to fine-tune the embedding model."""
 
@@ -482,6 +485,32 @@ def main(config: ArgsConfig):
 
         print(f"[TaskRouter] Injected task_emb_bank({K}, {backbone_emb_dim}) + router MLP (hidden={H})")
         print(f"[TaskRouter] All model params frozen; trainable: task_emb_bank + router only")
+
+    # --- Task Adapter: inject FiLM adapters conditioned on the task embedding ---
+    if config.use_task_adapter:
+        assert config.use_task_router, "--use-task-adapter requires --use-task-router"
+        from gr00t.model.action_head.flow_matching_action_head import TaskConditionedAdapter
+
+        backbone_emb_dim = model.action_head.config.backbone_embedding_dim
+        input_emb_dim = model.action_head.config.input_embedding_dim
+        action_dim = model.action_head.config.action_dim
+        device = next(model.parameters()).device
+
+        # Update action_head config for correct checkpoint serialization
+        model.action_head.config.use_task_adapter = True
+
+        # Inject and initialize adapters
+        model.action_head.state_adapter   = TaskConditionedAdapter(input_emb_dim, backbone_emb_dim).to(device)
+        model.action_head.action_adapter  = TaskConditionedAdapter(input_emb_dim, backbone_emb_dim).to(device)
+        model.action_head.decoder_adapter = TaskConditionedAdapter(action_dim,    backbone_emb_dim).to(device)
+
+        # Adapters are always trainable; unfreeze them on top of whatever the router block set
+        model.action_head.state_adapter.requires_grad_(True)
+        model.action_head.action_adapter.requires_grad_(True)
+        model.action_head.decoder_adapter.requires_grad_(True)
+
+        print(f"[TaskAdapter] Injected FiLM adapters (feature_dim={input_emb_dim}/{input_emb_dim}/{action_dim}, task_emb_dim={backbone_emb_dim})")
+        print(f"[TaskAdapter] Trainable: task_emb_bank + router + state_adapter + action_adapter + decoder_adapter")
 
     train_action_head = False
     if 'both' in config.dataset_path[0] and 'skip_action' not in config.run_name:

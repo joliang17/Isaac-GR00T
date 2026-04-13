@@ -21,6 +21,7 @@ source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 export OPENAI_API_KEY=""
 base_dir="/fs/nexus-scratch/yliang17/Research/VLA/saved_folder/checkpoint"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
+export CUDA_VISIBLE_DEVICES=1
 
 # python3 libero_scripts/libero_eval.py \
 #     --task_suite_name libero_10 \
@@ -41,6 +42,6 @@ python libero_scripts/libero_eval_skill_action.py \
   --model_name "skillaction_v2_stage2" \
   --data_config libero_traj_arms \
   --task_suite_name libero_10 \
-  --num_trials_per_task 1 \
-  --exec_horizon 6
+  --num_trials_per_task 10 \
+  --exec_horizon 1
 

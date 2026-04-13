@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=libero_eval_object_router
-#SBATCH --output=slurm_output/libero_eval_object_router.log
-#SBATCH --error=slurm_output/libero_eval_object_router.log
+#SBATCH --job-name=libero_eval_object_router_adapter
+#SBATCH --output=slurm_output/libero_eval_object_router_adapter.log
+#SBATCH --error=slurm_output/libero_eval_object_router_adapter.log
 #SBATCH --time=48:00:00
 #SBATCH --account=scavenger
 #SBATCH --partition=scavenger
@@ -28,7 +28,7 @@ python3 libero_scripts/libero_eval.py \
     --num_steps_wait 10 \
     --num_trials_per_task 10 \
     --headless True \
-    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_object_router_k8/checkpoint-30000" \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_object_router_adapter_k8_v1/checkpoint-30000" \
     --embodiment_tag new_embodiment \
     --data_config libero_original \
     --denoising_steps 8 \

@@ -23,10 +23,11 @@ export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 export CUDA_VISIBLE_DEVICES=0
 
-TASK_NAME=libero_object_router_k8
+TASK_NAME=libero_object_router_adapter_k8_v1
 
-# Load libero_10 checkpoint (frozen), train only router + K=8 learnable embedding slots
-# on libero_object. Tests whether task-level representations transfer.
+# Load libero_10 checkpoint (frozen), train router + K=8 task embeddings + FiLM adapters
+# on libero_object. Adapters condition state/action encoders and action decoder on the
+# task embedding, enabling task-specific modulation without touching embodiment weights.
 python scripts/gr00t_finetune.py \
   --num-gpus 1 \
   --dataset-path "/fs/nexus-projects/wilddiffusion/vla/libero_lerobot/libero_object_no_noops_lerobot" \
@@ -42,9 +43,11 @@ python scripts/gr00t_finetune.py \
   --use-task-router \
   --num-task-emb-slots 8 \
   --router-hidden-dim 256 \
+  --use-task-adapter \
   --no-tune-projector \
   --learning_rate 1e-4 \
   --warmup_ratio 0.05
   # NOTE: --tune_diffusion_model not passed (default False -> DiT frozen)
   # NOTE: --tune_llm / --tune_visual not passed (default False -> backbone frozen)
   # NOTE: --no-tune-projector freezes state/action encoders (overrides default True)
+  # NOTE: --use-task-adapter trains FiLM adapters on top of frozen encoders/decoder
