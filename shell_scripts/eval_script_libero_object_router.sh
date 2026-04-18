@@ -23,12 +23,25 @@ export OPENAI_API_KEY=""
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 export CUDA_VISIBLE_DEVICES=1
 
+TASK_NAME=libero_object_router_adapter_k8_v2
+CKPT_DIR="/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}"
+
+# Use MODEL_PATH if passed via environment, otherwise find the latest checkpoint
+if [ -z "${MODEL_PATH}" ]; then
+    MODEL_PATH=$(ls -td "${CKPT_DIR}"/checkpoint-* 2>/dev/null | head -1)
+    if [ -z "${MODEL_PATH}" ]; then
+        echo "ERROR: no checkpoint found in ${CKPT_DIR}"
+        exit 1
+    fi
+fi
+echo "Evaluating checkpoint: ${MODEL_PATH}"
+
 python3 libero_scripts/libero_eval.py \
     --task_suite_name libero_object \
     --num_steps_wait 10 \
     --num_trials_per_task 10 \
     --headless True \
-    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_object_router_adapter_k8_v1/checkpoint-30000" \
+    --model_path "${MODEL_PATH}" \
     --embodiment_tag new_embodiment \
     --data_config libero_original \
     --denoising_steps 8 \

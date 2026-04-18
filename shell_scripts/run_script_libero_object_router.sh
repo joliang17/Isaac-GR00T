@@ -23,7 +23,7 @@ export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 export CUDA_VISIBLE_DEVICES=0
 
-TASK_NAME=libero_object_router_adapter_k8_v1
+TASK_NAME=libero_object_router_adapter_k8_v2
 
 # Load libero_10 checkpoint (frozen), train router + K=8 task embeddings + FiLM adapters
 # on libero_object. Adapters condition state/action encoders and action decoder on the

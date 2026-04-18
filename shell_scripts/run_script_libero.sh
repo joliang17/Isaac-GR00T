@@ -22,18 +22,18 @@ module add gcc/11.2.0
 export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 
-DATASET=libero_base
-TASK_NAME=libero_10_base
-CUDA_VISIBLE_DEVICES=1
+DATASET=libero10_256_half
+TASK_NAME=libero10_256_half
+CUDA_VISIBLE_DEVICES=0
 # TASK_NAME=libero_finetuned
 
   # --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero_base_action" \
 
 python scripts/gr00t_finetune.py \
   --num-gpus 1 \
-  --dataset-path "/fs/nexus-scratch/yliang17/Research/VLA/LIBERO_10_lerobot" \
+  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero10_256_half" \
   --windowing_mode "step" \
-  --batch-size 16 \
+  --batch-size 32 \
   --data_config "libero_original" \
   --video_backend "torchvision_av" \
   --save_steps 30000 \

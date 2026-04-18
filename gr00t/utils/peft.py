@@ -232,6 +232,15 @@ def _guess_lora_targets(llm_root: torch.nn.Module):
     return sorted(target_modules)
 
 
+def count_trainable_parameters(model):
+    total = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    if total >= 1e9:
+        print(f"Trainable parameters: {total / 1e9:.3f}B ({total:,})")
+    else:
+        print(f"Trainable parameters: {total / 1e6:.3f}M ({total:,})")
+    return total
+
+
 def list_trainable_parameter_names(model, only_lora: bool = False):
     names = []
     for n, p in model.named_parameters():
@@ -240,7 +249,9 @@ def list_trainable_parameter_names(model, only_lora: bool = False):
         if only_lora and not any(tag in n for tag in ("lora_", "lora_A", "lora_B")):
             continue
         names.append(n)
+    total = count_trainable_parameters(model)
     print(f"{len(names)} trainable tensors:")
+
     for n in names:
         print("  ", n)
     return names
