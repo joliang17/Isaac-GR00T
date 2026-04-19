@@ -52,6 +52,15 @@ class GR00T_N1_5_Config(PretrainedConfig):
 
     pred_nextstep: bool = field(default=True, metadata={"help": "Compute dtype."})
 
+    use_skill_emb: bool = field(default=False, metadata={"help": "Compute dtype."})
+    skill_vocab: list = field(default=None, metadata={"help": "List of skill name strings used for label extraction during training."})
+    num_skills: int = field(default=16, metadata={"help": "Number of learnable skill embedding vectors in the bank."})
+    skill_emb_dim: int = field(default=256, metadata={"help": "Dimension of each learnable skill embedding vector in the bank."})
+    skill_proj_hidden_dim: int = field(default=256, metadata={"help": "Hidden dim of the MLP projector used in the skill classifier."})
+    skill_clf_coeff: float = field(default=1.0, metadata={"help": "Weight for cross-entropy skill classification loss."})
+    skill_div_coeff: float = field(default=0.01, metadata={"help": "Weight for orthogonality diversity loss on skill embedding bank."})
+    skill_norm_coeff: float = field(default=0.01, metadata={"help": "Weight for non-zero norm loss on skill embedding bank (prevents collapse to zero)."})
+
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -81,14 +90,26 @@ class GR00T_N1_5(PreTrainedModel):
         super().__init__(config)
         self.local_model_path = local_model_path
         self.backbone = EagleBackbone(pred_nextstep=config.pred_nextstep, **config.backbone_cfg)
-        action_head_cfg = FlowmatchingActionHeadConfig(**config.action_head_cfg)
-        self.action_head = FlowmatchingActionHead(action_head_cfg)
+
+        head_kwargs = {
+            **config.action_head_cfg,
+            "use_skill_emb": config.use_skill_emb,
+            "skill_vocab": config.skill_vocab,
+            "num_skills": config.num_skills,
+            "skill_emb_dim": config.skill_emb_dim,
+            "skill_proj_hidden_dim": config.skill_proj_hidden_dim,
+            "skill_clf_coeff": config.skill_clf_coeff,
+            "skill_div_coeff": config.skill_div_coeff,
+            "skill_norm_coeff": config.skill_norm_coeff,
+        }
+        action_head_cfg = FlowmatchingActionHeadConfig(**head_kwargs)
+
+        self.action_head = FlowmatchingActionHead(action_head_cfg, )
 
         self.action_horizon = config.action_horizon
         self.action_dim = config.action_dim
         self.compute_dtype = config.compute_dtype
         self.tie_weights()
-
 
     def tie_weights(self):
         """
@@ -425,6 +446,8 @@ class GR00T_N1_5(PreTrainedModel):
         tune_special_B = kwargs.pop("tune_special_B", False)
         tune_tool_end = kwargs.pop("tune_tool_end", False)
         tune_trace_projector = kwargs.pop("tune_trace_projector", False)
+        tune_skill_clf = kwargs.pop("tune_skill_clf", False)
+        tune_skill_emb = kwargs.pop("tune_skill_emb", False)
 
         print(f"Loading pretrained dual brain from {pretrained_model_name_or_path}")
         print(f"Tune backbone vision tower: {tune_visual}")
@@ -435,7 +458,8 @@ class GR00T_N1_5(PreTrainedModel):
         print(f"Tune trace projector: {tune_trace_projector}")
         print(f"Tune action head projector: {tune_projector}")
         print(f"Tune action head DiT: {tune_diffusion_model}")
-
+        print(f"Tune skill classifier: {tune_skill_clf}")
+        print(f"Tune skill embedding: {tune_skill_emb}")
         # get the current model path being downloaded
         try:
             # NOTE(YL) This downloads the model to the local cache and returns the local path to the model
@@ -448,14 +472,15 @@ class GR00T_N1_5(PreTrainedModel):
             )
             local_model_path = pretrained_model_name_or_path
 
-        pretrained_model = super().from_pretrained(
-            local_model_path, local_model_path=local_model_path, **kwargs
-        )
+        pretrained_model = super().from_pretrained(local_model_path, local_model_path=local_model_path, **kwargs)
         pretrained_model.backbone.set_trainable_parameters(
             tune_visual=tune_visual, tune_llm=tune_llm, tune_special_A=tune_special_A, tune_special_B=tune_special_B, tune_tool_end=tune_tool_end, tune_trace_projector=tune_trace_projector
         )
         pretrained_model.action_head.set_trainable_parameters(
-            tune_projector=tune_projector, tune_diffusion_model=tune_diffusion_model
+            tune_projector=tune_projector,
+            tune_diffusion_model=tune_diffusion_model,
+            tune_skill_clf=tune_skill_clf,
+            tune_skill_emb=tune_skill_emb,
         )
         return pretrained_model
 

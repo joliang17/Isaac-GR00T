@@ -1067,7 +1067,8 @@ class EagleBackbone(nn.Module):
         special_loss_A_avg = torch.tensor(0.0, device=eagle_logits.device)
         special_loss_B_avg = torch.tensor(0.0, device=eagle_logits.device)
         embeds_tensor, masks_tensor = None, None
-        logits, labels = None, None
+        labels = None
+        logits = torch.tensor(0.0, device=eagle_logits.device)
         predicted_tool_end, target_tool_end, special_preds, special_labels, text_preds, text_labels = None, None, None, None, None, None
         if len(step_input) != 0:
 
@@ -1143,12 +1144,12 @@ class EagleBackbone(nn.Module):
                 "past_key_values": None,
                 "logits": out["logits"], 
                 "labels": out["labels"], 
-                "predicted_tool_end_eval": out["predicted_tool_end_eval"], 
-                "target_tool_end_eval": out["target_tool_end_eval"], 
-                "cur_pred_id_eval": out["cur_pred_id_eval"], 
-                "cur_label_id_eval": out["cur_label_id_eval"], 
-                "all_pred_id_eval": out["all_pred_id_eval"], 
-                "all_label_id_eval": out["all_label_id_eval"], 
+                # "predicted_tool_end_eval": out["predicted_tool_end_eval"], 
+                # "target_tool_end_eval": out["target_tool_end_eval"], 
+                # "cur_pred_id_eval": out["cur_pred_id_eval"], 
+                # "cur_label_id_eval": out["cur_label_id_eval"], 
+                # "all_pred_id_eval": out["all_pred_id_eval"], 
+                # "all_label_id_eval": out["all_label_id_eval"], 
             }
         )
 

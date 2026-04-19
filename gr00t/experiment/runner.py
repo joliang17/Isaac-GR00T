@@ -43,7 +43,6 @@ def preprocess_logits_for_metrics(logits, labels):
     # 1. Extract values from the dictionary
     if isinstance(logits, dict) or hasattr(logits, "data"):
         lm_logits = logits.get("logits")
-        # These are already argmaxed/filtered in the backbone
         p_te = logits.get("predicted_tool_end_eval")
         t_te = logits.get("target_tool_end_eval")
         p_sp = logits.get("cur_pred_id_eval")
@@ -70,10 +69,15 @@ def preprocess_logits_for_metrics(logits, labels):
     if p_tt is None: p_tt = torch.empty(0, dtype=torch.long, device=device)
     if l_tt is None: l_tt = torch.empty(0, dtype=torch.long, device=device)
 
+    p_skill = logits.get("skill_pred_eval") if (isinstance(logits, dict) or hasattr(logits, "data")) else None
+    l_skill = logits.get("skill_label_eval") if (isinstance(logits, dict) or hasattr(logits, "data")) else None
+    if p_skill is None: p_skill = torch.empty(0, dtype=torch.long, device=device)
+    if l_skill is None: l_skill = torch.empty(0, dtype=torch.long, device=device)
+
     # 4. Return as a tuple
-    # Note: We include both preds and targets for the toolhead/special tokens 
+    # Note: We include both preds and targets for the toolhead/special tokens
     # because they are filtered/subsampled in the backbone.
-    return (lm_preds, p_te, t_te, p_sp, l_sp, p_tt, l_tt)
+    return (lm_preds, p_te, t_te, p_sp, l_sp, p_tt, l_tt, p_skill, l_skill)
 
 
 def compute_tool_end_counts(
@@ -126,6 +130,7 @@ def compute_tool_end_counts(
 def compute_metrics(
     eval_preds,
     tune_tool_end=False,
+    tune_skill_clf=False,
     special_token_ids_A=None,
     special_token_ids_B=None,
     skills_end_id=None,
@@ -135,12 +140,23 @@ def compute_metrics(
 ):
     """
     Branched evaluation logic:
+    - If tune_skill_clf: Compute skill classifier accuracy only (VLM backbone frozen).
     - If tune_tool_end: Focus on Binary Classifier accuracy for the heads.
     - If not tune_tool_end: Focus on Token Generation accuracy (Special A/B).
     """
     metrics = {}
     try:
-        (lm_preds, predicted_tool_end, target_tool_end, cur_pred_id_eval, cur_label_id_eval, all_pred_id_eval, all_label_id_eval), labels = eval_preds
+        (lm_preds, predicted_tool_end, target_tool_end, cur_pred_id_eval, cur_label_id_eval, all_pred_id_eval, all_label_id_eval, skill_pred_eval, skill_label_eval), labels = eval_preds
+
+        # Stage 1: VLM backbone frozen — skip token decode and only report skill accuracy
+        if tune_skill_clf:
+            if len(skill_pred_eval) > 0:
+                metrics["skill_clf_accuracy"] = float(
+                    (skill_pred_eval == skill_label_eval).sum()
+                ) / len(skill_label_eval)
+            else:
+                metrics["skill_clf_accuracy"] = 0.0
+            return metrics
         pred_text = tokenizer.batch_decode(all_pred_id_eval, skip_special_tokens=False)
         gt_text = tokenizer.batch_decode(all_label_id_eval, skip_special_tokens=False)
         
@@ -183,6 +199,12 @@ def compute_metrics(
                 metrics["tool_end_TP"] = (target_tool_end[target_tool_end==1] == predicted_tool_end[target_tool_end==1]).mean()
             else:
                 metrics["tool_end_TP"] = 0.0
+
+        # Stage 2 / any stage with skill labels: append skill classifier accuracy
+        if len(skill_pred_eval) > 0:
+            metrics["skill_clf_accuracy"] = float(
+                (skill_pred_eval == skill_label_eval).sum()
+            ) / len(skill_label_eval)
     except Exception as e:
         print(e)
         traceback.print_exc()
@@ -315,10 +337,13 @@ class TrainRunner:
                 # Get the training state of the heads
                 tune_tool_end = getattr(backbone, "tune_tool_end", False)
                 tokenizer = getattr(backbone, "eagle_tokenizer", None)
-                
+                action_head = getattr(model, "action_head", None)
+                tune_skill_clf = getattr(action_head, "tune_skill_clf", False)
+
                 compute_metrics_func = partial(
                     compute_metrics,
                     tune_tool_end=tune_tool_end,
+                    tune_skill_clf=tune_skill_clf,
                     special_token_ids_A=backbone.special_token_ids_A.cpu().numpy() if hasattr(backbone, "special_token_ids_A") else None,
                     special_token_ids_B=backbone.special_token_ids_B.cpu().numpy() if hasattr(backbone, "special_token_ids_B") else None,
                     skills_end_id=getattr(backbone, "skills_end", None),

@@ -37,6 +37,7 @@ import pickle
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, ValidationError
+import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -245,6 +246,7 @@ class LeRobotSingleDataset(Dataset):
             with open(skill_annotation_path, 'r') as _f:
                 _raw = json.load(_f)
             self._skill_lookup = {}
+            _ep_key_new = 0
             for _ep_key, _ep_val in _raw.items():
                 _segs = []
                 for _seg in _ep_val.get('segments', []):
@@ -256,18 +258,33 @@ class LeRobotSingleDataset(Dataset):
                             _seg.get('primary_action_verb', '[ACTIONS]')
                         )
                     _segs.append((_seg['start_frame'], _seg['end_frame'], _skill_text))
-                self._skill_lookup[int(_ep_key)] = _segs
+                # self._skill_lookup[int(_ep_key)] = _segs
+                self._skill_lookup[_ep_key_new] = _segs
+                _ep_key_new += 1
             total_segs = sum(len(v) for v in self._skill_lookup.values())
             print(f"[skill_annotation] Loaded {len(self._skill_lookup)} episodes, "
                   f"{total_segs} skill segments from {skill_annotation_path}")
 
+        # Build skill vocab for skill_cls mode (also available to other modes for reference)
+        self._skill_vocab: list[str] = []
+        self._skill2id: dict[str, int] = {}
+        if self._skill_lookup is not None:
+            _vocab_set: set[str] = set()
+            for _segs in self._skill_lookup.values():
+                for _, _, _txt in _segs:
+                    _vocab_set.add(_txt)
+            self._skill_vocab = sorted(_vocab_set)
+            self._skill2id = {s: i for i, s in enumerate(self._skill_vocab)}
+            print(f"[skill_cls vocab] {len(self._skill_vocab)} classes: {self._skill_vocab}")
+
         # --- Windowing Logic Control ---
-        # Options: 'step', 'fixed', 'block_prefix', 'sliding_prefix', 'skill_action'
+        # Options: 'step', 'fixed', 'block_prefix', 'sliding_prefix', 'skill_action', 'skill_cls'
         # "step": original GR00T settings
         # "fixed": Produces 1-10, 11-20, 21-30 (Fixed length, jumps by length).
         # "block_prefix": Produces 1-2...1-10, 11-12... (Expands prefixes, then jumps to next block).
         # "sliding_prefix": Produces 1-2...1-10, 2-3... (Expands prefixes, slides by 1).
         # "skill_action": single-frame, [TOOLS]/[ACTIONS] target, 16-step action chunk for all frames
+        # "skill_cls": single-frame, no skill text in prompt, returns skill_id int for cls
 
         self.frame_type = frame_type
         self.windowing_mode = windowing_mode
@@ -315,6 +332,10 @@ class LeRobotSingleDataset(Dataset):
         elif self.windowing_mode == 'skill_action':
             self._window_steps = self._get_all_windows_skill_action()
             print(f"Loading {len(self._window_steps)} skill_action windows")
+        elif self.windowing_mode == 'skill_cls':
+            self._window_steps = self._get_all_windows_skill_action()
+            print(f"Loading {len(self._window_steps)} skill_cls windows "
+                  f"| vocab_size={len(self._skill_vocab)}")
         else:
             self._window_steps = self._get_all_windows()
             print(f"Loading {len(self._window_steps)} data for tool-use experiments")
@@ -1241,6 +1262,25 @@ class LeRobotSingleDataset(Dataset):
                 print(f"  annotation_source: {'JSON' if self._skill_lookup is not None else 'parquet'}")
                 self._sa_debug_count += 1
             
+            return dict_transformed
+
+        elif self.windowing_mode == 'skill_cls':
+            #########################################
+            # Skill Classification Training
+            # No skill text injected into prompt — model sees only the task instruction.
+            # Returns skill_id (int64 scalar) for an external classification head.
+            #########################################
+            (tid, frame_idx) = self._window_steps[index][0]
+            dict_transformed = self.transforms(self.get_step_data(tid, frame_idx))
+
+            # Resolve raw skill text → integer id (-1 if outside any annotated segment)
+            skill_id = -1
+            if self._skill_lookup is not None:
+                for _s, _e, _skill_text in self._skill_lookup.get(tid, []):
+                    if _s <= frame_idx <= _e:
+                        skill_id = self._skill2id.get(_skill_text, -1)
+                        break
+            dict_transformed['skill_id'] = torch.tensor(skill_id, dtype=torch.long)
             return dict_transformed
 
         else:

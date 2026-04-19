@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 CACHE_DIR = "/fs/nexus-projects/wilddiffusion/cache"
 CACHE_DIR = os.getenv("CACHE_DIR", CACHE_DIR)
@@ -172,6 +173,31 @@ class ArgsConfig:
     use_task_adapter: bool = False
     """Add FiLM task-conditioned adapters after state_encoder, action_encoder, and action_decoder. Requires use_task_router=True."""
 
+    # Skill embedding (Stage 1 + Stage 2)
+    use_skill_emb: bool = False
+    """Enable skill embedding module: MLP classifier (Stage 1) + learnable skill token concat (Stage 2). Gated; default=False keeps full backward compatibility."""
+
+    skill_emb_dim: int = 256
+    """Dimension of each learnable skill embedding vector in the bank."""
+
+    skill_proj_hidden_dim: int = 256
+    """Hidden dim of the MLP projector used in the skill classifier."""
+
+    skill_clf_coeff: float = 1.0
+    """Weight for cross-entropy skill classification loss."""
+
+    skill_div_coeff: float = 0.01
+    """Weight for orthogonality diversity loss on skill embedding bank."""
+
+    skill_norm_coeff: float = 0.01
+    """Weight for non-zero norm loss on skill embedding bank (prevents collapse to zero)."""
+
+    tune_skill_clf: bool = False
+    """Stage 1: train only skill MLP projector + classifier (VLM frozen). use_skill_emb must be True."""
+
+    tune_skill_emb: bool = False
+    """Stage 2: train skill embedding bank + projection + DiT (VLM + classifier frozen). use_skill_emb must be True."""
+
     freeze_embeddings: bool = False
     """Whether to fine-tune the embedding model."""
 
@@ -238,6 +264,27 @@ class ArgsConfig:
     # Mixture dataset parameters
     balance_trajectory_weights: bool = True
     """Used in LeRobotMixtureDataset. If True, sample trajectories within a dataset weighted by their length; otherwise, equal weighting."""
+
+
+#####################################################################################
+# skill vocab helpers
+#####################################################################################
+
+
+def _discover_skill_vocab(annotation_path: str, skill_label_type: str) -> list[str]:
+    """Scan skill annotation JSON and return a sorted list of unique skill labels."""
+    with open(annotation_path) as f:
+        data = json.load(f)
+    verbs: set[str] = set()
+    for ep_val in data.values():
+        for seg in ep_val.get("segments", []):
+            if skill_label_type == "primary_action_verb":
+                v = seg.get("primary_action_verb")
+            else:
+                v = seg.get("skill") or seg.get("primary_action_verb")
+            if v:
+                verbs.add(v.strip())
+    return sorted(verbs)
 
 
 #####################################################################################
@@ -330,6 +377,16 @@ def main(config: ArgsConfig):
     # First, get the data config to determine action horizon
     data_action_horizon = len(data_config_cls.action_indices)
 
+    # Discover skill vocab from annotation JSON (needed before model init when use_skill_emb=True)
+    skill_vocab: list[str] | None = None
+    num_skills = 1
+    if config.use_skill_emb:
+        assert config.skill_annotation_path is not None, \
+            "--skill_annotation_path required when --use_skill_emb is set"
+        skill_vocab = _discover_skill_vocab(config.skill_annotation_path, config.skill_label_type)
+        num_skills = len(skill_vocab)
+        print(f"[SkillEmb] Discovered {len(skill_vocab)} skills: {skill_vocab}")
+
     # Load model
     # training parameters
     pred_nextstep = False
@@ -346,6 +403,16 @@ def main(config: ArgsConfig):
         tune_special_B=config.tune_special_B,  # backbone's embedding
         tune_tool_end=config.tune_tool_end,
         tune_trace_projector=config.tune_trace_projector,
+        use_skill_emb=config.use_skill_emb,
+        num_skills=num_skills,
+        tune_skill_clf=config.tune_skill_clf,
+        tune_skill_emb=config.tune_skill_emb,
+        skill_vocab=skill_vocab,
+        skill_emb_dim=config.skill_emb_dim,
+        skill_proj_hidden_dim=config.skill_proj_hidden_dim,
+        skill_clf_coeff=config.skill_clf_coeff,
+        skill_div_coeff=config.skill_div_coeff,
+        skill_norm_coeff=config.skill_norm_coeff,
         pred_nextstep=pred_nextstep
     )
 
@@ -381,7 +448,10 @@ def main(config: ArgsConfig):
 
         # Set trainable parameters for the new action head
         model.action_head.set_trainable_parameters(
-            tune_projector=config.tune_projector, tune_diffusion_model=config.tune_diffusion_model
+            tune_projector=config.tune_projector,
+            tune_diffusion_model=config.tune_diffusion_model,
+            tune_skill_clf=config.tune_skill_clf,
+            tune_skill_emb=config.tune_skill_emb,
         )
 
     # ADDED: reload special embed after pretrained
@@ -527,6 +597,27 @@ def main(config: ArgsConfig):
         print(f"[TaskAdapter] Injected FiLM adapters (feature_dim={input_emb_dim}/{input_emb_dim}/{action_dim}, task_emb_dim={backbone_emb_dim})")
         print(f"[TaskAdapter] Trainable: task_emb_bank + router + state_adapter + action_adapter + decoder_adapter")
 
+    # --- Skill Embedding: modules are initialized in __init__ via patched config in from_pretrained ---
+    if config.use_skill_emb:
+        assert skill_vocab is not None  # guaranteed by discovery step above
+        ah = model.action_head
+        if "cls_stage" not in config.base_model_path:
+            # Fresh initialization for skill params not present in the base pretrained checkpoint
+            for module in ah.skill_proj.modules():
+                if isinstance(module, torch.nn.Linear):
+                    torch.nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
+                    if module.bias is not None:
+                        torch.nn.init.zeros_(module.bias)
+            torch.nn.init.xavier_uniform_(ah.skill_clf.weight)
+            torch.nn.init.zeros_(ah.skill_clf.bias)
+            print(f"[SkillEmb] Skill modules (skill_proj / skill_clf) freshly initialized (num_skills={num_skills})")
+        
+        if "cls_stage2" not in config.base_model_path:
+            torch.nn.init.normal_(ah.skill_emb_bank.weight, mean=0.0, std=0.02)
+            torch.nn.init.xavier_uniform_(ah.skill_emb_proj.weight)
+            torch.nn.init.zeros_(ah.skill_emb_proj.bias)
+            print(f"[SkillEmb] Skill modules (skill_emb_bank / skill_emb_proj) freshly initialized (num_skills={num_skills})")
+
     train_action_head = False
     if 'both' in config.dataset_path[0] and 'skip_action' not in config.run_name:
         train_action_head = True
@@ -549,7 +640,7 @@ def main(config: ArgsConfig):
         # tie model weight
         tie_all_special_weights(model)
         # check wether head & embeddings shared the same weight
-        if config.windowing_mode not in ('step', 'skill_action', ):
+        if config.windowing_mode not in ('step', 'skill_action', 'skill_cls'):
             model.action_head.requires_grad_(train_action_head)
         elif config.windowing_mode == 'skill_action':
             model.action_head.requires_grad_(config.tune_diffusion_model)
@@ -560,7 +651,8 @@ def main(config: ArgsConfig):
         print("[skill_action_v2] backbone.skill_action_mode = True")
 
     _ = list_trainable_parameter_names(model)
-            
+    import pdb;pdb.set_trace()
+
     # 2.1 modify training args
     training_args = TrainingArguments(
         output_dir=config.output_dir,
