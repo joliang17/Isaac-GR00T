@@ -69,7 +69,6 @@ python scripts/gr00t_finetune.py \
   --skill_vocab "close" "pick" "place" "turn" \
   --use_skill_emb \
   --tune_skill_emb \
-  --tune_skill_clf \
   --tune_diffusion_model \
   --do_eval
 

@@ -130,7 +130,7 @@ def compute_tool_end_counts(
 def compute_metrics(
     eval_preds,
     tune_tool_end=False,
-    tune_skill_clf=False,
+    use_skill_emb=False,
     special_token_ids_A=None,
     special_token_ids_B=None,
     skills_end_id=None,
@@ -140,7 +140,7 @@ def compute_metrics(
 ):
     """
     Branched evaluation logic:
-    - If tune_skill_clf: Compute skill classifier accuracy only (VLM backbone frozen).
+    - If use_skill_emb: Compute skill classifier accuracy only (VLM backbone frozen).
     - If tune_tool_end: Focus on Binary Classifier accuracy for the heads.
     - If not tune_tool_end: Focus on Token Generation accuracy (Special A/B).
     """
@@ -149,7 +149,7 @@ def compute_metrics(
         (lm_preds, predicted_tool_end, target_tool_end, cur_pred_id_eval, cur_label_id_eval, all_pred_id_eval, all_label_id_eval, skill_pred_eval, skill_label_eval), labels = eval_preds
 
         # Stage 1: VLM backbone frozen — skip token decode and only report skill accuracy
-        if tune_skill_clf:
+        if use_skill_emb:
             if len(skill_pred_eval) > 0:
                 metrics["skill_clf_accuracy"] = float(
                     (skill_pred_eval == skill_label_eval).sum()
@@ -338,12 +338,11 @@ class TrainRunner:
                 tune_tool_end = getattr(backbone, "tune_tool_end", False)
                 tokenizer = getattr(backbone, "eagle_tokenizer", None)
                 action_head = getattr(model, "action_head", None)
-                tune_skill_clf = getattr(action_head, "tune_skill_clf", False)
-
+                use_skill_emb = getattr(action_head.config, "use_skill_emb", False)
                 compute_metrics_func = partial(
                     compute_metrics,
                     tune_tool_end=tune_tool_end,
-                    tune_skill_clf=tune_skill_clf,
+                    use_skill_emb=use_skill_emb,
                     special_token_ids_A=backbone.special_token_ids_A.cpu().numpy() if hasattr(backbone, "special_token_ids_A") else None,
                     special_token_ids_B=backbone.special_token_ids_B.cpu().numpy() if hasattr(backbone, "special_token_ids_B") else None,
                     skills_end_id=getattr(backbone, "skills_end", None),
