@@ -511,14 +511,6 @@ def main(config: ArgsConfig):
 
         print("Initialized tool_end_head with custom weights.")
 
-    if config.tune_trace_projector and hasattr(model.backbone, "trace_projector") and 'trace' not in config.base_model_path:
-        with torch.no_grad():
-            model.backbone.trace_projector.weight.data.normal_(mean=0.0, std=0.02)
-            model.backbone.trace_projector.bias.data.zero_()
-            model.backbone.trace_projector.bias.data[1] = -5.0 
-
-        print("Initialized trace_projector with custom weights.")
-
     # Set the model's compute_dtype to bfloat16
     model.compute_dtype = "bfloat16"
     model.config.compute_dtype = "bfloat16"
@@ -651,7 +643,6 @@ def main(config: ArgsConfig):
         print("[skill_action_v2] backbone.skill_action_mode = True")
 
     _ = list_trainable_parameter_names(model)
-    import pdb;pdb.set_trace()
 
     # 2.1 modify training args
     training_args = TrainingArguments(
