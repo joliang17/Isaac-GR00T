@@ -1,12 +1,12 @@
 #!/bin/bash
 
-#SBATCH --job-name=libero_eval_prefix2
-#SBATCH --output=slurm_output/libero_eval_prefix2.log
-#SBATCH --error=slurm_output/libero_eval_prefix2.log
+#SBATCH --job-name=libero_eval_half10
+#SBATCH --output=slurm_output/libero_eval_half10.log
+#SBATCH --error=slurm_output/libero_eval_half10.log
 #SBATCH --time=48:00:00
 #SBATCH --account=scavenger 
 #SBATCH --partition=scavenger
-#SBATCH --gres=gpu:rtxa6000:1
+#SBATCH --gres=gpu:rtxa5000:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 
@@ -28,13 +28,13 @@ python3 libero_scripts/libero_eval.py \
     --num_trials_per_task 10 \
     --port 5555 \
     --headless True \
-    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero_10_base/checkpoint-60000" \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half/checkpoint-60000" \
     --embodiment_tag new_embodiment \
     --data_config libero_original \
     --denoising_steps 8 \
     --normalize_action \
     --add_prefix \
-    --action_horizon 16
+    --action_horizon 11
     # --model_path youliangtan/gr00t-n1.5-libero-long-posttrain \
 
 # python3 libero_scripts/libero_eval_interleaved.py \

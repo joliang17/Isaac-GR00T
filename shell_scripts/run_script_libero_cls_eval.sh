@@ -24,6 +24,10 @@ export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 export CUDA_VISIBLE_DEVICES=0
 
 SKILL_JSON="/fs/nexus-scratch/yliang17/Research/VLA/AtomicVLA/data_split_json/libero_lerobot_addskill_10_half.json"
+LEROBOT_DATASET="/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10_half"
+
+SKILL_JSON="/fs/nexus-scratch/yliang17/Research/VLA/AtomicVLA/data_split_json/libero_lerobot_addskill_10_half_theother.json"
+LEROBOT_DATASET="/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10_half_theother"
 
 # TASK_NAME=libero10_256_half_cls_stage1
 
@@ -46,11 +50,11 @@ SKILL_JSON="/fs/nexus-scratch/yliang17/Research/VLA/AtomicVLA/data_split_json/li
 #   # --dataloader_num_workers 0
 
 
-TASK_NAME=libero10_256_half_cls_stage2
+TASK_NAME=libero10_256_half_cls_stage1_eval
 
 python scripts/gr00t_finetune.py \
   --num-gpus 1 \
-  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10_half" \
+  --dataset-path "${LEROBOT_DATASET}" \
   --windowing_mode "skill_cls" \
   --batch-size 32 \
   --data_config "libero_original" \
@@ -62,8 +66,10 @@ python scripts/gr00t_finetune.py \
   --run_name "${TASK_NAME}" \
   --skill_annotation_path "${SKILL_JSON}" \
   --skill_label_type "primary_action_verb" \
+  --skill_vocab "close" "pick" "place" "turn" \
   --use_skill_emb \
   --tune_skill_emb \
+  --tune_skill_clf \
   --tune_diffusion_model \
   --do_eval
 

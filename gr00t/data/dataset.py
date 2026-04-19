@@ -192,6 +192,7 @@ class LeRobotSingleDataset(Dataset):
         action_only: bool = False,
         skill_annotation_path: str | None = None,
         skill_label_type: str = 'skill',
+        skill_vocab: list[str] | None = None,
     ):
         """
         Initialize the dataset.
@@ -269,11 +270,14 @@ class LeRobotSingleDataset(Dataset):
         self._skill_vocab: list[str] = []
         self._skill2id: dict[str, int] = {}
         if self._skill_lookup is not None:
-            _vocab_set: set[str] = set()
-            for _segs in self._skill_lookup.values():
-                for _, _, _txt in _segs:
-                    _vocab_set.add(_txt)
-            self._skill_vocab = sorted(_vocab_set)
+            if skill_vocab is not None:
+                self._skill_vocab = skill_vocab
+            else:
+                _vocab_set: set[str] = set()
+                for _segs in self._skill_lookup.values():
+                    for _, _, _txt in _segs:
+                        _vocab_set.add(_txt)
+                self._skill_vocab = sorted(_vocab_set)
             self._skill2id = {s: i for i, s in enumerate(self._skill_vocab)}
             print(f"[skill_cls vocab] {len(self._skill_vocab)} classes: {self._skill_vocab}")
 

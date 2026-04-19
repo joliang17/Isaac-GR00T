@@ -115,6 +115,9 @@ class ArgsConfig:
     'skill': full phrase, e.g. "pick up the white mug".
     'primary_action_verb': atomic verb only, e.g. "pick"."""
 
+    skill_vocab: List[str] | None = None
+    """Fixed skill vocabulary list. If provided, overrides automatic discovery from the annotation JSON."""
+
     max_steps: int = 10000
     """Maximum number of training steps."""
 
@@ -302,6 +305,19 @@ def main(config: ArgsConfig):
     modality_configs = data_config_cls.modality_config()
     transforms = data_config_cls.transform()
 
+    # Resolve skill vocab early so it can be passed to both dataset and model
+    skill_vocab: list[str] | None = None
+    num_skills = 1
+    if config.use_skill_emb:
+        assert config.skill_annotation_path is not None, \
+            "--skill_annotation_path required when --use_skill_emb is set"
+        if config.skill_vocab is not None:
+            skill_vocab = config.skill_vocab
+        else:
+            skill_vocab = _discover_skill_vocab(config.skill_annotation_path, config.skill_label_type)
+        num_skills = len(skill_vocab)
+        print(f"[skill_cls vocab] {len(skill_vocab)} classes: {skill_vocab}")
+
     # 1.2 data loader: we will use either single dataset or mixture dataset
     if len(config.dataset_path) == 1:
         train_dataset = LeRobotSingleDataset(
@@ -320,6 +336,7 @@ def main(config: ArgsConfig):
             toolend_upsample_ratio=config.toolend_upsample_ratio,
             skill_annotation_path=config.skill_annotation_path,
             skill_label_type=config.skill_label_type,
+            skill_vocab=skill_vocab,
             # action_only=config.tune_diffusion_model,
         )
 
@@ -348,6 +365,7 @@ def main(config: ArgsConfig):
                 toolend_upsample_ratio=config.toolend_upsample_ratio,
                 skill_annotation_path=config.skill_annotation_path,
                 skill_label_type=config.skill_label_type,
+                skill_vocab=skill_vocab,
                 # action_only=config.tune_diffusion_model,
             )
             single_datasets.append(dataset)
@@ -376,16 +394,6 @@ def main(config: ArgsConfig):
     # ------------ step 2: load model ------------
     # First, get the data config to determine action horizon
     data_action_horizon = len(data_config_cls.action_indices)
-
-    # Discover skill vocab from annotation JSON (needed before model init when use_skill_emb=True)
-    skill_vocab: list[str] | None = None
-    num_skills = 1
-    if config.use_skill_emb:
-        assert config.skill_annotation_path is not None, \
-            "--skill_annotation_path required when --use_skill_emb is set"
-        skill_vocab = _discover_skill_vocab(config.skill_annotation_path, config.skill_label_type)
-        num_skills = len(skill_vocab)
-        print(f"[SkillEmb] Discovered {len(skill_vocab)} skills: {skill_vocab}")
 
     # Load model
     # training parameters
@@ -701,7 +709,7 @@ def main(config: ArgsConfig):
     )
 
     # 2.3 run experiment
-    # experiment.eval()
+    experiment.eval()
     experiment.train()
 
 
