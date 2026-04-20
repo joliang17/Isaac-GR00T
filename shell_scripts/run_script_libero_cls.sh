@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=libero_training_skill2
-#SBATCH --output=slurm_output/libero_training_skill2.log
-#SBATCH --error=slurm_output/libero_training_skill2.log
+#SBATCH --job-name=libero_training_cls
+#SBATCH --output=slurm_output/libero_training_cls.log
+#SBATCH --error=slurm_output/libero_training_cls.log
 #SBATCH --time=48:00:00
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director
@@ -68,3 +68,16 @@ python scripts/gr00t_finetune.py \
   --do_eval
 
   # --dataloader_num_workers 0
+
+
+python3 libero_scripts/libero_eval.py \
+    --task_suite_name libero_10 \
+    --num_steps_wait 10 \
+    --num_trials_per_task 10 \
+    --port 5555 \
+    --headless True \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half_cls_stage2/checkpoint-60000" \
+    --embodiment_tag new_embodiment \
+    --data_config libero_original \
+    --denoising_steps 8 \
+    --action_horizon 1 \

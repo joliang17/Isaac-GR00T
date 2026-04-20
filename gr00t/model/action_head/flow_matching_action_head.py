@@ -765,6 +765,8 @@ class FlowmatchingActionHead(nn.Module):
             pooled = self._masked_mean_pool(vl_embs, vl_attn_mask)  # (B, D)
             skill_logits = self.skill_clf(self.skill_proj(pooled))
             skill_idx = skill_logits.argmax(dim=-1)                  # (B,)
+            _vocab = ['close', 'pick', 'place', 'turn']
+            print(f"[SKILL] skill={[_vocab[i] for i in skill_idx.tolist()]} idx={skill_idx.tolist()}")
             skill_token = self.skill_emb_proj(
                 self.skill_emb_bank(skill_idx)
             ).unsqueeze(1)  # (B, 1, input_emb_dim)

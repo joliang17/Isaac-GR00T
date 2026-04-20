@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=libero_training_skill2
-#SBATCH --output=slurm_output/libero_training_skill2.log
-#SBATCH --error=slurm_output/libero_training_skill2.log
+#SBATCH --job-name=libero_training_full
+#SBATCH --output=slurm_output/libero_training_full.log
+#SBATCH --error=slurm_output/libero_training_full.log
 #SBATCH --time=48:00:00
 #SBATCH --account=cml-director
 #SBATCH --partition=cml-director
@@ -23,7 +23,7 @@ export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 
 DATASET=libero10_256_half
-TASK_NAME=libero10_256_half
+TASK_NAME=libero10_256_full_v2
 CUDA_VISIBLE_DEVICES=0
 # TASK_NAME=libero_finetuned
 
@@ -31,7 +31,7 @@ CUDA_VISIBLE_DEVICES=0
 
 python scripts/gr00t_finetune.py \
   --num-gpus 1 \
-  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/LIBERO/libero10_256_half" \
+  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10" \
   --windowing_mode "step" \
   --batch-size 32 \
   --data_config "libero_original" \

@@ -26,8 +26,8 @@ export CUDA_VISIBLE_DEVICES=0
 SKILL_JSON="/fs/nexus-scratch/yliang17/Research/VLA/AtomicVLA/data_split_json/libero_lerobot_addskill_10_half.json"
 LEROBOT_DATASET="/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10_half"
 
-SKILL_JSON="/fs/nexus-scratch/yliang17/Research/VLA/AtomicVLA/data_split_json/libero_lerobot_addskill_10_half_theother.json"
-LEROBOT_DATASET="/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10_half_theother"
+SKILL_JSON="/fs/nexus-scratch/yliang17/Research/VLA/AtomicVLA/data_split_json/libero_lerobot_addskill_goal.json"
+LEROBOT_DATASET="/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_goal"
 
 # TASK_NAME=libero10_256_half_cls_stage1
 
@@ -66,7 +66,7 @@ python scripts/gr00t_finetune.py \
   --run_name "${TASK_NAME}" \
   --skill_annotation_path "${SKILL_JSON}" \
   --skill_label_type "primary_action_verb" \
-  --skill_vocab "close" "pick" "place" "turn" \
+  --skill_vocab "open" "pick" "place" "turn" \
   --use_skill_emb \
   --tune_skill_emb \
   --tune_diffusion_model \

@@ -709,7 +709,7 @@ def main(config: ArgsConfig):
     )
 
     # 2.3 run experiment
-    experiment.eval()
+    # experiment.eval()
     experiment.train()
 
 
