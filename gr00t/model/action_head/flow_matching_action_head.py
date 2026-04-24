@@ -589,6 +589,11 @@ class FlowmatchingActionHead(nn.Module):
                     self.skill_emb_bank(skill_idx)
                 ).unsqueeze(1)
 
+            # # Soft weighted sum over all skill embeddings (train and inference fallback)
+            # skill_weights = torch.softmax(skill_logits, dim=-1)          # (B, K)
+            # skill_emb = skill_weights @ self.skill_emb_bank.weight        # (B, skill_emb_dim)
+            # skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)    # (B, 1, input_emb_dim)
+
             if self.tune_skill_clf:
                 # Stage 1: classifier-only loss
                 assert skill_clf_loss is not None, "skill_clf_loss is None in Stage 1 — check skill_label in batch"
@@ -758,7 +763,7 @@ class FlowmatchingActionHead(nn.Module):
         if task_emb is not None:
             state_features = self.state_adapter(state_features, task_emb)
 
-        # Compute skill token once for all denoising steps (classifier argmax at inference).
+        # Compute skill token once for all denoising steps (soft weighted routing at inference).
         skill_token = None
         if self.config.use_skill_emb:
             vl_attn_mask = backbone_output.get("backbone_attention_mask")
@@ -798,10 +803,10 @@ class FlowmatchingActionHead(nn.Module):
             # Join state, action, and optional skill token along sequence dimension.
             # skill_emb: [state(1) | actions(T) | skill(1)]
             # original:  [state(1) | future(32) | actions(T)]
+            future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
             if self.config.use_skill_emb and skill_token is not None:
-                sa_embs = torch.cat((state_features, action_features, skill_token), dim=1)
+                sa_embs = torch.cat((state_features, future_tokens, action_features, skill_token), dim=1)
             else:
-                future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
                 sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
 
             # Run model forward.
@@ -816,7 +821,9 @@ class FlowmatchingActionHead(nn.Module):
 
             # Slice action tokens matching the layout used in forward().
             if self.config.use_skill_emb:
-                pred_velocity = pred[:, 1 : 1 + self.action_horizon]
+                concat_emb = torch.cat((state_features, future_tokens), dim=1)
+                start_index = concat_emb.shape[1]
+                pred_velocity = pred[:, start_index : start_index + self.action_horizon]
             else:
                 pred_velocity = pred[:, -self.action_horizon:]
 

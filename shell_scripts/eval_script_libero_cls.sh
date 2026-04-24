@@ -32,4 +32,43 @@ python3 libero_scripts/libero_eval.py \
     --embodiment_tag new_embodiment \
     --data_config libero_original \
     --denoising_steps 8 \
-    --action_horizon 1 \
+    --action_horizon 10 \
+
+
+python3 libero_scripts/libero_eval.py \
+    --task_suite_name libero_10 \
+    --num_steps_wait 10 \
+    --num_trials_per_task 10 \
+    --port 5555 \
+    --headless True \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half_cls_stage2/checkpoint-60000" \
+    --embodiment_tag new_embodiment \
+    --data_config libero_original \
+    --denoising_steps 8 \
+    --action_horizon 16 \
+
+
+python3 libero_scripts/libero_eval.py \
+    --task_suite_name libero_10 \
+    --num_steps_wait 10 \
+    --num_trials_per_task 10 \
+    --port 5555 \
+    --headless True \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half_v2/checkpoint-60000" \
+    --embodiment_tag new_embodiment \
+    --data_config libero_original \
+    --denoising_steps 8 \
+    --action_horizon 10 \
+
+
+python3 libero_scripts/libero_eval.py \
+    --task_suite_name libero_10 \
+    --num_steps_wait 10 \
+    --num_trials_per_task 10 \
+    --port 5555 \
+    --headless True \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half_v2/checkpoint-60000" \
+    --embodiment_tag new_embodiment \
+    --data_config libero_original \
+    --denoising_steps 8 \
+    --action_horizon 16 \

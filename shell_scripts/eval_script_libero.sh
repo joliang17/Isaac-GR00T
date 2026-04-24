@@ -28,12 +28,25 @@ python3 libero_scripts/libero_eval.py \
     --num_trials_per_task 10 \
     --port 5555 \
     --headless True \
-    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half/checkpoint-60000" \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_full_v2/checkpoint-60000" \
     --embodiment_tag new_embodiment \
     --data_config libero_original \
     --denoising_steps 8 \
     --action_horizon 5 \
-    --normalize_action \
+
+
+python3 libero_scripts/libero_eval.py \
+    --task_suite_name libero_10 \
+    --num_steps_wait 10 \
+    --num_trials_per_task 10 \
+    --port 5555 \
+    --headless True \
+    --model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half_v2/checkpoint-60000" \
+    --embodiment_tag new_embodiment \
+    --data_config libero_original \
+    --denoising_steps 8 \
+    --action_horizon 5 \
+    # --normalize_action \
     # --add_prefix \
     # --model_path youliangtan/gr00t-n1.5-libero-long-posttrain \
 

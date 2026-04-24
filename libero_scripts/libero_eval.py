@@ -54,7 +54,8 @@ from libero_scripts.gpt_call import generate_instruction_variants
 from gr00t.model.policy import Gr00tPolicy
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from libero.libero import benchmark
-RANDOM_SEED=78
+RANDOM_SEED=42
+# 78
 set_seed(RANDOM_SEED)
 log_dir = "logs/"
 os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
@@ -212,7 +213,7 @@ def eval_libero(cfg) -> None:
                 total_episodes += 1
 
                 # Save a replay video of the episode
-                save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, model_name=str(RANDOM_SEED) + '_' + model_name)
+                save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, model_name=f"{RANDOM_SEED}_{model_name}_{cfg.action_horizon}")
 
                 # Log current results
                 print(f"Success: {done}")
