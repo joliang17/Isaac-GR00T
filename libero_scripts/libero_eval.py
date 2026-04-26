@@ -68,13 +68,35 @@ def extract_name(s):
     else:
         return Path(s).parts[-2]     # filesystem path
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "1"):
+        return True
+    if v.lower() in ("no", "false", "f", "0"):
+        return False
+    raise argparse.ArgumentTypeError("Boolean value expected.")
+
+def action_chunk_len(action_chunk, action_keys):
+    return len(np.atleast_1d(action_chunk[f"action.{action_keys[0]}"]))
+
 def eval_libero(cfg) -> None:
-    print(f"Normalized action or not: {args.normalize_action}")
+    if cfg.action_horizon <= 0:
+        raise ValueError(f"action_horizon must be positive, got {cfg.action_horizon}")
+
+    print(f"Normalized action or not: {cfg.normalize_action}")
     # Initialize LIBERO task suite
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[cfg.task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
     print(f"Task suite: {cfg.task_suite_name}")
+
+    try:
+        model_name = extract_name(cfg.model_path)
+    except Exception:
+        import hashlib
+        model_name = hashlib.md5(cfg.model_path.encode()).hexdigest()[:8]
+        print(f"Model path: {cfg.model_path}, saved folder: {model_name}")
 
     log_suffix = f"model{model_name}_task{cfg.task_suite_name}_seed{cfg.random_seed}_h{cfg.action_horizon}"
 
@@ -88,19 +110,13 @@ def eval_libero(cfg) -> None:
 
     # gr00t_policy = GR00TPolicy(host="localhost", port=cfg.port, headless=cfg.headless)
     gr00t_policy = Gr00tPolicy(
-        model_path=args.model_path,
+        model_path=cfg.model_path,
         modality_config=modality_config,
         modality_transform=modality_transform,
-        embodiment_tag=args.embodiment_tag,
-        denoising_steps=args.denoising_steps,
+        embodiment_tag=cfg.embodiment_tag,
+        denoising_steps=cfg.denoising_steps,
         device="cuda" if torch.cuda.is_available() else "cpu",
     )
-    try:
-        model_name = extract_name(args.model_path)
-    except:
-        import hashlib
-        model_name = hashlib.md5(args.model_path.encode()).hexdigest()[:8]
-        print(f"Model path: {args.model_path}, saved folder: {model_name}")
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
@@ -115,119 +131,134 @@ def eval_libero(cfg) -> None:
 
         # Initialize LIBERO environment and task description
         env, task_description = get_libero_env(task, resolution=256)
-        
+
         # Start episodes
         task_episodes, task_successes = 0, 0
-        for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
-            ori_desc = task.language
-            # dict_variant, _ = generate_instruction_variants(task_description)
+        try:
+            for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
+                ori_desc = task.language
+                # dict_variant, _ = generate_instruction_variants(task_description)
 
-            # empty description
-            list_description = [ori_desc]
-            # list_description = []
-            # list_description.append("")
-            # list_description.extend(dict_variant['paraphrases'])
-            # list_description.extend(dict_variant['contrasts'])
+                # empty description
+                list_description = [ori_desc]
+                # list_description = []
+                # list_description.append("")
+                # list_description.extend(dict_variant['paraphrases'])
+                # list_description.extend(dict_variant['contrasts'])
 
-            for task_description in tqdm.tqdm(list_description):
+                for task_description in tqdm.tqdm(list_description):
 
-                print(f"\nTask: {ori_desc}")
-                log_file.write(f"\nTask: {ori_desc}\n")
+                    print(f"\nTask: {ori_desc}")
+                    log_file.write(f"\nTask: {ori_desc}\n")
 
-                # Reset environment
-                env.reset()
+                    # Reset environment
+                    env.reset()
 
-                # Set initial states
-                obs = env.set_init_state(initial_states[episode_idx])
+                    # Set initial states
+                    obs = env.set_init_state(initial_states[episode_idx])
 
-                # Setup
-                t = 0
-                top_view = []
-                wrist_view = []
-                cached_action_chunk = None
-                chunk_idx = 0
-                if cfg.task_suite_name == "libero_spatial":
-                    max_steps = 220  # longest training demo has 193 steps
-                elif cfg.task_suite_name == "libero_object":
-                    max_steps = 280  # longest training demo has 254 steps
-                elif cfg.task_suite_name == "libero_goal":
-                    max_steps = 600  # longest training demo has 270 steps
-                elif cfg.task_suite_name == "libero_10":
-                    max_steps = 1000  # longest training demo has 505 steps
-                elif cfg.task_suite_name == "libero_90":
-                    max_steps = 400  # longest training demo has 373 steps
+                    # Setup
+                    t = 0
+                    top_view = []
+                    wrist_view = []
+                    cached_action_chunk = None
+                    chunk_idx = 0
+                    done = False
+                    if cfg.task_suite_name == "libero_spatial":
+                        max_steps = 220  # longest training demo has 193 steps
+                    elif cfg.task_suite_name == "libero_object":
+                        max_steps = 280  # longest training demo has 254 steps
+                    elif cfg.task_suite_name == "libero_goal":
+                        max_steps = 600  # longest training demo has 270 steps
+                    elif cfg.task_suite_name == "libero_10":
+                        max_steps = 1000  # longest training demo has 505 steps
+                    elif cfg.task_suite_name == "libero_90":
+                        max_steps = 400  # longest training demo has 373 steps
 
-                print(f"Starting episode {task_episodes+1}...")
-                log_file.write(f"Starting episode {task_episodes+1}...\n")
-                while t < max_steps + cfg.num_steps_wait:
-                    try:
-                        # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
-                        # and we need to wait for them to fall
-                        if t < cfg.num_steps_wait:
-                            obs, reward, done, info = env.step(get_libero_dummy_action())
-                            t += 1
-                            continue
-
-                        # # Get preprocessed image
-                        img, wrist_img = get_libero_image(obs)
-
-                        # # Save preprocessed image for replay video
-                        top_view.append(img)
-                        wrist_view.append(wrist_img)
-
-                        # Re-query model if no cached chunk or chunk is exhausted
-                        if cached_action_chunk is None or chunk_idx >= cfg.action_horizon:
-                            if args.add_prefix:
-                                obs_dict = process_observation(obs, skill_prefix + task_description, headless=args.headless)
-                            else:
-                                obs_dict = process_observation(obs, task_description, headless=args.headless)
-                            action_out, _, _, action_out_bs = gr00t_policy.get_action(obs_dict, mode='baseline')
-                            cached_action_chunk = action_out if action_out is not None else action_out_bs
-                            chunk_idx = 0
-                        # if normalize=True: gripper from model: [0, 1] will be normalized to [-1, 1]
-                        # if original training data is not normalized (-1, 1), no need ro norm (normalize_action = False)
-                        action = convert_to_libero_action(cached_action_chunk, action_keys, idx=chunk_idx, normalize=args.normalize_action)
-                        chunk_idx += 1
-
+                    print(f"Starting episode {task_episodes+1}...")
+                    log_file.write(f"Starting episode {task_episodes+1}...\n")
+                    while t < max_steps + cfg.num_steps_wait:
                         try:
-                            # Execute action in environment
-                            obs, reward, done, info = env.step(action.tolist())
-                        except:
-                            break
+                            # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
+                            # and we need to wait for them to fall
+                            if t < cfg.num_steps_wait:
+                                obs, reward, done, info = env.step(get_libero_dummy_action())
+                                t += 1
+                                continue
 
-                        if done:
-                            task_successes += 1
-                            total_successes += 1
-                            break
+                            # # Get preprocessed image
+                            img, wrist_img = get_libero_image(obs)
 
-                        t += 1
-                        # if t % 10 == 0:
-                        #     print(f"current t: {t}")
+                            # # Save preprocessed image for replay video
+                            top_view.append(img)
+                            wrist_view.append(wrist_img)
 
-                    except Exception as e:
-                        traceback.print_exc()
-                        print(f"Caught exception: {e}")
-                        log_file.write(f"Caught exception: {e}\n")
-                        sys.exit(-1)
-                        break
+                            # Re-query model if no cached chunk or chunk is exhausted
+                            if (
+                                cached_action_chunk is None
+                                or chunk_idx >= min(cfg.action_horizon, action_chunk_len(cached_action_chunk, action_keys))
+                            ):
+                                if cfg.add_prefix:
+                                    obs_dict = process_observation(obs, skill_prefix + task_description, headless=cfg.headless)
+                                else:
+                                    obs_dict = process_observation(obs, task_description, headless=cfg.headless)
+                                action_out, _, _, action_out_bs = gr00t_policy.get_action(obs_dict, mode='baseline')
+                                cached_action_chunk = action_out if action_out is not None else action_out_bs
+                                if cached_action_chunk is None:
+                                    raise RuntimeError("Policy returned no action chunk.")
+                                chunk_idx = 0
+                                if cfg.action_horizon > action_chunk_len(cached_action_chunk, action_keys):
+                                    msg = (
+                                        f"Requested action_horizon={cfg.action_horizon}, but model returned "
+                                        f"{action_chunk_len(cached_action_chunk, action_keys)} actions; clamping horizon."
+                                    )
+                                    print(msg)
+                                    log_file.write(msg + "\n")
+                            # if normalize=True: gripper from model: [0, 1] will be normalized to [-1, 1]
+                            # if original training data is not normalized (-1, 1), no need ro norm (normalize_action = False)
+                            action = convert_to_libero_action(cached_action_chunk, action_keys, idx=chunk_idx, normalize=cfg.normalize_action)
+                            chunk_idx += 1
 
-                task_episodes += 1
-                total_episodes += 1
+                            try:
+                                # Execute action in environment
+                                obs, reward, done, info = env.step(action.tolist())
+                            except Exception:
+                                break
 
-                # Save a replay video of the episode
-                save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, model_name=log_suffix)
+                            if done:
+                                task_successes += 1
+                                total_successes += 1
+                                break
 
-                # Log current results
-                print(f"Success: {done}")
-                print(f"# episodes completed so far: {total_episodes}")
-                print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
-                log_file.write(f"Success: {done}\n")
-                log_file.write(f"# episodes completed so far: {total_episodes}\n")
-                log_file.write(
-                    f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
-                )
-                log_file.flush()
-                # sys.exit(0)
+                            t += 1
+                            # if t % 10 == 0:
+                            #     print(f"current t: {t}")
+
+                        except Exception as e:
+                            traceback.print_exc()
+                            print(f"Caught exception: {e}")
+                            log_file.write(f"Caught exception: {e}\n")
+                            sys.exit(-1)
+
+                    task_episodes += 1
+                    total_episodes += 1
+
+                    # Save a replay video of the episode
+                    save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, model_name=log_suffix)
+
+                    # Log current results
+                    print(f"Success: {done}")
+                    print(f"# episodes completed so far: {total_episodes}")
+                    print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+                    log_file.write(f"Success: {done}\n")
+                    log_file.write(f"# episodes completed so far: {total_episodes}\n")
+                    log_file.write(
+                        f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
+                    )
+                    log_file.flush()
+                    # sys.exit(0)
+        finally:
+            env.close()
 
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
@@ -281,7 +312,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_steps_wait", type=int, default=10)
     parser.add_argument("--num_trials_per_task", type=int, default=5)
     parser.add_argument("--port", type=int, default=5555)
-    parser.add_argument("--headless", type=bool, default=True)
+    parser.add_argument("--headless", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--model_path", type=str, default="youliangtan/gr00t-n1.5-libero-long-posttrain")
     parser.add_argument("--embodiment_tag", type=str, default="new_embodiment")
     parser.add_argument("--data_config", type=str, default="libero_original")

@@ -117,6 +117,16 @@ def load_init_states(init_states_path: str):
     return torch.load(init_states_path)
 
 
+def extract_name(s: str) -> str:
+    if "/" in s and not s.startswith("/"):
+        return s.split("/")[0]
+    return Path(s).parts[-2]
+
+
+def action_chunk_len(action_chunk, action_keys):
+    return len(np.atleast_1d(action_chunk[f"action.{action_keys[0]}"]))
+
+
 # ---------------------------------------------------------------------------
 # Runtime environment perturbation (no pre-computed dataset available)
 # ---------------------------------------------------------------------------
@@ -151,9 +161,19 @@ def get_environment_perturbed_bddl(bddl_path: str, suite_name: str, task_name: s
 # ---------------------------------------------------------------------------
 
 def eval_libero_pro(args) -> None:
+    if args.action_horizon <= 0:
+        raise ValueError(f"action_horizon must be positive, got {args.action_horizon}")
+
     print(f"Task suite:        {args.task_suite_name}")
     print(f"Perturbation type: {args.perturbation_type}")
     print(f"Normalize action:  {args.normalize_action}")
+
+    try:
+        model_name = extract_name(args.model_path)
+    except Exception:
+        import hashlib
+        model_name = hashlib.md5(args.model_path.encode()).hexdigest()[:8]
+        print(f"Model path: {args.model_path}, saved folder: {model_name}")
 
     log_suffix = f"model{model_name}_task{args.task_suite_name}_pert{args.perturbation_type}_seed{args.random_seed}_h{args.action_horizon}"
     log_file = open(f"{log_dir}/libero_pro_eval_{log_suffix}.log", "w")
@@ -174,13 +194,6 @@ def eval_libero_pro(args) -> None:
         denoising_steps=args.denoising_steps,
         device="cuda" if torch.cuda.is_available() else "cpu",
     )
-
-    try:
-        from pathlib import Path as _P
-        model_name = _P(args.model_path).parts[-2] if args.model_path.startswith("/") else args.model_path.split("/")[0]
-    except Exception:
-        import hashlib
-        model_name = hashlib.md5(args.model_path.encode()).hexdigest()[:8]
 
     max_steps = MAX_STEPS_MAP.get(args.task_suite_name, 600)
 
@@ -290,11 +303,23 @@ def eval_libero_pro(args) -> None:
                     top_view.append(img)
                     wrist_view.append(wrist_img)
 
-                    if cached_action_chunk is None or chunk_idx >= args.action_horizon:
+                    if (
+                        cached_action_chunk is None
+                        or chunk_idx >= min(args.action_horizon, action_chunk_len(cached_action_chunk, action_keys))
+                    ):
                         obs_dict = process_observation(obs, task_description, headless=True)
                         action_out, _, _, action_out_bs = gr00t_policy.get_action(obs_dict, mode="baseline")
                         cached_action_chunk = action_out if action_out is not None else action_out_bs
+                        if cached_action_chunk is None:
+                            raise RuntimeError("Policy returned no action chunk.")
                         chunk_idx = 0
+                        if args.action_horizon > action_chunk_len(cached_action_chunk, action_keys):
+                            msg = (
+                                f"Requested action_horizon={args.action_horizon}, but model returned "
+                                f"{action_chunk_len(cached_action_chunk, action_keys)} actions; clamping horizon."
+                            )
+                            print(msg)
+                            log_file.write(msg + "\n")
 
                     action = convert_to_libero_action(
                         cached_action_chunk, action_keys, idx=chunk_idx, normalize=args.normalize_action
@@ -322,7 +347,6 @@ def eval_libero_pro(args) -> None:
             task_episodes += 1
             total_episodes += 1
 
-            vid_label = f"{args.random_seed}_{model_name}_{args.perturbation_type}_{args.action_horizon}"
             save_rollout_video(
                 top_view, wrist_view, total_episodes,
                 success=done, task_description=task_description,
