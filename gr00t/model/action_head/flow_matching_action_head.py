@@ -233,6 +233,10 @@ class FlowmatchingActionHeadConfig(PretrainedConfig):
         default=0.01,
         metadata={"help": "Weight for non-zero norm loss on skill embedding bank (prevents collapse to zero)."},
     )
+    use_weighted_skill_router: bool = field(
+        default=False,
+        metadata={"help": "Use soft-weighted routing (softmax over all skill embeddings) instead of top-1 argmax."},
+    )
     tune_skill_clf: bool = field(
         default=False,
         metadata={"help": "Stage 1: freeze all except skill classifier MLP."},
@@ -578,21 +582,23 @@ class FlowmatchingActionHead(nn.Module):
             if "skill_id" in action_input:
                 skill_label = action_input["skill_id"]            # (B,) long
                 skill_clf_loss = F.cross_entropy(skill_logits, skill_label)
-                # Look up skill embedding using ground-truth label during training
+
+            if self.config.use_weighted_skill_router:
+                # Soft-weighted: differentiable weighted sum over all skill embeddings
+                skill_weights = torch.softmax(skill_logits, dim=-1)           # (B, K)
+                skill_emb = skill_weights @ self.skill_emb_bank.weight        # (B, skill_emb_dim)
+                skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)     # (B, 1, input_emb_dim)
+            elif "skill_id" in action_input:
+                # Top-1 hard selection using ground-truth label
                 skill_token = self.skill_emb_proj(
                     self.skill_emb_bank(skill_label)
-                ).unsqueeze(1)  # (B, 1, input_emb_dim)
+                ).unsqueeze(1)
             else:
-                # Inference fallback: use classifier argmax
+                # Top-1 inference fallback: use classifier argmax
                 skill_idx = skill_logits.argmax(dim=-1)
                 skill_token = self.skill_emb_proj(
                     self.skill_emb_bank(skill_idx)
                 ).unsqueeze(1)
-
-            # # Soft weighted sum over all skill embeddings (train and inference fallback)
-            # skill_weights = torch.softmax(skill_logits, dim=-1)          # (B, K)
-            # skill_emb = skill_weights @ self.skill_emb_bank.weight        # (B, skill_emb_dim)
-            # skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)    # (B, 1, input_emb_dim)
 
             if self.tune_skill_clf:
                 # Stage 1: classifier-only loss
@@ -763,18 +769,23 @@ class FlowmatchingActionHead(nn.Module):
         if task_emb is not None:
             state_features = self.state_adapter(state_features, task_emb)
 
-        # Compute skill token once for all denoising steps (soft weighted routing at inference).
+        # Compute skill token once for all denoising steps.
         skill_token = None
         if self.config.use_skill_emb:
             vl_attn_mask = backbone_output.get("backbone_attention_mask")
             pooled = self._masked_mean_pool(vl_embs, vl_attn_mask)  # (B, D)
             skill_logits = self.skill_clf(self.skill_proj(pooled))
-            skill_idx = skill_logits.argmax(dim=-1)                  # (B,)
-            _vocab = ['close', 'pick', 'place', 'turn']
-            print(f"[SKILL] skill={[_vocab[i] for i in skill_idx.tolist()]} idx={skill_idx.tolist()}")
-            skill_token = self.skill_emb_proj(
-                self.skill_emb_bank(skill_idx)
-            ).unsqueeze(1)  # (B, 1, input_emb_dim)
+            if self.config.use_weighted_skill_router:
+                skill_weights = torch.softmax(skill_logits, dim=-1)
+                skill_emb = skill_weights @ self.skill_emb_bank.weight
+                skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)
+            else:
+                skill_idx = skill_logits.argmax(dim=-1)                  # (B,)
+                _vocab = ['close', 'pick', 'place', 'turn']
+                print(f"[SKILL] skill={[_vocab[i] for i in skill_idx.tolist()]} idx={skill_idx.tolist()}")
+                skill_token = self.skill_emb_proj(
+                    self.skill_emb_bank(skill_idx)
+                ).unsqueeze(1)  # (B, 1, input_emb_dim)
 
         # Set initial actions as the sampled noise.
         actions = torch.randn(size=(batch_size, self.config.action_horizon, self.config.action_dim), dtype=vl_embs.dtype, device=device, )

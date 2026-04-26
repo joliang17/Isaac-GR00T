@@ -28,6 +28,7 @@ os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
 os.environ["HF_MODULES_CACHE"] = CACHE_DIR
 os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
 
+import json
 import pprint
 from dataclasses import dataclass
 import argparse
@@ -54,9 +55,6 @@ from libero_scripts.gpt_call import generate_instruction_variants
 from gr00t.model.policy import Gr00tPolicy
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from libero.libero import benchmark
-RANDOM_SEED=42
-# 78
-set_seed(RANDOM_SEED)
 log_dir = "logs/"
 os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
 
@@ -77,7 +75,10 @@ def eval_libero(cfg) -> None:
     task_suite = benchmark_dict[cfg.task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
     print(f"Task suite: {cfg.task_suite_name}")
-    log_file = open(f"{log_dir}/libero_eval_{cfg.task_suite_name}.log", "w")
+
+    log_suffix = f"model{model_name}_task{cfg.task_suite_name}_seed{cfg.random_seed}_h{cfg.action_horizon}"
+
+    log_file = open(f"{log_dir}/libero_eval_{log_suffix}.log", "w")
     log_file.write(f"Task suite: {cfg.task_suite_name}\n")
 
     data_config = DATA_CONFIG_MAP[cfg.data_config]
@@ -103,6 +104,7 @@ def eval_libero(cfg) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
+    per_task_results = []
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
     # for task_id in tqdm.tqdm(range(3)):
         # Get task
@@ -213,7 +215,7 @@ def eval_libero(cfg) -> None:
                 total_episodes += 1
 
                 # Save a replay video of the episode
-                save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, model_name=f"{RANDOM_SEED}_{model_name}_{cfg.action_horizon}")
+                save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, model_name=log_suffix)
 
                 # Log current results
                 print(f"Success: {done}")
@@ -237,9 +239,31 @@ def eval_libero(cfg) -> None:
             f"Current total success rate: {float(total_successes) / float(total_episodes)}\n"
         )
         log_file.flush()
+        per_task_results.append({
+            "task_id": task_id,
+            "task_name": task.language,
+            "successes": task_successes,
+            "episodes": task_episodes,
+            "success_rate": float(task_successes) / float(task_episodes),
+        })
 
     # Save local log file
     log_file.close()
+
+    # Save structured result file
+    results_dir = "results/"
+    os.makedirs(results_dir, exist_ok=True)
+    result = {
+        "config": vars(cfg),
+        "per_task_results": per_task_results,
+        "total_successes": total_successes,
+        "total_episodes": total_episodes,
+        "overall_success_rate": total_successes / total_episodes if total_episodes > 0 else 0.0,
+    }
+    result_path = f"{results_dir}/libero_eval_{log_suffix}.json"
+    with open(result_path, "w") as f:
+        json.dump(result, f, indent=2)
+    print(f"Results saved to {result_path}")
 
 
 if __name__ == "__main__":
@@ -270,6 +294,8 @@ if __name__ == "__main__":
         default=1,
         help="Number of actions to execute from each predicted chunk before re-querying the model (default=1, i.e. query every step)"
     )
+    parser.add_argument("--random_seed", type=int, default=42, help="Random seed for reproducibility")
     args = parser.parse_args()
 
+    set_seed(args.random_seed)
     eval_libero(args)

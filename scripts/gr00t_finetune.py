@@ -201,6 +201,9 @@ class ArgsConfig:
     tune_skill_emb: bool = False
     """Stage 2: train skill embedding bank + projection + DiT (VLM + classifier frozen). use_skill_emb must be True."""
 
+    use_weighted_skill_router: bool = False
+    """Use soft-weighted skill router (softmax over all embeddings) instead of top-1 argmax at inference and training."""
+
     freeze_embeddings: bool = False
     """Whether to fine-tune the embedding model."""
 
@@ -421,6 +424,7 @@ def main(config: ArgsConfig):
         skill_clf_coeff=config.skill_clf_coeff,
         skill_div_coeff=config.skill_div_coeff,
         skill_norm_coeff=config.skill_norm_coeff,
+        use_weighted_skill_router=config.use_weighted_skill_router,
         pred_nextstep=pred_nextstep
     )
 
