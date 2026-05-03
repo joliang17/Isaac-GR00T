@@ -21,23 +21,23 @@ module add gcc/11.2.0
 
 export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
-# export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
 
-TASK_NAME=libero10_256_half_30k
+# TASK_NAME=libero10_256_half_30k
 
-python scripts/gr00t_finetune.py \
-  --num-gpus 1 \
-  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10_half" \
-  --windowing_mode "step" \
-  --batch-size 32 \
-  --data_config "libero_original" \
-  --video_backend "torchvision_av" \
-  --save_steps 10000 \
-  --max_steps 30000 \
-  --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
-  --run_name "${TASK_NAME}" \
-  --tune_diffusion_model \
+# python scripts/gr00t_finetune.py \
+#   --num-gpus 1 \
+#   --dataset-path "/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10_half" \
+#   --windowing_mode "step" \
+#   --batch-size 32 \
+#   --data_config "libero_original" \
+#   --video_backend "torchvision_av" \
+#   --save_steps 10000 \
+#   --max_steps 30000 \
+#   --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
+#   --run_name "${TASK_NAME}" \
+#   --tune_diffusion_model \
 
 
 TASK_NAME=liberoall_256_full_60k

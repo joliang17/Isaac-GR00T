@@ -19,10 +19,11 @@ source /fs/nexus-scratch/yliang17/miniconda3/bin/activate gr00t
 
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 export OPENAI_API_KEY=""
-# export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=1
 
 SEEDS=(42 78 98)
-HORIZONS=(1 5 10 16)
+# HORIZONS=(1 5 10 16)
+HORIZONS=(5 10 16)
 
 run_eval() {
     local ckpt=$1 seed=$2 horizon=$3

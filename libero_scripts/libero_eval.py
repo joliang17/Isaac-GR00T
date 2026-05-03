@@ -37,6 +37,7 @@ import numpy as np
 import torch
 import tqdm
 import tyro
+import pickle
 
 from libero_scripts.utils import (
     get_libero_dummy_action,
@@ -117,6 +118,12 @@ def eval_libero(cfg) -> None:
         denoising_steps=cfg.denoising_steps,
         device="cuda" if torch.cuda.is_available() else "cpu",
     )
+    # import pdb;pdb.set_trace()
+    # # skill embedding: 
+    # skill_emb = gr00t_policy.model.action_head.skill_emb_bank.weight.detach().cpu()
+    # # with open('top1_router_skill.pkl', 'wb') as f: pickle.dump(skill_emb, f)
+    # with open('weight_router_skill.pkl', 'wb') as f: pickle.dump(skill_emb, f)
+
 
     # Start evaluation
     total_episodes, total_successes = 0, 0

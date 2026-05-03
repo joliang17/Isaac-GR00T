@@ -19,8 +19,12 @@ export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 export OPENAI_API_KEY=""
 export CUDA_VISIBLE_DEVICES=0
 
-SEEDS=(42 78 98)
-HORIZONS=(1 5 10 16)
+# SEEDS=(42 78 98)
+SEEDS=( 42 )
+# HORIZONS=(1 5 10 16)
+HORIZONS=( 10 )
+# PERTURBATIONS=( position object semantic task )
+PERTURBATIONS=( position object semantic task )
 
 run_eval() {
     local ckpt=$1 seed=$2 horizon=$3
@@ -32,35 +36,41 @@ run_eval() {
 }
 
 run_pro_eval() {
-    local ckpt=$1 seed=$2 horizon=$3
+    local ckpt=$1 seed=$2 horizon=$3 perturb=$4
     python -m libero_scripts.libero_pro_eval \
         --model_path "${ckpt}" --task_suite_name libero_10 \
-        --perturbation_type object --num_trials_per_task 10 \
+        --perturbation_type "${perturb}" --num_trials_per_task 10 \
+        --num_steps_wait 10 --embodiment_tag new_embodiment \
+        --data_config libero_original --denoising_steps 8 \
         --action_horizon "${horizon}" --random_seed "${seed}"
 }
 
-CKPT="/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_full_v2/checkpoint-60000"
+# CKPT="/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_full_v2/checkpoint-60000"
+# for SEED in "${SEEDS[@]}"; do
+#     for H in "${HORIZONS[@]}"; do
+#         run_eval     "${CKPT}" "${SEED}" "${H}"
+#         run_pro_eval "${CKPT}" "${SEED}" "${H}"
+#     done
+# done
+
+# --- Model 1: libero10_256_half_v2 ---
+CKPT="/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half_v2/checkpoint-60000"
 for SEED in "${SEEDS[@]}"; do
     for H in "${HORIZONS[@]}"; do
-        run_eval     "${CKPT}" "${SEED}" "${H}"
-        run_pro_eval "${CKPT}" "${SEED}" "${H}"
+        # run_eval         "${CKPT}" "${SEED}" "${H}"
+        for PERT in "${PERTURBATIONS[@]}"; do
+            run_pro_eval "${CKPT}" "${SEED}" "${H}" "${PERT}"
+        done
     done
 done
 
-# # --- Model 1: libero10_256_half_v2 ---
-# CKPT="/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half_v2/checkpoint-60000"
-# for SEED in "${SEEDS[@]}"; do
-#     for H in "${HORIZONS[@]}"; do
-#         run_eval     "${CKPT}" "${SEED}" "${H}"
-#         run_pro_eval "${CKPT}" "${SEED}" "${H}"
-#     done
-# done
-
-# # --- Model 2: libero10_256_half_cls_stage2 ---
-# CKPT="/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half_cls_stage2/checkpoint-60000"
-# for SEED in "${SEEDS[@]}"; do
-#     for H in "${HORIZONS[@]}"; do
-#         run_eval     "${CKPT}" "${SEED}" "${H}"
-#         run_pro_eval "${CKPT}" "${SEED}" "${H}"
-#     done
-# done
+# --- Model 2: libero10_256_half_cls_stage2 ---
+CKPT="/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half_cls_stage2/checkpoint-60000"
+for SEED in "${SEEDS[@]}"; do
+    for H in "${HORIZONS[@]}"; do
+        # run_eval         "${CKPT}" "${SEED}" "${H}"
+        for PERT in "${PERTURBATIONS[@]}"; do
+            run_pro_eval "${CKPT}" "${SEED}" "${H}" "${PERT}"
+        done
+    done
+done

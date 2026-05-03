@@ -23,18 +23,18 @@ export WANDB_PROJECT="vla_tooluse"
 export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 export CUDA_VISIBLE_DEVICES=0
 
-SKILL_JSON="/fs/nexus-scratch/yliang17/Research/VLA/AtomicVLA/data_split_json/libero_lerobot_addskill_10_half.json"
+SKILL_JSON="/fs/nexus-scratch/yliang17/Research/VLA/AtomicVLA/data_split_json/libero_lerobot_addskill_10.json"
 
-TASK_NAME=libero10_256_half_cls_stage1_v2
+TASK_NAME=libero10_256_full_cls_stage1_v2
 
 python scripts/gr00t_finetune.py \
   --num-gpus 1 \
-  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10_half" \
+  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10" \
   --windowing_mode "skill_cls" \
   --batch-size 32 \
   --data_config "libero_original" \
   --video_backend "torchvision_av" \
-  --save_steps 1000 \
+  --save_steps 3000 \
   --max_steps 6000 \
   --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
   --run_name "${TASK_NAME}" \
@@ -47,18 +47,18 @@ python scripts/gr00t_finetune.py \
 #   # --dataloader_num_workers 0
 
 
-TASK_NAME=libero10_256_half_cls_stage2_v2
+TASK_NAME=libero10_256_full_cls_stage2_v2
 
 python scripts/gr00t_finetune.py \
   --num-gpus 1 \
-  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10_half" \
+  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_10" \
   --windowing_mode "skill_cls" \
   --batch-size 32 \
   --data_config "libero_original" \
   --video_backend "torchvision_av" \
   --save_steps 20000 \
   --max_steps 60000 \
-  --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_half_cls_stage1_v2/checkpoint-6000" \
+  --base_model_path "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/libero10_256_full_cls_stage1_v2/checkpoint-6000" \
   --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
   --run_name "${TASK_NAME}" \
   --skill_annotation_path "${SKILL_JSON}" \
@@ -67,7 +67,7 @@ python scripts/gr00t_finetune.py \
   --use_skill_emb \
   --tune_skill_emb \
   --tune_diffusion_model \
-  --do_eval
+  # --do_eval
 
   # --dataloader_num_workers 0
 
