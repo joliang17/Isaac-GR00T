@@ -85,6 +85,28 @@ class DualBrainTrainer(transformers.Trainer):
     def _get_eval_sampler(self, eval_dataset):
         return BaseSampler(eval_dataset, shuffle=False)
 
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
+        """Evaluate one dataset or a name->dataset mapping with explicit metric prefixes."""
+        eval_dataset = self.eval_dataset if eval_dataset is None else eval_dataset
+        if isinstance(eval_dataset, dict):
+            all_metrics = {}
+            for prefix, dataset in eval_dataset.items():
+                if dataset is None:
+                    continue
+                metrics = super().evaluate(
+                    eval_dataset=dataset,
+                    ignore_keys=ignore_keys,
+                    metric_key_prefix=str(prefix),
+                )
+                all_metrics.update(metrics)
+            return all_metrics
+
+        return super().evaluate(
+            eval_dataset=eval_dataset,
+            ignore_keys=ignore_keys,
+            metric_key_prefix=metric_key_prefix,
+        )
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         outputs = model(inputs)
         loss = outputs["loss"]

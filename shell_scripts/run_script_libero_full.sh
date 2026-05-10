@@ -40,17 +40,17 @@ python scripts/gr00t_finetune.py \
   --tune_diffusion_model \
 
 
-TASK_NAME=liberoall_256_full_60k
+# TASK_NAME=liberoall_256_full_60k
 
-python scripts/gr00t_finetune.py \
-  --num-gpus 1 \
-  --dataset-path "/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_all" \
-  --windowing_mode "step" \
-  --batch-size 32 \
-  --data_config "libero_original" \
-  --video_backend "torchvision_av" \
-  --save_steps 20000 \
-  --max_steps 60000 \
-  --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
-  --run_name "${TASK_NAME}" \
-  --tune_diffusion_model \
+# python scripts/gr00t_finetune.py \
+#   --num-gpus 1 \
+#   --dataset-path "/fs/nexus-projects/wilddiffusion/vla/atomic_data/libero_atomic_all" \
+#   --windowing_mode "step" \
+#   --batch-size 32 \
+#   --data_config "libero_original" \
+#   --video_backend "torchvision_av" \
+#   --save_steps 20000 \
+#   --max_steps 60000 \
+#   --output_dir "/fs/nexus-projects/wilddiffusion/vla/GR00T/checkpoint/${TASK_NAME}" \
+#   --run_name "${TASK_NAME}" \
+#   --tune_diffusion_model \

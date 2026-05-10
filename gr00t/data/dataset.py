@@ -257,6 +257,8 @@ class LeRobotSingleDataset(Dataset):
                             _seg.get('skill') or
                             _seg.get('primary_action_verb', '[ACTIONS]')
                         )
+                    if isinstance(_skill_text, str):
+                        _skill_text = _skill_text.strip()
                     _segs.append((_seg['start_frame'], _seg['end_frame'], _skill_text))
                 # self._skill_lookup[int(_ep_key)] = _segs
                 self._skill_lookup[_ep_key_new] = _segs
@@ -336,7 +338,7 @@ class LeRobotSingleDataset(Dataset):
             self._window_steps = self._get_all_windows_skill_action()
             print(f"Loading {len(self._window_steps)} skill_action windows")
         elif self.windowing_mode == 'skill_cls':
-            self._window_steps = self._get_all_windows_skill_action()
+            self._window_steps = self._get_all_windows_skill_cls()
             print(f"Loading {len(self._window_steps)} skill_cls windows "
                   f"| vocab_size={len(self._skill_vocab)}")
         else:
@@ -739,6 +741,53 @@ class LeRobotSingleDataset(Dataset):
         ratio     = round(skill_cnt / total_eps, 4) if total_eps > 0 else 0.0
         print(f"[skill_action windows] total={total} | "
               f"traj_eps={traj_cnt} skill_eps={skill_cnt} (ratio={ratio})")
+        return all_windows
+
+    def _get_all_windows_skill_cls(self) -> list[list[tuple[int, int]]]:
+        """Single-frame windows that always have a valid skill class label.
+
+        Skill-classification training uses cross entropy over the configured
+        skill vocab, so frames outside annotated skill segments must not be
+        sampled. Some larger LIBERO annotations leave gaps between atomic
+        segments; using the generic skill_action windows would label those
+        frames as -1 and trigger a CUDA device-side assert.
+        """
+        stride = max(1, int(self.stride))
+        all_windows: list[list[tuple[int, int]]] = []
+
+        if self._skill_lookup is None:
+            for tid, T in tqdm(
+                zip(self.trajectory_ids, self.trajectory_lengths),
+                total=len(self.trajectory_ids),
+                desc="Building skill_cls windows",
+            ):
+                for idx in range(0, T, stride):
+                    all_windows.append([(tid, idx)])
+            return all_windows
+
+        missing_vocab = 0
+        for tid, T in tqdm(
+            zip(self.trajectory_ids, self.trajectory_lengths),
+            total=len(self.trajectory_ids),
+            desc="Building skill_cls windows",
+        ):
+            if T <= 0:
+                continue
+            for start, end, skill_text in self._skill_lookup.get(tid, []):
+                if skill_text not in self._skill2id:
+                    missing_vocab += 1
+                    continue
+                start = max(0, int(start))
+                end = min(int(end), T - 1)
+                if end < start:
+                    continue
+                for idx in range(start, end + 1, stride):
+                    all_windows.append([(tid, idx)])
+
+        print(
+            f"[skill_cls windows] total={len(all_windows)} "
+            f"| skipped_segments_missing_vocab={missing_vocab}"
+        )
         return all_windows
 
     def _get_all_windows(self) -> list[list[tuple[int, int]]]:

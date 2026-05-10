@@ -578,6 +578,7 @@ class FlowmatchingActionHead(nn.Module):
         skill_token = None  # (B, 1, input_emb_dim), set when use_skill_emb
         if self.config.use_skill_emb:
             pooled = self._masked_mean_pool(vl_embs, vl_attn_mask)  # (B, D)
+            pooled = pooled.to(dtype=next(self.skill_proj.parameters()).dtype)
             skill_logits = self.skill_clf(self.skill_proj(pooled))   # (B, num_skills)
             if "skill_id" in action_input:
                 skill_label = action_input["skill_id"]            # (B,) long
@@ -774,6 +775,7 @@ class FlowmatchingActionHead(nn.Module):
         if self.config.use_skill_emb:
             vl_attn_mask = backbone_output.get("backbone_attention_mask")
             pooled = self._masked_mean_pool(vl_embs, vl_attn_mask)  # (B, D)
+            pooled = pooled.to(dtype=next(self.skill_proj.parameters()).dtype)
             skill_logits = self.skill_clf(self.skill_proj(pooled))
             if self.config.use_weighted_skill_router:
                 skill_weights = torch.softmax(skill_logits, dim=-1)
@@ -781,8 +783,14 @@ class FlowmatchingActionHead(nn.Module):
                 skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)
             else:
                 skill_idx = skill_logits.argmax(dim=-1)                  # (B,)
-                _vocab = ['close', 'pick', 'place', 'turn']
-                print(f"[SKILL] skill={[_vocab[i] for i in skill_idx.tolist()]} idx={skill_idx.tolist()}")
+                skill_vocab = self.config.skill_vocab
+                if skill_vocab is None:
+                    skill_vocab = [str(i) for i in range(self.config.num_skills)]
+                skill_names = [
+                    skill_vocab[i] if 0 <= i < len(skill_vocab) else f"<skill:{i}>"
+                    for i in skill_idx.tolist()
+                ]
+                print(f"[SKILL] skill={skill_names} idx={skill_idx.tolist()}")
                 skill_token = self.skill_emb_proj(
                     self.skill_emb_bank(skill_idx)
                 ).unsqueeze(1)  # (B, 1, input_emb_dim)

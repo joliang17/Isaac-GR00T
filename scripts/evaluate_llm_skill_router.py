@@ -72,6 +72,7 @@ class ArgsConfig:
     seed: int = 0
     balanced_by_verb: bool = True
     skill_label_type: Literal["skill", "primary_action_verb"] = "skill"
+    skill_prefix: str = ""
     prompt_embedding_layer: Literal["selected", "last"] = "selected"
     sample_embedding_source: Literal["backbone_tail", "backbone_mean", "hook_last_token"] = "backbone_tail"
     router_lang_tail: int = 32
@@ -340,7 +341,7 @@ def main(config: ArgsConfig):
         fallback_metadata=dataset.metadata,
     )
 
-    prompts = [prompt_for_skill(skill, skill_to_verb[skill]) for skill in skills]
+    prompts = [config.skill_prefix + prompt_for_skill(skill, skill_to_verb[skill]) for skill in skills]
     prompt_layer = (
         "last"
         if config.sample_embedding_source == "hook_last_token"

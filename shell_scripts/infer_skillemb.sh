@@ -25,12 +25,16 @@ export CACHE_DIR="/fs/nexus-projects/wilddiffusion/cache"
 export CUDA_VISIBLE_DEVICES=1
 
 
+SKILL_PREFIX="The robot executes atomic manipulation skills.\nYour job is to select the NEXT skill the robot should execute.\n\nAvailable skills and definitions:\n1. close 2. open, 3. pick, 4. place, 5. turn on the button. Decide the NEXT skill needed.\n\nThink briefly about the scene\n"
+
 python scripts/evaluate_llm_skill_router.py \
     --max-samples 128 \
+    --skill-prefix "$SKILL_PREFIX" \
     --output-path hidden_states/llm_skill_router_probe_zero_shot.json
 
 python scripts/evaluate_llm_skill_router.py \
     --max-samples 128 \
+    --skill-prefix "$SKILL_PREFIX" \
     --calibration linear_probe \
     --output-path hidden_states/llm_skill_router_probe_linear_probe.json
 

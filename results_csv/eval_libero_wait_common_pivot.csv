@@ -1,0 +1,13 @@
+model,action_horizon,standard,pro_object,pro_semantic,pro_task
+liberoall_256_full_60k,5,0.9433,0.5367,0.9300,0.0867
+liberoall_256_full_60k,10,0.9533,0.5300,0.9367,0.0900
+liberoall_256_full_60k,16,0.9400,0.5733,0.9200,0.0867
+libero10_256_full_cls_stage2_v2,5,0.8333,0.4867,0.8233,0.0733
+libero10_256_full_cls_stage2_v2,10,0.9133,0.4900,0.9200,0.0733
+libero10_256_full_cls_stage2_v2,16,0.8633,0.5400,0.8767,0.0733
+libero10_256_half_30k,5,0.8567,0.4500,0.8967,0.1167
+libero10_256_half_30k,10,0.8933,0.5200,0.8967,0.1233
+libero10_256_half_30k,16,0.9300,0.5200,0.9000,0.1200
+libero10_256_half_cls_stage2,5,0.8900,0.4667,0.8867,0.0500
+libero10_256_half_cls_stage2,10,0.9033,0.5533,0.8633,0.0833
+libero10_256_half_cls_stage2,16,0.9067,0.5600,0.8867,0.0933

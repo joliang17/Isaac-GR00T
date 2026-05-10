@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import List, Literal
 
 import torch
+import torch.nn.functional as F
 import tyro
 from transformers import TrainingArguments
 from torch.utils.data import Subset
@@ -51,6 +52,18 @@ class ArgsConfig:
     # Dataset parameters
     dataset_path: List[str]
     """Path to the dataset directory or directories"""
+
+    train_eval_dataset_path: str | None = None
+    """Optional training-split dataset path to evaluate on for in-distribution accuracy."""
+
+    train_eval_max_samples: int = 1024
+    """Maximum number of samples to use for train-side evaluation."""
+
+    train_eval_fraction: float = 0.01
+    """Fraction of the train-side eval dataset to use before applying train_eval_max_samples."""
+
+    eval_dataset_path: str | None = None
+    """Optional held-out dataset path for evaluation."""
 
     output_dir: str = "gr00t_model"
     """Directory to save model checkpoints."""
@@ -110,6 +123,12 @@ class ArgsConfig:
     Format: {episode_id: {segments: [{start_frame, end_frame, skill, ...}]}}
     If None, falls back to reading annotation.step_description from the parquet dataset."""
 
+    eval_skill_annotation_path: str | None = None
+    """Optional held-out annotation JSON path. Falls back to skill_annotation_path when unset."""
+
+    train_eval_skill_annotation_path: str | None = None
+    """Optional train-side eval annotation JSON path. Falls back to skill_annotation_path when unset."""
+
     skill_label_type: str = 'skill'
     """Which JSON field to use as the skill label for [TOOLS] frames.
     'skill': full phrase, e.g. "pick up the white mug".
@@ -129,6 +148,9 @@ class ArgsConfig:
 
     do_eval: bool = False
     """Whether to do sanity check"""
+
+    eval_only: bool = False
+    """Run evaluation and exit without training. Requires do_eval=True."""
 
     # Model parameters
     base_model_path: str = "nvidia/GR00T-N1.5-3B"
@@ -200,6 +222,12 @@ class ArgsConfig:
 
     tune_skill_emb: bool = False
     """Stage 2: train skill embedding bank + projection + DiT (VLM + classifier frozen). use_skill_emb must be True."""
+
+    init_skill_emb_from_llm: bool = False
+    """Stage 2 only: initialize skill_emb_bank from mean-pooled LLM token embeddings for each skill label."""
+
+    llm_skill_init_scale: float = 0.02
+    """Scale applied after normalizing LLM-initialized skill embeddings."""
 
     use_weighted_skill_router: bool = False
     """Use soft-weighted skill router (softmax over all embeddings) instead of top-1 argmax at inference and training."""
@@ -293,6 +321,127 @@ def _discover_skill_vocab(annotation_path: str, skill_label_type: str) -> list[s
     return sorted(verbs)
 
 
+def _validate_skill_vocab(annotation_path: str, skill_label_type: str, skill_vocab: list[str]) -> None:
+    """Ensure all annotation labels can be mapped into the fixed classifier vocab."""
+    duplicate_skills = sorted({skill for skill in skill_vocab if skill_vocab.count(skill) > 1})
+    if duplicate_skills:
+        raise ValueError(f"--skill_vocab contains duplicate entries: {duplicate_skills}")
+
+    annotation_vocab = set(_discover_skill_vocab(annotation_path, skill_label_type))
+    fixed_vocab = set(skill_vocab)
+    missing = sorted(annotation_vocab - fixed_vocab)
+    if missing:
+        raise ValueError(
+            "Skill annotation labels are missing from --skill_vocab: "
+            f"{missing}. annotation_path={annotation_path} fixed_vocab={skill_vocab}"
+        )
+
+
+def _validate_base_skill_shape(base_model_path: str, num_skills: int, skill_vocab: list[str]) -> None:
+    """Fail early when continuing from a skill checkpoint with a different class count."""
+    config_path = Path(base_model_path) / "config.json"
+    if not config_path.exists():
+        return
+
+    with open(config_path) as f:
+        base_cfg = json.load(f)
+
+    if not base_cfg.get("use_skill_emb", False):
+        return
+
+    base_num_skills = base_cfg.get("num_skills")
+    base_skill_vocab = base_cfg.get("skill_vocab")
+    if base_num_skills != num_skills:
+        raise ValueError(
+            "Base checkpoint skill head is incompatible with requested --skill_vocab: "
+            f"base num_skills={base_num_skills}, requested num_skills={num_skills}. "
+            "Retrain Stage 1 with the target vocab before Stage 2."
+        )
+
+    if base_skill_vocab is not None and list(base_skill_vocab) != list(skill_vocab):
+        raise ValueError(
+            "Base checkpoint skill_vocab order differs from requested --skill_vocab: "
+            f"base={base_skill_vocab}, requested={skill_vocab}. "
+            "Skill IDs are order-dependent, so Stage 2 must use the exact Stage 1 vocab."
+        )
+
+
+def _base_checkpoint_has_skill_emb(base_model_path: str) -> bool:
+    """Return whether a local base checkpoint config already contains skill modules."""
+    config_path = Path(base_model_path) / "config.json"
+    if not config_path.exists():
+        return False
+    try:
+        with open(config_path) as f:
+            base_cfg = json.load(f)
+    except Exception:
+        return False
+    return bool(base_cfg.get("use_skill_emb", False))
+
+
+def _init_skill_emb_bank_from_llm(model, skill_vocab: list[str], scale: float) -> None:
+    """Initialize skill_emb_bank from mean-pooled LLM token embeddings.
+
+    The Stage 1 skill projector maps LLM embedding dimension to skill_emb_dim,
+    so this keeps the existing 256-d skill bank while seeding it from text.
+    """
+    ah = model.action_head
+    tokenizer = model.backbone.eagle_tokenizer
+    embedding = model.backbone.eagle_model.language_model.model.embed_tokens
+    device = ah.skill_emb_bank.weight.device
+    target_dtype = ah.skill_emb_bank.weight.dtype
+
+    if not hasattr(ah, "skill_emb_bank") or not hasattr(ah, "skill_proj"):
+        raise ValueError("--init_skill_emb_from_llm requires use_skill_emb=True with skill_emb_bank and skill_proj")
+
+    init_vectors = []
+    with torch.no_grad():
+        proj_dtype = next(ah.skill_proj.parameters()).dtype
+        for skill in skill_vocab:
+            encoded = tokenizer(
+                skill,
+                add_special_tokens=False,
+                return_tensors="pt",
+            )
+            input_ids = encoded["input_ids"].to(device)
+            if input_ids.numel() == 0:
+                raise ValueError(f"Tokenizer produced no tokens for skill label: {skill!r}")
+
+            token_embs = embedding(input_ids).to(device=device, dtype=proj_dtype)
+            mean_emb = token_embs.mean(dim=1)
+            skill_vec = ah.skill_proj(mean_emb).squeeze(0)
+            init_vectors.append(skill_vec)
+
+        init_weight = torch.stack(init_vectors, dim=0)
+        expected_shape = ah.skill_emb_bank.weight.shape
+        if init_weight.shape != expected_shape:
+            raise ValueError(
+                "LLM skill init shape mismatch: "
+                f"got {tuple(init_weight.shape)}, expected {tuple(expected_shape)}"
+            )
+
+        init_weight = F.normalize(init_weight.float(), dim=-1)
+        init_weight = init_weight * ((expected_shape[1] ** 0.5) * scale)
+        ah.skill_emb_bank.weight.copy_(init_weight.to(device=device, dtype=target_dtype))
+
+    print(
+        "[SkillEmb] Initialized skill_emb_bank from LLM token embeddings "
+        f"(num_skills={len(skill_vocab)}, dim={expected_shape[1]}, scale={scale})"
+    )
+
+
+def _bounded_subset(dataset, max_samples: int, fraction: float):
+    """Return the first deterministic slice used for lightweight evaluation."""
+    if max_samples <= 0:
+        max_samples = len(dataset)
+    if fraction <= 0:
+        fraction_count = len(dataset)
+    else:
+        fraction_count = max(1, int(fraction * len(dataset)))
+    subset_len = min(len(dataset), max_samples, fraction_count)
+    return Subset(dataset, indices=range(subset_len))
+
+
 #####################################################################################
 # main training function
 #####################################################################################
@@ -308,6 +457,26 @@ def main(config: ArgsConfig):
     modality_configs = data_config_cls.modality_config()
     transforms = data_config_cls.transform()
 
+    def _build_dataset(dataset_path: str, annotation_path: str | None):
+        return LeRobotSingleDataset(
+            dataset_path=dataset_path,
+            modality_configs=modality_configs,
+            transforms=transforms,
+            embodiment_tag=embodiment_tag,
+            video_backend=config.video_backend,
+            window_length=config.window_length,
+            windowing_mode=config.windowing_mode,
+            skill_level=config.skill_level,
+            frame_type=config.frame_type,
+            min_seq_len=config.min_seq_len,
+            skill_inclusion_ratio=config.skill_inclusion_ratio,
+            action_ds_ratio=config.action_ds_ratio,
+            toolend_upsample_ratio=config.toolend_upsample_ratio,
+            skill_annotation_path=annotation_path,
+            skill_label_type=config.skill_label_type,
+            skill_vocab=skill_vocab,
+        )
+
     # Resolve skill vocab early so it can be passed to both dataset and model
     skill_vocab: list[str] | None = None
     num_skills = 1
@@ -318,66 +487,22 @@ def main(config: ArgsConfig):
             skill_vocab = config.skill_vocab
         else:
             skill_vocab = _discover_skill_vocab(config.skill_annotation_path, config.skill_label_type)
+        _validate_skill_vocab(config.skill_annotation_path, config.skill_label_type, skill_vocab)
         num_skills = len(skill_vocab)
+        _validate_base_skill_shape(config.base_model_path, num_skills, skill_vocab)
         print(f"[skill_cls vocab] {len(skill_vocab)} classes: {skill_vocab}")
 
     # 1.2 data loader: we will use either single dataset or mixture dataset
     if len(config.dataset_path) == 1:
-        train_dataset = LeRobotSingleDataset(
-            dataset_path=config.dataset_path[0],
-            modality_configs=modality_configs,
-            transforms=transforms,
-            embodiment_tag=embodiment_tag,
-            video_backend=config.video_backend,
-            window_length=config.window_length, 
-            windowing_mode=config.windowing_mode,
-            skill_level=config.skill_level,
-            frame_type=config.frame_type,
-            min_seq_len=config.min_seq_len,
-            skill_inclusion_ratio=config.skill_inclusion_ratio,
-            action_ds_ratio=config.action_ds_ratio,
-            toolend_upsample_ratio=config.toolend_upsample_ratio,
-            skill_annotation_path=config.skill_annotation_path,
-            skill_label_type=config.skill_label_type,
-            skill_vocab=skill_vocab,
-            # action_only=config.tune_diffusion_model,
-        )
-
-        if config.do_eval:
-            eval_sanity_set = Subset(train_dataset, indices=range(int(0.01 * len(train_dataset))))
-            # eval_sanity_set = Subset(train_dataset, indices=range(20))
-        else:
-            eval_sanity_set = None
+        train_dataset = _build_dataset(config.dataset_path[0], config.skill_annotation_path)
     else:
         single_datasets = []
         for p in config.dataset_path:
             assert os.path.exists(p), f"Dataset path {p} does not exist"
-            dataset = LeRobotSingleDataset(
-                dataset_path=p,
-                modality_configs=modality_configs,
-                transforms=transforms,
-                embodiment_tag=embodiment_tag,
-                video_backend=config.video_backend,
-                window_length=config.window_length, 
-                windowing_mode=config.windowing_mode,
-                skill_level=config.skill_level,
-                frame_type=config.frame_type,
-                min_seq_len=config.min_seq_len,
-                skill_inclusion_ratio=config.skill_inclusion_ratio,
-                action_ds_ratio=config.action_ds_ratio,
-                toolend_upsample_ratio=config.toolend_upsample_ratio,
-                skill_annotation_path=config.skill_annotation_path,
-                skill_label_type=config.skill_label_type,
-                skill_vocab=skill_vocab,
-                # action_only=config.tune_diffusion_model,
-            )
-            single_datasets.append(dataset)
+            single_datasets.append(_build_dataset(p, config.skill_annotation_path))
 
         train_dataset = LeRobotMixtureDataset(
-            data_mixture=[
-                (dataset, 1.0)  # we will use equal weights for all datasets
-                for dataset in single_datasets
-            ],
+            data_mixture=[(dataset, 1.0) for dataset in single_datasets],
             mode="train",
             balance_dataset_weights=config.balance_dataset_weights,
             balance_trajectory_weights=config.balance_trajectory_weights,
@@ -388,11 +513,43 @@ def main(config: ArgsConfig):
         )
         print(f"Loaded {len(single_datasets)} datasets, with {config.dataset_path} ")
 
-        if config.do_eval:
-            eval_sanity_set = Subset(single_datasets[0], indices=range(int(0.01 * len(single_datasets[0]))))
-            # eval_sanity_set = Subset(train_dataset, indices=range(20))
+    if config.do_eval:
+        eval_datasets = {}
+
+        train_eval_source = None
+        if config.train_eval_dataset_path is not None:
+            train_eval_annotation_path = (
+                config.train_eval_skill_annotation_path or config.skill_annotation_path
+            )
+            train_eval_source = _build_dataset(
+                config.train_eval_dataset_path,
+                train_eval_annotation_path,
+            )
         else:
-            eval_sanity_set = None
+            train_eval_source = train_dataset
+
+        train_eval_set = _bounded_subset(
+            train_eval_source,
+            max_samples=config.train_eval_max_samples,
+            fraction=config.train_eval_fraction,
+        )
+        eval_datasets["train"] = train_eval_set
+        print(
+            f"[eval] train-side subset: {len(train_eval_set)} / {len(train_eval_source)} samples"
+        )
+
+        if config.eval_dataset_path is not None:
+            eval_annotation_path = config.eval_skill_annotation_path or config.skill_annotation_path
+            assert eval_annotation_path is not None, (
+                "--eval_skill_annotation_path or --skill_annotation_path required "
+                "when --eval_dataset_path is set"
+            )
+            eval_datasets["eval"] = _build_dataset(config.eval_dataset_path, eval_annotation_path)
+            print(f"[eval] held-out dataset: {len(eval_datasets['eval'])} samples")
+
+        eval_sanity_set = eval_datasets
+    else:
+        eval_sanity_set = None
 
     # ------------ step 2: load model ------------
     # First, get the data config to determine action horizon
@@ -605,7 +762,8 @@ def main(config: ArgsConfig):
     if config.use_skill_emb:
         assert skill_vocab is not None  # guaranteed by discovery step above
         ah = model.action_head
-        if "cls_stage" not in config.base_model_path:
+        base_has_skill_emb = _base_checkpoint_has_skill_emb(config.base_model_path)
+        if not base_has_skill_emb:
             # Fresh initialization for skill params not present in the base pretrained checkpoint
             for module in ah.skill_proj.modules():
                 if isinstance(module, torch.nn.Linear):
@@ -617,7 +775,10 @@ def main(config: ArgsConfig):
             print(f"[SkillEmb] Skill modules (skill_proj / skill_clf) freshly initialized (num_skills={num_skills})")
         
         if "cls_stage2" not in config.base_model_path:
-            torch.nn.init.normal_(ah.skill_emb_bank.weight, mean=0.0, std=0.02)
+            if config.init_skill_emb_from_llm and config.tune_skill_emb and not config.resume:
+                _init_skill_emb_bank_from_llm(model, skill_vocab, config.llm_skill_init_scale)
+            else:
+                torch.nn.init.normal_(ah.skill_emb_bank.weight, mean=0.0, std=0.02)
             torch.nn.init.xavier_uniform_(ah.skill_emb_proj.weight)
             torch.nn.init.zeros_(ah.skill_emb_proj.bias)
             print(f"[SkillEmb] Skill modules (skill_emb_bank / skill_emb_proj) freshly initialized (num_skills={num_skills})")
@@ -713,7 +874,11 @@ def main(config: ArgsConfig):
     )
 
     # 2.3 run experiment
-    # experiment.eval()
+    if config.do_eval or config.eval_only:
+        experiment.eval()
+    if config.eval_only:
+        print("eval_only=True; skipping training.")
+        return
     experiment.train()
 
 
@@ -763,6 +928,8 @@ if __name__ == "__main__":
 
             # Convert config to command line arguments
             for key, value in vars(config).items():
+                if value is None:
+                    continue
                 if isinstance(value, bool):
                     # For boolean values, use --flag or --no-flag format
                     if value:

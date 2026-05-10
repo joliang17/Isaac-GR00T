@@ -132,3 +132,5 @@ rollouts/*
 slurm_scripts/*
 
 *.pkl
+*.json
+skill_embedding_viz/*
