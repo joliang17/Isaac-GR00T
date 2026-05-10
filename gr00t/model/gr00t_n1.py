@@ -204,13 +204,30 @@ class GR00T_N1_5(PreTrainedModel):
         tune_llm = kwargs.pop("tune_llm", False)
         tune_projector = kwargs.pop("tune_projector", True)
         tune_diffusion_model = kwargs.pop("tune_diffusion_model", True)
+        tune_skill_clf = kwargs.pop("tune_skill_clf", False)
+        tune_skill_emb = kwargs.pop("tune_skill_emb", False)
         torch_dtype = kwargs.pop("torch_dtype", None)
+        # Skill embedding config overrides
+        use_skill_emb = kwargs.pop("use_skill_emb", None)
+        num_skills = kwargs.pop("num_skills", None)
+        skill_vocab = kwargs.pop("skill_vocab", None)
+        skill_emb_dim = kwargs.pop("skill_emb_dim", None)
+        skill_proj_hidden_dim = kwargs.pop("skill_proj_hidden_dim", None)
+        skill_clf_coeff = kwargs.pop("skill_clf_coeff", None)
+        skill_div_coeff = kwargs.pop("skill_div_coeff", None)
+        skill_norm_coeff = kwargs.pop("skill_norm_coeff", None)
+        use_weighted_skill_router = kwargs.pop("use_weighted_skill_router", None)
+        # Backbone layer selection overrides
+        select_layer = kwargs.pop("select_layer", None)
+        select_clf_layer = kwargs.pop("select_clf_layer", None)
 
         print(f"Loading pretrained dual brain from {pretrained_model_name_or_path}")
         print(f"Tune backbone vision tower: {tune_visual}")
         print(f"Tune backbone LLM: {tune_llm}")
         print(f"Tune action head projector: {tune_projector}")
         print(f"Tune action head DiT: {tune_diffusion_model}")
+        print(f"Tune skill classifier: {tune_skill_clf}")
+        print(f"Tune skill embedding: {tune_skill_emb}")
 
         # get the current model path being downloaded
         try:
@@ -229,15 +246,22 @@ class GR00T_N1_5(PreTrainedModel):
         local_eagle_linear_prefix = "backbone.eagle_linear."
         pretrained_state_dict = {}
 
+        local_eagle_linear_clf_prefix = "backbone.eagle_linear_clf."
+
         def should_load_key(key: str) -> bool:
             return (
                 key.startswith(dit_prefix)
                 # or key.startswith(eagle_linear_prefix)
                 or key.startswith(local_eagle_linear_prefix)
+                or key.startswith(local_eagle_linear_clf_prefix)
             )
 
         def maybe_store_key(key: str, tensor: torch.Tensor):
-            if key.startswith(dit_prefix) or key.startswith(local_eagle_linear_prefix):
+            if (
+                key.startswith(dit_prefix)
+                or key.startswith(local_eagle_linear_prefix)
+                or key.startswith(local_eagle_linear_clf_prefix)
+            ):
                 pretrained_state_dict[key] = tensor
             elif key.startswith(eagle_linear_prefix):
                 remapped_key = local_eagle_linear_prefix + key.removeprefix(eagle_linear_prefix)
@@ -269,7 +293,6 @@ class GR00T_N1_5(PreTrainedModel):
                 if should_load_key(key):
                     shard_to_keys.setdefault(shard_name, []).append(key)
 
-            import pdb;pdb.set_trace()
             for shard_name, keys in shard_to_keys.items():
                 load_fn(model_path / shard_name, keys)
 
@@ -286,16 +309,42 @@ class GR00T_N1_5(PreTrainedModel):
                 load_safetensors_file(file_path)
 
         config = cls.config_class.from_pretrained(local_model_path)
+
+        # Inject skill embedding config into action_head_cfg
+        skill_cfg_overrides = {
+            "use_skill_emb": use_skill_emb,
+            "num_skills": num_skills,
+            "skill_vocab": skill_vocab,
+            "skill_emb_dim": skill_emb_dim,
+            "skill_proj_hidden_dim": skill_proj_hidden_dim,
+            "skill_clf_coeff": skill_clf_coeff,
+            "skill_div_coeff": skill_div_coeff,
+            "skill_norm_coeff": skill_norm_coeff,
+            "use_weighted_skill_router": use_weighted_skill_router,
+        }
+        for key, val in skill_cfg_overrides.items():
+            if val is not None:
+                config.action_head_cfg[key] = val
+
+        # Inject backbone layer selection overrides
+        if select_layer is not None:
+            config.backbone_cfg["select_layer"] = select_layer
+        if select_clf_layer is not None:
+            config.backbone_cfg["select_clf_layer"] = select_clf_layer
+
         pretrained_model = cls(config, local_model_path=local_model_path)
         pretrained_model.load_state_dict(pretrained_state_dict, strict=False)
         if isinstance(torch_dtype, torch.dtype):
             pretrained_model = pretrained_model.to(dtype=torch_dtype)
-    
+
         pretrained_model.backbone.set_trainable_parameters(
             tune_visual=tune_visual, tune_llm=tune_llm
         )
         pretrained_model.action_head.set_trainable_parameters(
-            tune_projector=tune_projector, tune_diffusion_model=tune_diffusion_model
+            tune_projector=tune_projector,
+            tune_diffusion_model=tune_diffusion_model,
+            tune_skill_clf=tune_skill_clf,
+            tune_skill_emb=tune_skill_emb,
         )
         return pretrained_model
 

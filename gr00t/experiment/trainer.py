@@ -85,7 +85,31 @@ class DualBrainTrainer(transformers.Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         outputs = model(inputs)
         loss = outputs["loss"]
+
+        # Accumulate skill classifier metrics for logging
+        if "skill_pred_eval" in outputs and "skill_label_eval" in outputs:
+            preds = outputs["skill_pred_eval"]
+            labels = outputs["skill_label_eval"]
+            acc = (preds == labels).float().mean().item()
+            if not hasattr(self, "_skill_acc_buf"):
+                self._skill_acc_buf = []
+            self._skill_acc_buf.append(acc)
+        if "skill_clf_loss" in outputs:
+            if not hasattr(self, "_skill_clf_loss_buf"):
+                self._skill_clf_loss_buf = []
+            self._skill_clf_loss_buf.append(outputs["skill_clf_loss"].item())
+
         return (loss, outputs) if return_outputs else loss
+
+    def log(self, logs, *args, **kwargs):
+        # Flush accumulated skill metrics into the log dict before reporting
+        if hasattr(self, "_skill_acc_buf") and self._skill_acc_buf:
+            logs["skill_clf_acc"] = sum(self._skill_acc_buf) / len(self._skill_acc_buf)
+            self._skill_acc_buf = []
+        if hasattr(self, "_skill_clf_loss_buf") and self._skill_clf_loss_buf:
+            logs["skill_clf_loss"] = sum(self._skill_clf_loss_buf) / len(self._skill_clf_loss_buf)
+            self._skill_clf_loss_buf = []
+        super().log(logs, *args, **kwargs)
 
     def create_optimizer(self):
         """

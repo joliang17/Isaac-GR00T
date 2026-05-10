@@ -53,7 +53,7 @@ from libero_scripts.utils import (
 from gr00t.model.policy import Gr00tPolicy
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from libero.libero import benchmark
-set_seed(53)
+set_seed(42)
 log_dir = "logs/"
 os.makedirs(log_dir, exist_ok=True)  # ensures directory exists
 
@@ -111,7 +111,7 @@ def eval_libero(cfg) -> None:
         
         # Start episodes
         task_episodes, task_successes = 0, 0
-        for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
+        for episode_idx in range(cfg.num_trials_per_task):
             ori_desc = task.language
 
             # empty description

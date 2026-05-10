@@ -33,7 +33,8 @@ class EagleBackbone(nn.Module):
         self,
         tune_llm: bool = False,
         tune_visual: bool = False,
-        select_layer: int = -1,
+        select_layer: int = 12,
+        select_clf_layer: int = -1,
         reproject_vision: bool = False,
         use_flash_attention: bool = False,
         load_bf16: bool = False,
@@ -44,6 +45,8 @@ class EagleBackbone(nn.Module):
         Args:
             tune_llm: whether to tune the LLM model (default: True)
             tune_visual: whether to tune the visual model (default: False)
+            select_layer: which hidden layer to use for DiT conditioning (default: 12)
+            select_clf_layer: which hidden layer to use for skill classifier (default: -1, last)
         """
         super().__init__()
         assert not reproject_vision, "Reproject vision is not implemented here, set to False"
@@ -55,16 +58,12 @@ class EagleBackbone(nn.Module):
         # print(self.eagle_model.lm_head.weight.data_ptr() == self.eagle_model.model.language_model.embed_tokens.weight.data_ptr())
 
         hidden_size = self.eagle_model.lm_head.in_features
-        self.eagle_linear = torch.nn.Linear(hidden_size, 2048)
-        # if project_to_dim is not None:
-        #     self.eagle_linear = torch.nn.Linear(hidden_size, project_to_dim)
-        # else:
-        #     self.eagle_linear = torch.nn.Identity()
+        self.eagle_linear = torch.nn.Linear(hidden_size, 2048)      # for DiT features
+        self.eagle_linear_clf = torch.nn.Linear(hidden_size, 2048)  # for skill classifier features
 
-        # # needed since we don't use these layers. Also saves compute
-        # while len(self.eagle_model.language_model.model.layers) > select_layer:
-        #     self.eagle_model.language_model.model.layers.pop(-1)
         self.select_layer = select_layer
+        self.select_clf_layer = select_clf_layer
+        print(f"selected layer for DiT: {self.select_layer}, for classifier: {self.select_clf_layer}")
         self.set_trainable_parameters(tune_llm, tune_visual)
 
     def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool):
@@ -112,15 +111,21 @@ class EagleBackbone(nn.Module):
         }
         eagle_input.pop("image_sizes", None)
         eagle_output = self.eagle_model(**eagle_input, output_hidden_states=True, return_dict=True)
-        eagle_features = eagle_output.hidden_states[self.select_layer]
 
+        # DiT conditioning: intermediate layer (select_layer, e.g. 12)
+        eagle_features = eagle_output.hidden_states[self.select_layer]
         eagle_features = self.eagle_linear(eagle_features)
-        return eagle_features, eagle_input["attention_mask"]
+
+        # Skill classifier: last layer (select_clf_layer, e.g. -1)
+        clf_features = eagle_output.hidden_states[self.select_clf_layer]
+        clf_features = self.eagle_linear_clf(clf_features)
+
+        return eagle_features, clf_features, eagle_input["attention_mask"]
 
     def forward(self, vl_input: BatchFeature) -> BatchFeature:
         self.set_frozen_modules_to_eval_mode()
 
-        eagle_embeds, eagle_mask = self.forward_eagle(vl_input)
+        eagle_embeds, eagle_clf_embeds, eagle_mask = self.forward_eagle(vl_input)
 
         # YL (TODO HACK): to resolve DDP issue when tune_visual=True
         # Ensure all trainable parameters in vision_model are used in the forward pass for DDP compatibility
@@ -134,5 +139,9 @@ class EagleBackbone(nn.Module):
             eagle_embeds = eagle_embeds + dummy_term
 
         return BatchFeature(
-            data={"backbone_features": eagle_embeds, "backbone_attention_mask": eagle_mask}
-        )  # [B, T2, hidden_size]
+            data={
+                "backbone_features": eagle_embeds,          # layer select_layer, for DiT
+                "backbone_clf_features": eagle_clf_embeds,  # last layer, for skill classifier
+                "backbone_attention_mask": eagle_mask,
+            }
+        )  # [B, T, 2048]

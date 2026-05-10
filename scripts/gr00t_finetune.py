@@ -23,6 +23,7 @@ os.environ["HF_MODULES_CACHE"] = CACHE_DIR
 os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+import json
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -149,6 +150,57 @@ class ArgsConfig:
     balance_trajectory_weights: bool = True
     """Used in LeRobotMixtureDataset. If True, sample trajectories within a dataset weighted by their length; otherwise, equal weighting."""
 
+    # Skill embedding parameters
+    use_skill_emb: bool = False
+    """Enable skill embedding: MLP classifier + learnable skill token appended to DiT input."""
+
+    num_skills: int = 5
+    """Number of skill classes / learnable embedding vectors."""
+
+    skill_emb_dim: int = 256
+    """Dimension of each learnable skill embedding vector."""
+
+    skill_proj_hidden_dim: int = 256
+    """Hidden dim of the skill classifier MLP."""
+
+    skill_clf_coeff: float = 1.0
+    """Weight for cross-entropy skill classification loss."""
+
+    skill_div_coeff: float = 0.01
+    """Weight for orthogonality diversity loss on skill embedding bank."""
+
+    skill_norm_coeff: float = 0.01
+    """Weight for non-zero norm loss on skill embedding bank."""
+
+    use_weighted_skill_router: bool = True
+    """Use soft-weighted skill routing (softmax) instead of top-1 argmax."""
+
+    tune_skill_clf: bool = False
+    """Stage 1: train only skill classifier MLP. use_skill_emb must be True."""
+
+    tune_skill_emb: bool = False
+    """Stage 2: train skill embedding bank + DiT. use_skill_emb must be True."""
+
+    # Backbone layer selection
+    select_layer: int = 12
+    """Which hidden layer to use for DiT conditioning (intermediate)."""
+
+    select_clf_layer: int = -1
+    """Which hidden layer to use for skill classifier (last layer = -1)."""
+
+    # Skill annotation / windowing parameters (matches GR00T reference)
+    windowing_mode: Literal["step", "skill_cls"] = "step"
+    """'step' = every frame; 'skill_cls' = only frames inside annotated skill segments, attaches skill_id."""
+
+    skill_annotation_path: str | None = None
+    """JSON skill-annotation file: {episode_id: {segments: [{start_frame,end_frame,skill,primary_action_verb}, ...]}}."""
+
+    skill_label_type: Literal["skill", "primary_action_verb"] = "skill"
+    """Which JSON field to use as the label: 'skill' (full phrase) or 'primary_action_verb' (atomic verb)."""
+
+    skill_vocab: List[str] | None = None
+    """Fixed skill vocabulary list (preserves order for stage1 -> stage2 consistency). If None, discovered from JSON."""
+
 
 #####################################################################################
 # Helper functions
@@ -201,6 +253,30 @@ def _copy_partial_action_expert_weights(old_dict, new_dict, old_dim, new_dim):
     return new_dict
 
 
+def _discover_skill_vocab(annotation_path: str, skill_label_type: str) -> list[str]:
+    """Scan a skill annotation JSON and return a sorted list of unique labels."""
+    with open(annotation_path) as f:
+        data = json.load(f)
+    labels: set[str] = set()
+    for ep_val in data.values():
+        for seg in ep_val.get("segments", []):
+            if skill_label_type == "primary_action_verb":
+                v = seg.get("primary_action_verb")
+            else:
+                v = seg.get("skill") or seg.get("primary_action_verb")
+            if v:
+                labels.add(v.strip())
+    return sorted(labels)
+
+
+def _validate_skill_vocab(annotation_path: str, skill_label_type: str, vocab: list[str]) -> None:
+    """Warn if the JSON contains labels missing from the user-supplied vocab."""
+    found = set(_discover_skill_vocab(annotation_path, skill_label_type))
+    missing = sorted(found - set(vocab))
+    if missing:
+        print(f"[skill_vocab] WARN: {len(missing)} labels in JSON not in vocab (will be skipped): {missing}")
+
+
 #####################################################################################
 # main training function
 #####################################################################################
@@ -216,14 +292,41 @@ def main(config: ArgsConfig):
     modality_configs = data_config_cls.modality_config()
     transforms = data_config_cls.transform()
 
-    # 1.2 data loader: we will use either single dataset or mixture dataset
+    # 1.2 resolve skill vocab (must happen before dataset construction so id ordering is stable)
+    skill_vocab: list[str] | None = None
+    if config.use_skill_emb and config.windowing_mode == "skill_cls":
+        assert config.skill_annotation_path is not None, (
+            "--skill_annotation_path is required when --windowing_mode=skill_cls"
+        )
+        if config.skill_vocab is not None:
+            skill_vocab = list(config.skill_vocab)
+            _validate_skill_vocab(config.skill_annotation_path, config.skill_label_type, skill_vocab)
+        else:
+            skill_vocab = _discover_skill_vocab(
+                config.skill_annotation_path, config.skill_label_type
+            )
+        assert len(skill_vocab) == config.num_skills, (
+            f"--num_skills={config.num_skills} but resolved skill_vocab has "
+            f"{len(skill_vocab)} entries: {skill_vocab}"
+        )
+        print(f"[skill_vocab] {len(skill_vocab)} classes: {skill_vocab}")
+
+    dataset_kwargs = dict(
+        modality_configs=modality_configs,
+        transforms=transforms,
+        embodiment_tag=embodiment_tag,
+        video_backend=config.video_backend,
+        windowing_mode=config.windowing_mode,
+        skill_annotation_path=config.skill_annotation_path,
+        skill_label_type=config.skill_label_type,
+        skill_vocab=skill_vocab,
+    )
+
+    # 1.3 data loader: we will use either single dataset or mixture dataset
     if len(config.dataset_path) == 1:
         train_dataset = LeRobotSingleDataset(
             dataset_path=config.dataset_path[0],
-            modality_configs=modality_configs,
-            transforms=transforms,
-            embodiment_tag=embodiment_tag,  # This will override the dataset's embodiment tag to "new_embodiment"
-            video_backend=config.video_backend,
+            **dataset_kwargs,
         )
     else:
         single_datasets = []
@@ -233,10 +336,7 @@ def main(config: ArgsConfig):
             ## in reality, you can use dataset from different modalities and embodiment tags
             dataset = LeRobotSingleDataset(
                 dataset_path=p,
-                modality_configs=modality_configs,
-                transforms=transforms,
-                embodiment_tag=embodiment_tag,
-                video_backend=config.video_backend,
+                **dataset_kwargs,
             )
             single_datasets.append(dataset)
 
@@ -273,10 +373,22 @@ def main(config: ArgsConfig):
     # Load model
     model = GR00T_N1_5.from_pretrained(
         pretrained_model_name_or_path=config.base_model_path,
-        tune_llm=config.tune_llm,  # backbone's LLM
-        tune_visual=config.tune_visual,  # backbone's vision tower
-        tune_projector=config.tune_projector,  # action head's projector
-        tune_diffusion_model=config.tune_diffusion_model,  # action head's DiT
+        tune_llm=config.tune_llm,
+        tune_visual=config.tune_visual,
+        tune_projector=config.tune_projector,
+        tune_diffusion_model=config.tune_diffusion_model,
+        tune_skill_clf=config.tune_skill_clf,
+        tune_skill_emb=config.tune_skill_emb,
+        use_skill_emb=config.use_skill_emb if config.use_skill_emb else None,
+        num_skills=config.num_skills if config.use_skill_emb else None,
+        skill_emb_dim=config.skill_emb_dim if config.use_skill_emb else None,
+        skill_proj_hidden_dim=config.skill_proj_hidden_dim if config.use_skill_emb else None,
+        skill_clf_coeff=config.skill_clf_coeff if config.use_skill_emb else None,
+        skill_div_coeff=config.skill_div_coeff if config.use_skill_emb else None,
+        skill_norm_coeff=config.skill_norm_coeff if config.use_skill_emb else None,
+        use_weighted_skill_router=config.use_weighted_skill_router if config.use_skill_emb else None,
+        select_layer=config.select_layer,
+        select_clf_layer=config.select_clf_layer,
     )
 
     # Update action_horizon and max_action_dim to match data config
@@ -341,7 +453,10 @@ def main(config: ArgsConfig):
 
         # Set trainable parameters for the new action head
         model.action_head.set_trainable_parameters(
-            tune_projector=config.tune_projector, tune_diffusion_model=config.tune_diffusion_model
+            tune_projector=config.tune_projector,
+            tune_diffusion_model=config.tune_diffusion_model,
+            tune_skill_clf=config.tune_skill_clf,
+            tune_skill_emb=config.tune_skill_emb,
         )
 
     # Set the model's compute_dtype to bfloat16

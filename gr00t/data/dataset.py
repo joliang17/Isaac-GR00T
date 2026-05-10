@@ -32,6 +32,7 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
+import torch
 from pydantic import BaseModel, Field, ValidationError
 from torch.utils.data import Dataset
 from tqdm import tqdm
@@ -116,6 +117,11 @@ class LeRobotSingleDataset(Dataset):
         video_backend: str = "torchcodec",
         video_backend_kwargs: dict | None = None,
         transforms: ComposedModalityTransform | None = None,
+        windowing_mode: str = "step",
+        skill_annotation_path: str | None = None,
+        skill_label_type: str = "skill",
+        skill_vocab: list | None = None,
+        stride: int = 1,
     ):
         """
         Initialize the dataset.
@@ -128,6 +134,11 @@ class LeRobotSingleDataset(Dataset):
             video_backend_kwargs (dict): Keyword arguments for the video backend when initializing the video reader.
             transforms (ComposedModalityTransform): The transforms to apply to the dataset.
             embodiment_tag (EmbodimentTag): Overload the embodiment tag for the dataset. e.g. define it as "new_embodiment"
+            windowing_mode (str): "step" (default, every frame) or "skill_cls" (only frames inside annotated skill segments, attach skill_id label).
+            skill_annotation_path (str | None): Path to JSON file with per-episode {"segments": [{"start_frame", "end_frame", "skill", "primary_action_verb"}, ...]}.
+            skill_label_type (str): "skill" (full phrase) or "primary_action_verb" (atomic verb). Selects which JSON field to use as the label.
+            skill_vocab (list | None): Fixed ordered list of skill strings; overrides automatic discovery from the JSON.
+            stride (int): Sub-sample frames inside each annotated segment (skill_cls mode only).
         """
         # first check if the path directory exists
         if not Path(dataset_path).exists():
@@ -147,9 +158,20 @@ class LeRobotSingleDataset(Dataset):
         else:
             self.tag = embodiment_tag
 
+        self.windowing_mode = windowing_mode
+        self.stride = stride
+        self.skill_annotation_path = skill_annotation_path
+        self.skill_label_type = skill_label_type
+        self._skill_lookup: dict | None = None
+        self._skill_vocab: list[str] = []
+        self._skill2id: dict[str, int] = {}
+        self._load_skill_annotations(skill_annotation_path, skill_label_type, skill_vocab)
+
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
         self._trajectory_ids, self._trajectory_lengths = self._get_trajectories()
         self._all_steps = self._get_all_steps()
+        if self.windowing_mode == "skill_cls":
+            self._all_steps = self._get_skill_cls_steps()
         self._modality_keys = self._get_modality_keys()
         self._delta_indices = self._get_delta_indices()
         self._max_delta_index = self._get_max_delta_index()
@@ -430,6 +452,84 @@ class LeRobotSingleDataset(Dataset):
                 all_steps.append((trajectory_id, base_index))
         return all_steps
 
+    def _load_skill_annotations(
+        self,
+        skill_annotation_path: str | None,
+        skill_label_type: str,
+        skill_vocab: list | None,
+    ) -> None:
+        """Load per-episode skill segments from JSON, build vocab + id mapping."""
+        if skill_annotation_path is None:
+            return
+        with open(skill_annotation_path, "r") as f:
+            raw = json.load(f)
+        self._skill_lookup = {}
+        ep_key_new = 0
+        for _, ep_val in raw.items():
+            segs = []
+            for seg in ep_val.get("segments", []):
+                if skill_label_type == "primary_action_verb":
+                    text = seg.get("primary_action_verb", "[ACTIONS]")
+                else:
+                    text = seg.get("skill") or seg.get("primary_action_verb", "[ACTIONS]")
+                if isinstance(text, str):
+                    text = text.strip()
+                segs.append((seg["start_frame"], seg["end_frame"], text))
+            self._skill_lookup[ep_key_new] = segs
+            ep_key_new += 1
+        total_segs = sum(len(v) for v in self._skill_lookup.values())
+        print(
+            f"[skill_annotation] Loaded {len(self._skill_lookup)} episodes, "
+            f"{total_segs} segments from {skill_annotation_path}"
+        )
+
+        if skill_vocab is not None:
+            self._skill_vocab = list(skill_vocab)
+        else:
+            vocab_set: set[str] = set()
+            for segs in self._skill_lookup.values():
+                for _, _, text in segs:
+                    vocab_set.add(text)
+            self._skill_vocab = sorted(vocab_set)
+        self._skill2id = {s: i for i, s in enumerate(self._skill_vocab)}
+        print(f"[skill_cls vocab] {len(self._skill_vocab)} classes: {self._skill_vocab}")
+
+    def _get_skill_cls_steps(self) -> list[tuple[int, int]]:
+        """Filter all steps to only frames inside annotated skill segments whose label is in the vocab."""
+        if self._skill_lookup is None:
+            return self._all_steps
+
+        stride = max(1, int(self.stride))
+        steps: list[tuple[int, int]] = []
+        missing_vocab = 0
+        for tid, T in zip(self.trajectory_ids, self.trajectory_lengths):
+            if T <= 0:
+                continue
+            for start, end, text in self._skill_lookup.get(tid, []):
+                if text not in self._skill2id:
+                    missing_vocab += 1
+                    continue
+                start = max(0, int(start))
+                end = min(int(end), int(T) - 1)
+                if end < start:
+                    continue
+                for idx in range(start, end + 1, stride):
+                    steps.append((tid, idx))
+        print(
+            f"[skill_cls windows] total={len(steps)} | "
+            f"skipped_segments_missing_vocab={missing_vocab}"
+        )
+        return steps
+
+    def _resolve_skill_id(self, trajectory_id: int, base_index: int) -> int:
+        """Look up the int skill class for a (trajectory_id, base_index); -1 if outside any segment."""
+        if self._skill_lookup is None:
+            return -1
+        for s, e, text in self._skill_lookup.get(trajectory_id, []):
+            if s <= base_index <= e:
+                return self._skill2id.get(text, -1)
+        return -1
+
     def _get_modality_keys(self) -> dict:
         """Get the modality keys for the dataset.
         The keys are the modality names, and the values are the keys for each modality.
@@ -538,7 +638,12 @@ class LeRobotSingleDataset(Dataset):
             dict: The data for the step.
         """
         trajectory_id, base_index = self.all_steps[index]
-        return self.transforms(self.get_step_data(trajectory_id, base_index))
+        out = self.transforms(self.get_step_data(trajectory_id, base_index))
+        if self.windowing_mode == "skill_cls":
+            out["skill_id"] = torch.tensor(
+                self._resolve_skill_id(trajectory_id, base_index), dtype=torch.long
+            )
+        return out
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
         """Get the RAW data for a single step in a trajectory. No transforms are applied.

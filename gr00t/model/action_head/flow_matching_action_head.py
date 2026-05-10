@@ -153,6 +153,52 @@ class FlowmatchingActionHeadConfig(PretrainedConfig):
         default=32, metadata={"help": "Number of target vision tokens."}
     )
 
+    # Skill embedding config (gated by use_skill_emb; backward-compatible when False)
+    use_skill_emb: bool = field(
+        default=False,
+        metadata={"help": "Enable skill embedding: MLP classifier (Stage 1) + learnable skill token concat (Stage 2)."},
+    )
+    skill_vocab: list = field(
+        default=None,
+        metadata={"help": "List of skill name strings for label extraction."},
+    )
+    num_skills: int = field(
+        default=0,
+        metadata={"help": "Number of skill classes."},
+    )
+    skill_emb_dim: int = field(
+        default=256,
+        metadata={"help": "Dimension of learnable skill embedding vectors in skill_emb_bank."},
+    )
+    skill_proj_hidden_dim: int = field(
+        default=256,
+        metadata={"help": "Hidden dim of the MLP projector used in the skill classifier."},
+    )
+    skill_clf_coeff: float = field(
+        default=1.0,
+        metadata={"help": "Weight for cross-entropy skill classification loss."},
+    )
+    skill_div_coeff: float = field(
+        default=0.01,
+        metadata={"help": "Weight for orthogonality diversity loss on skill embedding bank."},
+    )
+    skill_norm_coeff: float = field(
+        default=0.01,
+        metadata={"help": "Weight for non-zero norm loss on skill embedding bank."},
+    )
+    use_weighted_skill_router: bool = field(
+        default=False,
+        metadata={"help": "Use soft-weighted routing (softmax) instead of top-1 argmax."},
+    )
+    tune_skill_clf: bool = field(
+        default=False,
+        metadata={"help": "Stage 1: freeze all except skill classifier MLP."},
+    )
+    tune_skill_emb: bool = field(
+        default=False,
+        metadata={"help": "Stage 2: freeze skill classifier, train skill embeddings + DiT."},
+    )
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         for key, value in kwargs.items():
@@ -211,12 +257,37 @@ class FlowmatchingActionHead(nn.Module):
 
         self.beta_dist = Beta(config.noise_beta_alpha, config.noise_beta_beta)
         self.num_timestep_buckets = config.num_timestep_buckets
-        self.config = config
-        self.set_trainable_parameters(config.tune_projector, config.tune_diffusion_model)
 
-    def set_trainable_parameters(self, tune_projector: bool, tune_diffusion_model: bool):
+        if config.use_skill_emb:
+            assert config.num_skills > 0, "num_skills must be > 0 when use_skill_emb=True"
+            backbone_emb_dim = config.backbone_embedding_dim  # 2048 (clf features dim)
+            self.skill_proj = nn.Sequential(
+                nn.Linear(backbone_emb_dim, config.skill_proj_hidden_dim),
+                nn.ReLU(),
+            )
+            self.skill_clf = nn.Linear(config.skill_proj_hidden_dim, config.num_skills)
+            self.skill_emb_bank = nn.Embedding(config.num_skills, config.skill_emb_dim)
+            self.skill_emb_proj = nn.Linear(config.skill_emb_dim, config.input_embedding_dim)
+
+        self.config = config
+        self.set_trainable_parameters(
+            config.tune_projector,
+            config.tune_diffusion_model,
+            getattr(config, "tune_skill_clf", False),
+            getattr(config, "tune_skill_emb", False),
+        )
+
+    def set_trainable_parameters(
+        self,
+        tune_projector: bool,
+        tune_diffusion_model: bool,
+        tune_skill_clf: bool = False,
+        tune_skill_emb: bool = False,
+    ):
         self.tune_projector = tune_projector
         self.tune_diffusion_model = tune_diffusion_model
+        self.tune_skill_clf = tune_skill_clf
+        self.tune_skill_emb = tune_skill_emb
         for p in self.parameters():
             p.requires_grad = True
         if not tune_projector:
@@ -225,11 +296,20 @@ class FlowmatchingActionHead(nn.Module):
             self.action_decoder.requires_grad_(False)
             if self.config.add_pos_embed:
                 self.position_embedding.requires_grad_(False)
+        if self.config.use_skill_emb:
+            if not tune_skill_clf:
+                self.skill_proj.requires_grad_(False)
+                self.skill_clf.requires_grad_(False)
+            if not tune_skill_emb:
+                self.skill_emb_bank.requires_grad_(False)
+                self.skill_emb_proj.requires_grad_(False)
         if not tune_diffusion_model:
             self.model.requires_grad_(False)
         print(f"Tune action head projector: {self.tune_projector}")
         print(f"Tune action head diffusion model: {self.tune_diffusion_model}")
-        # Check if any parameters are still trainable. If not, print a warning.
+        if self.config.use_skill_emb:
+            print(f"Tune skill classifier: {self.tune_skill_clf}")
+            print(f"Tune skill embedding bank: {self.tune_skill_emb}")
         if not tune_projector and not tune_diffusion_model:
             for name, p in self.named_parameters():
                 if p.requires_grad:
@@ -252,6 +332,36 @@ class FlowmatchingActionHead(nn.Module):
                     self.position_embedding.eval()
             if not self.tune_diffusion_model:
                 self.model.eval()
+            if self.config.use_skill_emb:
+                if not self.tune_skill_clf:
+                    self.skill_proj.eval()
+                    self.skill_clf.eval()
+                if not self.tune_skill_emb:
+                    self.skill_emb_bank.eval()
+                    self.skill_emb_proj.eval()
+
+    def _masked_mean_pool(
+        self,
+        features: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Masked mean pool (B, T, D) → (B, D), ignoring padding tokens."""
+        if attn_mask is None:
+            return features.mean(dim=1)
+        mask = attn_mask.bool().float().unsqueeze(-1)  # (B, T, 1)
+        denom = mask.sum(dim=1).clamp(min=1.0)         # (B, 1)
+        return (features * mask).sum(dim=1) / denom    # (B, D)
+
+    def _skill_embedding_losses(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute diversity and non-zero losses on skill_emb_bank weights."""
+        E = self.skill_emb_bank.weight                         # (K, skill_emb_dim)
+        E_norm = F.normalize(E, dim=-1)
+        G = E_norm @ E_norm.T                                  # (K, K) cosine gram
+        K = G.shape[0]
+        eye = torch.eye(K, device=G.device, dtype=G.dtype)
+        div_loss = ((G - eye) ** 2).sum()                      # penalize off-diagonal
+        norm_loss = (1.0 / (E.norm(dim=-1) ** 2 + 1e-6)).mean()
+        return div_loss, norm_loss
 
     def sample_time(self, batch_size, device, dtype):
         sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype)
@@ -294,7 +404,47 @@ class FlowmatchingActionHead(nn.Module):
 
         # Get vision and language embeddings.
         vl_embs = backbone_output.backbone_features
+        vl_attn_mask = backbone_output.backbone_attention_mask
         device = vl_embs.device
+
+        # Skill classification (uses last-layer clf features) + skill token for DiT.
+        skill_clf_loss = None
+        skill_token = None
+        if self.config.use_skill_emb:
+            clf_embs = backbone_output.get("backbone_clf_features")
+            if clf_embs is None:
+                clf_embs = vl_embs  # fallback: use DiT features
+            pooled = self._masked_mean_pool(clf_embs, vl_attn_mask)   # (B, D)
+            pooled = pooled.to(dtype=next(self.skill_proj.parameters()).dtype)
+            skill_logits = self.skill_clf(self.skill_proj(pooled))     # (B, num_skills)
+
+            if "skill_id" in action_input:
+                skill_label = action_input["skill_id"]
+                skill_clf_loss = F.cross_entropy(skill_logits, skill_label)
+
+            if self.config.use_weighted_skill_router:
+                skill_weights = torch.softmax(skill_logits, dim=-1)
+                skill_emb = skill_weights @ self.skill_emb_bank.weight
+                skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)
+            elif "skill_id" in action_input:
+                skill_token = self.skill_emb_proj(
+                    self.skill_emb_bank(skill_label)
+                ).unsqueeze(1)
+            else:
+                skill_token = self.skill_emb_proj(
+                    self.skill_emb_bank(skill_logits.argmax(dim=-1))
+                ).unsqueeze(1)
+
+            if self.tune_skill_clf:
+                # Stage 1: classifier-only training
+                assert skill_clf_loss is not None, "skill_id missing from batch in Stage 1"
+                loss = self.config.skill_clf_coeff * skill_clf_loss
+                return BatchFeature(data={
+                    "loss": loss,
+                    "skill_clf_loss": skill_clf_loss.detach(),
+                    "skill_pred_eval": skill_logits.argmax(dim=-1).detach(),
+                    "skill_label_eval": skill_label.detach(),
+                })
 
         # Get embodiment ID.
         embodiment_id = action_input.embodiment_id
@@ -321,11 +471,14 @@ class FlowmatchingActionHead(nn.Module):
             pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
             action_features = action_features + pos_embs
 
-        # Join vision, language, state and action embedding along sequence dimension.
+        # Join state, future tokens, actions, and optional skill token along sequence dimension.
+        # With skill_emb: [state | future_tokens | actions | skill_token]
+        # Without:        [state | future_tokens | actions]
         future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
-        sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
-
-        vl_attn_mask = backbone_output.backbone_attention_mask
+        if self.config.use_skill_emb and skill_token is not None:
+            sa_embs = torch.cat((state_features, future_tokens, action_features, skill_token), dim=1)
+        else:
+            sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
 
         model_output = self.model(
             hidden_states=sa_embs,
@@ -335,15 +488,35 @@ class FlowmatchingActionHead(nn.Module):
             return_all_hidden_states=False,  # NOTE (YL): not using flare now
         )
         pred = self.action_decoder(model_output, embodiment_id)
-        pred_actions = pred[:, -actions.shape[1] :]
+
+        # Slice action tokens: layout differs by mode.
+        # skill_emb: [state(1) | future(32) | actions(T) | skill(1)] → actions at [33 : 33+T]
+        # original:  [state(1) | future(32) | actions(T)] → actions at [-T:]
+        if self.config.use_skill_emb:
+            start_index = state_features.shape[1] + future_tokens.shape[1]
+            pred_actions = pred[:, start_index : start_index + actions.shape[1]]
+        else:
+            pred_actions = pred[:, -actions.shape[1]:]
 
         # Slice out only the action portion of pred and target.
         action_mask = action_input.action_mask
         loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
         loss = loss.sum() / action_mask.sum()
-        output_dict = {
-            "loss": loss,
-        }
+        output_dict = {"loss": loss}
+
+        if self.config.use_skill_emb:
+            if not self.tune_skill_emb and skill_clf_loss is not None:
+                loss = loss + self.config.skill_clf_coeff * skill_clf_loss
+                output_dict["skill_clf_loss"] = skill_clf_loss.detach()
+            div_loss, norm_loss = self._skill_embedding_losses()
+            loss = loss + self.config.skill_div_coeff * div_loss + self.config.skill_norm_coeff * norm_loss
+            output_dict["skill_div_loss"] = div_loss.detach()
+            output_dict["skill_norm_loss"] = norm_loss.detach()
+            if skill_clf_loss is not None:
+                output_dict["skill_pred_eval"] = skill_logits.argmax(dim=-1).detach()
+                output_dict["skill_label_eval"] = skill_label.detach()
+            output_dict["loss"] = loss
+
         return BatchFeature(data=output_dict)
 
     @torch.no_grad()
@@ -353,10 +526,38 @@ class FlowmatchingActionHead(nn.Module):
 
         # Get vision and language embeddings.
         vl_embs = backbone_output.backbone_features
+        vl_attn_mask = backbone_output.get("backbone_attention_mask")
         embodiment_id = action_input.embodiment_id
 
         # Embed state.
         state_features = self.state_encoder(action_input.state, embodiment_id)
+
+        # Compute skill token once for all denoising steps (uses last-layer clf features).
+        skill_token = None
+        if self.config.use_skill_emb:
+            clf_embs = backbone_output.get("backbone_clf_features")
+            if clf_embs is None:
+                clf_embs = vl_embs  # fallback
+            pooled = self._masked_mean_pool(clf_embs, vl_attn_mask)  # (B, D)
+            pooled = pooled.to(dtype=next(self.skill_proj.parameters()).dtype)
+            skill_logits = self.skill_clf(self.skill_proj(pooled))
+            if self.config.use_weighted_skill_router:
+                skill_weights = torch.softmax(skill_logits, dim=-1)
+                skill_emb = skill_weights @ self.skill_emb_bank.weight
+                skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)
+            else:
+                skill_idx = skill_logits.argmax(dim=-1)  # (B,)
+                skill_vocab = self.config.skill_vocab
+                if skill_vocab is None:
+                    skill_vocab = [str(i) for i in range(self.config.num_skills)]
+                skill_names = [
+                    skill_vocab[i] if 0 <= i < len(skill_vocab) else f"<skill:{i}>"
+                    for i in skill_idx.tolist()
+                ]
+                print(f"[SKILL] skill={skill_names} idx={skill_idx.tolist()}")
+                skill_token = self.skill_emb_proj(
+                    self.skill_emb_bank(skill_idx)
+                ).unsqueeze(1)  # (B, 1, input_emb_dim)
 
         # Set initial actions as the sampled noise.
         batch_size = vl_embs.shape[0]
@@ -386,9 +587,12 @@ class FlowmatchingActionHead(nn.Module):
                 pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
                 action_features = action_features + pos_embs
 
-            # Join vision, language, state and action embedding along sequence dimension.
+            # Join state, future tokens, actions, and optional skill token.
             future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
-            sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+            if self.config.use_skill_emb and skill_token is not None:
+                sa_embs = torch.cat((state_features, future_tokens, action_features, skill_token), dim=1)
+            else:
+                sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
 
             # Run model forward.
             model_output = self.model(
@@ -398,7 +602,12 @@ class FlowmatchingActionHead(nn.Module):
             )
             pred = self.action_decoder(model_output, embodiment_id)
 
-            pred_velocity = pred[:, -self.action_horizon :]
+            # Slice action tokens matching the layout used in forward().
+            if self.config.use_skill_emb:
+                start_index = state_features.shape[1] + future_tokens.shape[1]
+                pred_velocity = pred[:, start_index : start_index + self.action_horizon]
+            else:
+                pred_velocity = pred[:, -self.action_horizon:]
 
             # Update actions using euler integration.
             actions = actions + dt * pred_velocity
