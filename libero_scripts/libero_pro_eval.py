@@ -154,7 +154,11 @@ def load_init_states(init_states_path: str):
 def extract_name(s: str) -> str:
     if "/" in s and not s.startswith("/"):
         return s.split("/")[0]
-    return Path(s).parts[-2]
+    parts = Path(s).parts
+    # Path may point at a checkpoint-* subdir or directly at the run folder.
+    if len(parts) >= 2 and parts[-1].startswith("checkpoint-"):
+        return parts[-2]
+    return parts[-1]
 
 
 def action_chunk_len(action_chunk, action_keys):
@@ -201,6 +205,12 @@ def eval_libero_pro(args) -> None:
         denoising_steps=args.denoising_steps,
         device="cuda" if torch.cuda.is_available() else "cpu",
     )
+
+    # Skill-router models expose the routed skill on the action head; detect this
+    # so the rollout videos can overlay the executed skill name (skill experiments only).
+    action_head = getattr(getattr(gr00t_policy, "model", None), "action_head", None)
+    is_skill_model = bool(getattr(getattr(action_head, "config", None), "use_skill_emb", False))
+    print(f"Skill model (overlay skill name on videos): {is_skill_model}")
 
     # ---- build task list depending on perturbation type ----
     perturb_type = args.perturbation_type
@@ -267,6 +277,8 @@ def eval_libero_pro(args) -> None:
             t = 0
             top_view = []
             wrist_view = []
+            skill_labels = []
+            current_skill = None
             cached_action_chunk = None
             chunk_idx = 0
             done = False
@@ -303,6 +315,13 @@ def eval_libero_pro(args) -> None:
                             print(msg)
                             log_file.write(msg + "\n")
 
+                    # Record the router-selected skill for this frame (skill models only).
+                    if is_skill_model:
+                        names = getattr(action_head, "last_skill_names", None)
+                        if names:
+                            current_skill = names[0]
+                    skill_labels.append(current_skill)
+
                     action = convert_to_libero_action(
                         cached_action_chunk, action_keys, idx=chunk_idx, normalize=args.normalize_action
                     )
@@ -333,6 +352,7 @@ def eval_libero_pro(args) -> None:
                 top_view, wrist_view, total_episodes,
                 success=done, task_description=task_description,
                 log_file=log_file, model_name=log_suffix,
+                skill_labels=skill_labels if is_skill_model else None,
             )
 
             print(f"Success: {done}")

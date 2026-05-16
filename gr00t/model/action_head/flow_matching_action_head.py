@@ -340,6 +340,10 @@ class FlowmatchingActionHead(nn.Module):
             # Stage 2: learnable per-skill embedding bank + projection to DiT input dim
             self.skill_emb_bank = nn.Embedding(config.num_skills, config.skill_emb_dim)
             self.skill_emb_proj = nn.Linear(config.skill_emb_dim, config.input_embedding_dim)
+            # Routed skill from the most recent get_action() call (for logging /
+            # video overlay during evaluation). Populated in get_action().
+            self.last_skill_idx = None
+            self.last_skill_names = None
 
         self.config = config
         self.set_trainable_parameters(
@@ -777,20 +781,27 @@ class FlowmatchingActionHead(nn.Module):
             pooled = self._masked_mean_pool(vl_embs, vl_attn_mask)  # (B, D)
             pooled = pooled.to(dtype=next(self.skill_proj.parameters()).dtype)
             skill_logits = self.skill_clf(self.skill_proj(pooled))
+
+            # Record the routed skill (argmax) for logging / video overlay.
+            # Computed for both routing modes; the weighted router still uses
+            # soft weights below, this is display-only.
+            skill_idx = skill_logits.argmax(dim=-1)                      # (B,)
+            skill_vocab = self.config.skill_vocab
+            if skill_vocab is None:
+                skill_vocab = [str(i) for i in range(self.config.num_skills)]
+            skill_names = [
+                skill_vocab[i] if 0 <= i < len(skill_vocab) else f"<skill:{i}>"
+                for i in skill_idx.tolist()
+            ]
+            self.last_skill_idx = skill_idx.tolist()
+            self.last_skill_names = skill_names
+            print(f"[SKILL] skill={skill_names} idx={skill_idx.tolist()}")
+
             if self.config.use_weighted_skill_router:
                 skill_weights = torch.softmax(skill_logits, dim=-1)
                 skill_emb = skill_weights @ self.skill_emb_bank.weight
                 skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)
             else:
-                skill_idx = skill_logits.argmax(dim=-1)                  # (B,)
-                skill_vocab = self.config.skill_vocab
-                if skill_vocab is None:
-                    skill_vocab = [str(i) for i in range(self.config.num_skills)]
-                skill_names = [
-                    skill_vocab[i] if 0 <= i < len(skill_vocab) else f"<skill:{i}>"
-                    for i in skill_idx.tolist()
-                ]
-                print(f"[SKILL] skill={skill_names} idx={skill_idx.tolist()}")
                 skill_token = self.skill_emb_proj(
                     self.skill_emb_bank(skill_idx)
                 ).unsqueeze(1)  # (B, 1, input_emb_dim)

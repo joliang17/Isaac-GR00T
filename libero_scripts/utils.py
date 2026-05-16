@@ -206,8 +206,32 @@ def best_fourcc(preferred=("mp4v", "avc1", "H264", "XVID")):
     return cv2.VideoWriter_fourcc(*"mp4v")
 
 
-def save_rollout_video(top_view, wrist_view, idx, success, task_description, log_file=None, model_name=''):
-    """Saves an MP4 replay of an episode."""
+def _draw_skill_label(frame, text):
+    """Return a copy of `frame` with `text` drawn in the top-left corner.
+
+    Used to overlay the router-selected skill name on rollout videos.
+    """
+    img = np.ascontiguousarray(_to_uint8_rgb(frame))
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.6
+    thickness = 1
+    (tw, th), baseline = cv2.getTextSize(str(text), font, font_scale, thickness)
+    pad = 4
+    # Filled dark background box for readability.
+    cv2.rectangle(img, (0, 0), (tw + 2 * pad, th + 2 * pad + baseline), (0, 0, 0), -1)
+    cv2.putText(
+        img, str(text), (pad, th + pad),
+        font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA,
+    )
+    return img
+
+
+def save_rollout_video(top_view, wrist_view, idx, success, task_description, log_file=None, model_name='', skill_labels=None):
+    """Saves an MP4 replay of an episode.
+
+    If `skill_labels` is provided (one entry per top-view frame), the
+    corresponding skill name is drawn on the top-left of each agent-view frame.
+    """
     rollout_dir = f"./rollouts/{DATE}"
     os.makedirs(rollout_dir, exist_ok=True)
     processed_task_description = (
@@ -232,7 +256,9 @@ def save_rollout_video(top_view, wrist_view, idx, success, task_description, log
     if not writer.isOpened():
         raise RuntimeError("cv2.VideoWriter failed to open. Try a different extension or fourcc.")
 
-    for img1, img2 in zip(top_view, wrist_view):
+    for i, (img1, img2) in enumerate(zip(top_view, wrist_view)):
+        if skill_labels is not None and i < len(skill_labels) and skill_labels[i]:
+            img1 = _draw_skill_label(img1, skill_labels[i])
         combined = merge_frame(img1, img2)
         writer.write(combined)
     writer.release()

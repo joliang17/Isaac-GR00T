@@ -66,8 +66,11 @@ skill_prefix = "The robot executes atomic manipulation skills. Your job is to ge
 def extract_name(s):
     if "/" in s and not s.startswith("/"):
         return s.split("/")[0]        # repo format
-    else:
-        return Path(s).parts[-2]     # filesystem path
+    parts = Path(s).parts
+    # Path may point at a checkpoint-* subdir or directly at the run folder.
+    if len(parts) >= 2 and parts[-1].startswith("checkpoint-"):
+        return parts[-2]
+    return parts[-1]
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -118,6 +121,12 @@ def eval_libero(cfg) -> None:
         denoising_steps=cfg.denoising_steps,
         device="cuda" if torch.cuda.is_available() else "cpu",
     )
+
+    # Skill-router models expose the routed skill on the action head; detect this
+    # so the rollout videos can overlay the executed skill name (skill experiments only).
+    action_head = getattr(getattr(gr00t_policy, "model", None), "action_head", None)
+    is_skill_model = bool(getattr(getattr(action_head, "config", None), "use_skill_emb", False))
+    print(f"Skill model (overlay skill name on videos): {is_skill_model}")
     # import pdb;pdb.set_trace()
     # # skill embedding: 
     # skill_emb = gr00t_policy.model.action_head.skill_emb_bank.weight.detach().cpu()
@@ -168,6 +177,8 @@ def eval_libero(cfg) -> None:
                     t = 0
                     top_view = []
                     wrist_view = []
+                    skill_labels = []
+                    current_skill = None
                     cached_action_chunk = None
                     chunk_idx = 0
                     done = False
@@ -223,6 +234,13 @@ def eval_libero(cfg) -> None:
                                     log_file.write(msg + "\n")
                             # if normalize=True: gripper from model: [0, 1] will be normalized to [-1, 1]
                             # if original training data is not normalized (-1, 1), no need ro norm (normalize_action = False)
+                            # Record the router-selected skill for this frame (skill models only).
+                            if is_skill_model:
+                                names = getattr(action_head, "last_skill_names", None)
+                                if names:
+                                    current_skill = names[0]
+                            skill_labels.append(current_skill)
+
                             action = convert_to_libero_action(cached_action_chunk, action_keys, idx=chunk_idx, normalize=cfg.normalize_action)
                             chunk_idx += 1
 
@@ -251,7 +269,7 @@ def eval_libero(cfg) -> None:
                     total_episodes += 1
 
                     # Save a replay video of the episode
-                    save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, model_name=log_suffix)
+                    save_rollout_video(top_view, wrist_view, total_episodes, success=done, task_description=task_description, log_file=log_file, model_name=log_suffix, skill_labels=skill_labels if is_skill_model else None)
 
                     # Log current results
                     print(f"Success: {done}")
