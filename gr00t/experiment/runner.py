@@ -15,10 +15,14 @@
 
 import json
 import os
+import pprint
+import traceback
+from functools import partial
 from pathlib import Path
 
 import torch
 import numpy as np
+import wandb
 from transformers import TrainingArguments, set_seed
 
 from gr00t.data.dataset import LeRobotMixtureDataset, LeRobotSingleDataset
@@ -31,12 +35,45 @@ from gr00t.utils.experiment import (
 )
 
 
+def preprocess_logits_for_metrics(logits, labels):
+    """Extract skill_pred_eval / skill_label_eval from model output dict."""
+    device = torch.device("cpu")
+    p_skill = l_skill = None
+    if isinstance(logits, dict) or hasattr(logits, "data"):
+        p_skill = logits.get("skill_pred_eval")
+        l_skill = logits.get("skill_label_eval")
+        if p_skill is not None:
+            device = p_skill.device
+    if p_skill is None:
+        p_skill = torch.empty(0, dtype=torch.long, device=device)
+    if l_skill is None:
+        l_skill = torch.empty(0, dtype=torch.long, device=device)
+    return (p_skill, l_skill)
+
+
+def compute_metrics(eval_preds, use_skill_emb=False):
+    """Compute skill classifier accuracy from eval predictions."""
+    metrics = {}
+    try:
+        (skill_pred_eval, skill_label_eval), labels = eval_preds
+        if len(skill_pred_eval) > 0:
+            metrics["skill_clf_accuracy"] = float(
+                (skill_pred_eval == skill_label_eval).sum()
+            ) / len(skill_label_eval)
+        else:
+            metrics["skill_clf_accuracy"] = 0.0
+    except Exception:
+        traceback.print_exc()
+    return metrics
+
+
 class TrainRunner:
     def __init__(
         self,
         model: GR00T_N1_5,
         training_args: TrainingArguments,
         train_dataset: LeRobotSingleDataset | LeRobotMixtureDataset,
+        eval_dataset=None,
         resume_from_checkpoint: bool = False,
     ):
         self.training_args = training_args
@@ -45,6 +82,7 @@ class TrainRunner:
         self.exp_cfg_dir.mkdir(parents=True, exist_ok=True)
         self.resume_from_checkpoint = resume_from_checkpoint
         self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
         # Set up training arguments
         training_args.run_name = (
             training_args.output_dir.split("/")[-1]
@@ -63,6 +101,7 @@ class TrainRunner:
             model=model,
             training_args=training_args,
             train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
             data_collator=data_collator,
             compute_dtype=compute_dtype,
         )
@@ -128,6 +167,7 @@ class TrainRunner:
         train_dataset,
         data_collator,
         compute_dtype,
+        eval_dataset=None,
         global_batch_size=None,
     ):
         # Set the gradient accumulation steps if global_batch_size is provided
@@ -140,13 +180,27 @@ class TrainRunner:
                 f"Set global batch size to {global_batch_size}, set gradient accumulation steps to {grad_acc}"
             )
 
+        # Build compute_metrics + preprocess_logits when eval is enabled
+        compute_metrics_func = None
+        preprocess_logits_func = None
+        if eval_dataset is not None:
+            action_head = getattr(model, "action_head", None)
+            use_skill_emb = (
+                getattr(action_head.config, "use_skill_emb", False) if action_head else False
+            )
+            compute_metrics_func = partial(compute_metrics, use_skill_emb=use_skill_emb)
+            preprocess_logits_func = preprocess_logits_for_metrics
+
         # Create the trainer
         trainer = DualBrainTrainer(
             model=model,
             args=training_args,
             train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
             data_collator=data_collator,
             compute_dtype=compute_dtype,
+            compute_metrics=compute_metrics_func,
+            preprocess_logits_for_metrics=preprocess_logits_func,
         )
 
         # Add checkpoint format callback to ensure experiment_cfg is copied to each checkpoint
@@ -178,3 +232,11 @@ class TrainRunner:
             trainer=self.trainer,
             output_dir=self.training_args.output_dir,
         )
+
+    def eval(self):
+        print("***** Running Evaluation *****")
+        metrics = self.trainer.evaluate()
+        if self.rank == 0:
+            wandb.log(metrics)
+            pprint.pprint(metrics)
+        return metrics

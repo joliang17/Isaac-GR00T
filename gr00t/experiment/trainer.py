@@ -14,12 +14,14 @@
 # limitations under the License.
 
 
+import glob
 import os
 from typing import Optional
 
 import numpy as np
 import torch
 import transformers
+import wandb
 from torch.utils.data import Dataset, Sampler
 try:
     from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
@@ -82,34 +84,47 @@ class DualBrainTrainer(transformers.Trainer):
     def _get_eval_sampler(self, eval_dataset):
         return BaseSampler(eval_dataset, shuffle=False)
 
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
+        """Evaluate one dataset or a name->dataset mapping with explicit metric prefixes."""
+        eval_dataset = self.eval_dataset if eval_dataset is None else eval_dataset
+        if isinstance(eval_dataset, dict):
+            all_metrics = {}
+            for prefix, dataset in eval_dataset.items():
+                if dataset is None:
+                    continue
+                metrics = super().evaluate(
+                    eval_dataset=dataset,
+                    ignore_keys=ignore_keys,
+                    metric_key_prefix=str(prefix),
+                )
+                all_metrics.update(metrics)
+            return all_metrics
+        return super().evaluate(
+            eval_dataset=eval_dataset,
+            ignore_keys=ignore_keys,
+            metric_key_prefix=metric_key_prefix,
+        )
+
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        """Pass model(inputs) as a dict and return _eval keys as logits for compute_metrics."""
+        with torch.no_grad():
+            with self.compute_loss_context_manager():
+                outputs = model(inputs)
+                loss = outputs.get("loss")
+                new_logits = {k: v for k, v in outputs.items() if "logits" in k or "eval" in k}
+                labels = inputs.get("labels")
+        if prediction_loss_only:
+            return (loss, None, None)
+        return (loss, new_logits, labels)
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         outputs = model(inputs)
         loss = outputs["loss"]
-
-        # Accumulate skill classifier metrics for logging
-        if "skill_pred_eval" in outputs and "skill_label_eval" in outputs:
-            preds = outputs["skill_pred_eval"]
-            labels = outputs["skill_label_eval"]
-            acc = (preds == labels).float().mean().item()
-            if not hasattr(self, "_skill_acc_buf"):
-                self._skill_acc_buf = []
-            self._skill_acc_buf.append(acc)
-        if "skill_clf_loss" in outputs:
-            if not hasattr(self, "_skill_clf_loss_buf"):
-                self._skill_clf_loss_buf = []
-            self._skill_clf_loss_buf.append(outputs["skill_clf_loss"].item())
-
+        if self.args.process_index == 0:
+            for key, value in outputs.items():
+                if "_loss" in key:
+                    wandb.log({key: value.item()})
         return (loss, outputs) if return_outputs else loss
-
-    def log(self, logs, *args, **kwargs):
-        # Flush accumulated skill metrics into the log dict before reporting
-        if hasattr(self, "_skill_acc_buf") and self._skill_acc_buf:
-            logs["skill_clf_acc"] = sum(self._skill_acc_buf) / len(self._skill_acc_buf)
-            self._skill_acc_buf = []
-        if hasattr(self, "_skill_clf_loss_buf") and self._skill_clf_loss_buf:
-            logs["skill_clf_loss"] = sum(self._skill_clf_loss_buf) / len(self._skill_clf_loss_buf)
-            self._skill_clf_loss_buf = []
-        super().log(logs, *args, **kwargs)
 
     def create_optimizer(self):
         """
@@ -152,15 +167,30 @@ class DualBrainTrainer(transformers.Trainer):
 
         return self.optimizer
 
+    def _load_optimizer_and_scheduler(self, checkpoint):
+        """Skip loading optimizer/scheduler from checkpoint to avoid torch.load CVE-2025-32434
+        restriction on torch < 2.6. Model weights are still resumed; optimizer restarts fresh."""
+        pass
+
     def save_model(self, output_dir: Optional[str], _internal_call: bool):
-        ## save tuned model separately
+        def rm_old_ckpt(out_dir, num_limit=1):
+            ckpts = sorted(
+                glob.glob(os.path.join(os.path.dirname(out_dir), "checkpoint-*")),
+                key=os.path.getmtime,
+            )
+            if len(ckpts) > num_limit:
+                for ckpt in ckpts[:-num_limit]:
+                    print(f"Removing old checkpoint {ckpt}")
+                    os.system(f"rm -rf {ckpt}")
+
         if self.is_deepspeed_enabled:
             state_dict = self.accelerator.get_state_dict(self.deepspeed)
         else:
             state_dict = self.model.state_dict()
 
         if self.args.should_save:
-            return self.model.save_pretrained(output_dir, state_dict=state_dict)
+            self.model.save_pretrained(output_dir, state_dict=state_dict)
+            rm_old_ckpt(output_dir, num_limit=1)
 
     def train(
         self,

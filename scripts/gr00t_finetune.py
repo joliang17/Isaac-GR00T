@@ -201,6 +201,15 @@ class ArgsConfig:
     skill_vocab: List[str] | None = None
     """Fixed skill vocabulary list (preserves order for stage1 -> stage2 consistency). If None, discovered from JSON."""
 
+    do_eval: bool = False
+    
+    # Evaluation parameters
+    eval_dataset_path: str | None = None
+    """Path to held-out eval dataset. If None and do_eval=True, the first train dataset path is reused."""
+
+    eval_skill_annotation_path: str | None = None
+    """Skill annotation JSON for the eval dataset. Falls back to skill_annotation_path if None."""
+
 
 #####################################################################################
 # Helper functions
@@ -472,7 +481,16 @@ def main(config: ArgsConfig):
             action_head_only=not config.lora_full_model,
         )
 
-    # 2.1 modify training args
+    # 2.1 build eval dataset (optional)
+    eval_dataset = None
+    # if config.do_eval:
+    #     eval_annotation = config.eval_skill_annotation_path or config.skill_annotation_path
+    #     eval_ds_path = config.eval_dataset_path or config.dataset_path[0]
+    #     eval_dataset_kwargs = {**dataset_kwargs, "skill_annotation_path": eval_annotation}
+    #     eval_dataset = LeRobotSingleDataset(dataset_path=eval_ds_path, **eval_dataset_kwargs)
+    #     print(f"[eval] dataset: {eval_ds_path}, {len(eval_dataset)} samples")
+
+    # 2.2 modify training args
     training_args = TrainingArguments(
         output_dir=config.output_dir,
         run_name=config.run_name,
@@ -500,26 +518,29 @@ def main(config: ArgsConfig):
         max_steps=config.max_steps,
         save_strategy="steps",
         save_steps=config.save_steps,
-        # evaluation_strategy="no",
+        do_eval=config.do_eval,
+        eval_strategy="steps" if config.do_eval else "no",
+        eval_steps=config.save_steps if config.do_eval else None,
+        per_device_eval_batch_size=config.batch_size,
         save_total_limit=5,
         report_to=config.report_to,
         seed=42,
-        do_eval=False,
         ddp_find_unused_parameters=False,
         ddp_bucket_cap_mb=100,
         torch_compile_mode=None,
         # max_grad_norm=config.grad_norm,
     )
 
-    # 2.2 run experiment
+    # 2.3 run experiment
     experiment = TrainRunner(
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         model=model,
         training_args=training_args,
         resume_from_checkpoint=config.resume,
     )
 
-    # 2.3 run experiment
+    # 2.4 run experiment
     experiment.train()
 
 

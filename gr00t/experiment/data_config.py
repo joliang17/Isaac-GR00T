@@ -775,7 +775,7 @@ class AgibotGenie1DataConfig(BaseDataConfig):
 
 class LiberoDataConfig(BaseDataConfig):
     video_keys = [
-        "video.primary_image",
+        "video.image",
         "video.wrist_image",
     ]
     state_keys = [
@@ -858,17 +858,6 @@ class LiberoDataConfig(BaseDataConfig):
         return ComposedModalityTransform(transforms=transforms)
 
 
-###########################################################################################
-
-
-class LiberoAtomicDataConfig(LiberoDataConfig):
-    """Atomic-segmented LIBERO dataset (libero_atomic_*) — uses video.image instead of video.primary_image."""
-
-    video_keys = [
-        "video.image",
-        "video.wrist_image",
-    ]
-
 
 ###########################################################################################
 
@@ -886,5 +875,4 @@ DATA_CONFIG_MAP = {
     "oxe_droid": OxeDroidDataConfig(),
     "agibot_genie1": AgibotGenie1DataConfig(),
     "libero_original": LiberoDataConfig(),
-    "libero_atomic": LiberoAtomicDataConfig(),
 }
