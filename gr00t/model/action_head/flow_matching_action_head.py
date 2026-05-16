@@ -245,6 +245,10 @@ class FlowmatchingActionHeadConfig(PretrainedConfig):
         default=False,
         metadata={"help": "Stage 2: freeze skill classifier, train skill embeddings + diffusion."},
     )
+    use_skill_film: bool = field(
+        default=False,
+        metadata={"help": "Condition action features via FiLM (action*(1+gamma)+beta) from the skill embedding instead of concatenating a separate skill token."},
+    )
 
     vl_self_attention_cfg: dict = field(default=None)
     num_target_vision_tokens: int = field(
@@ -340,6 +344,18 @@ class FlowmatchingActionHead(nn.Module):
             # Stage 2: learnable per-skill embedding bank + projection to DiT input dim
             self.skill_emb_bank = nn.Embedding(config.num_skills, config.skill_emb_dim)
             self.skill_emb_proj = nn.Linear(config.skill_emb_dim, config.input_embedding_dim)
+            # Optional FiLM head: modulates action features with the skill embedding
+            # (action_features * (1 + gamma) + beta) instead of concatenating a token.
+            if config.use_skill_film:
+                self.skill_film = nn.Sequential(
+                    nn.Linear(config.skill_emb_dim, config.skill_proj_hidden_dim),
+                    nn.SiLU(),
+                    nn.Linear(config.skill_proj_hidden_dim, config.input_embedding_dim * 2),
+                )
+                # Zero-init final layer -> gamma=0, beta=0 -> starts as identity
+                # since the modulation is action_features * (1 + gamma) + beta.
+                nn.init.zeros_(self.skill_film[-1].weight)
+                nn.init.zeros_(self.skill_film[-1].bias)
             # Routed skill from the most recent get_action() call (for logging /
             # video overlay during evaluation). Populated in get_action().
             self.last_skill_idx = None
@@ -380,6 +396,8 @@ class FlowmatchingActionHead(nn.Module):
             if not tune_skill_emb:
                 self.skill_emb_bank.requires_grad_(False)
                 self.skill_emb_proj.requires_grad_(False)
+                if getattr(self, "skill_film", None) is not None:
+                    self.skill_film.requires_grad_(False)
         # Task-conditioned adapters are always trainable when present —
         # they are the task-transfer-specific modules and must update during fine-tuning.
         for adapter_name in ("state_adapter", "action_adapter", "decoder_adapter"):
@@ -423,6 +441,8 @@ class FlowmatchingActionHead(nn.Module):
                 if not self.tune_skill_emb:
                     self.skill_emb_bank.eval()
                     self.skill_emb_proj.eval()
+                    if getattr(self, "skill_film", None) is not None:
+                        self.skill_film.eval()
 
     def _masked_mean_pool(
         self,
@@ -578,9 +598,10 @@ class FlowmatchingActionHead(nn.Module):
             # vl_attn_mask = None
             num_action = 0
 
-        # Skill classification loss + skill token (computed before padding filter).
+        # Skill classification loss + skill embedding (computed before padding filter).
         skill_clf_loss = None
-        skill_token = None  # (B, 1, input_emb_dim), set when use_skill_emb
+        skill_emb = None    # (B, skill_emb_dim), set when use_skill_emb
+        skill_token = None  # (B, 1, input_emb_dim), set when use_skill_emb and not use_skill_film
         if self.config.use_skill_emb:
             pooled = self._masked_mean_pool(vl_embs, vl_attn_mask)  # (B, D)
             pooled = pooled.to(dtype=next(self.skill_proj.parameters()).dtype)
@@ -593,18 +614,17 @@ class FlowmatchingActionHead(nn.Module):
                 # Soft-weighted: differentiable weighted sum over all skill embeddings
                 skill_weights = torch.softmax(skill_logits, dim=-1)           # (B, K)
                 skill_emb = skill_weights @ self.skill_emb_bank.weight        # (B, skill_emb_dim)
-                skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)     # (B, 1, input_emb_dim)
             elif "skill_id" in action_input:
                 # Top-1 hard selection using ground-truth label
-                skill_token = self.skill_emb_proj(
-                    self.skill_emb_bank(skill_label)
-                ).unsqueeze(1)
+                skill_emb = self.skill_emb_bank(skill_label)                  # (B, skill_emb_dim)
             else:
                 # Top-1 inference fallback: use classifier argmax
                 skill_idx = skill_logits.argmax(dim=-1)
-                skill_token = self.skill_emb_proj(
-                    self.skill_emb_bank(skill_idx)
-                ).unsqueeze(1)
+                skill_emb = self.skill_emb_bank(skill_idx)                    # (B, skill_emb_dim)
+
+            # Project to a DiT input token unless FiLM conditioning is used.
+            if not self.config.use_skill_film:
+                skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)     # (B, 1, input_emb_dim)
 
             if self.tune_skill_clf:
                 # Stage 1: classifier-only loss
@@ -674,15 +694,28 @@ class FlowmatchingActionHead(nn.Module):
             pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
             action_features = action_features + pos_embs
 
-        # Join vision, language, state, action, and optional skill token along sequence dimension.
-        # When use_skill_emb: [state(1) | actions(T) | skill(1)]  — no future_tokens
-        # Otherwise (original): [state(1) | future(32) | actions(T)]
+        # Join vision, language, state, action, and optional skill conditioning along the
+        # sequence dimension. Action tokens are always placed LAST so the model output
+        # can be sliced with a simple pred[:, -T:] in every mode.
+        #   use_skill_film: [state(1) | future(32) | actions(T)]  (skill FiLM-modulates actions)
+        #   skill token:    [state(1) | future(32) | skill(1) | actions(T)]
+        #   no skill:       [state(1) | future(32) | actions(T)]
         future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
-        if self.config.use_skill_emb and skill_token is not None:
-            # Align skill_token batch size with filtered batch (after padding_mask)
+        if self.config.use_skill_emb:
+            # Align skill tensors with the filtered batch (after padding_mask).
             if not padding_mask.all():
-                skill_token = skill_token[padding_mask]
-            sa_embs = torch.cat((state_features, future_tokens, action_features, skill_token), dim=1)
+                skill_emb = skill_emb[padding_mask]
+                if skill_token is not None:
+                    skill_token = skill_token[padding_mask]
+            if self.config.use_skill_film:
+                # FiLM: modulate every action token with the skill embedding.
+                gamma, beta = self.skill_film(skill_emb).chunk(2, dim=-1)
+                gamma = gamma.unsqueeze(1)
+                beta = beta.unsqueeze(1)
+                action_features = action_features * (1 + gamma) + beta
+                sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+            else:
+                sa_embs = torch.cat((state_features, future_tokens, skill_token, action_features), dim=1)
         else:
             sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
 
@@ -697,15 +730,8 @@ class FlowmatchingActionHead(nn.Module):
         if task_emb is not None:
             pred = self.decoder_adapter(pred, task_emb)
 
-        # Slice action tokens: layout differs by mode.
-        # skill_emb: [state(1) | future(32) | actions(T) | skill(1)] → actions at [33 : 33+T]
-        # original:  [state(1) | future(32) | actions(T)] → actions at [-T:]
-        if self.config.use_skill_emb:
-            concat_emb = torch.cat((state_features, future_tokens), dim=1)
-            start_index = concat_emb.shape[1]
-            pred_actions = pred[:, start_index : start_index + actions.shape[1]]
-        else:
-            pred_actions = pred[:, -actions.shape[1]:]
+        # Action tokens are always the last T tokens of the sequence in every mode.
+        pred_actions = pred[:, -actions.shape[1]:]
 
         # Stage-gated loss computation.
         
@@ -775,7 +801,8 @@ class FlowmatchingActionHead(nn.Module):
         if task_emb is not None:
             state_features = self.state_adapter(state_features, task_emb)
 
-        # Compute skill token once for all denoising steps.
+        # Compute skill conditioning once for all denoising steps.
+        skill_emb = None
         skill_token = None
         if self.config.use_skill_emb:
             vl_attn_mask = backbone_output.get("backbone_attention_mask")
@@ -805,29 +832,24 @@ class FlowmatchingActionHead(nn.Module):
 
             if self.config.use_weighted_skill_router:
                 skill_weights = torch.softmax(skill_logits, dim=-1)
-                skill_emb = skill_weights @ self.skill_emb_bank.weight
-                skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)
+                skill_emb = skill_weights @ self.skill_emb_bank.weight    # (B, skill_emb_dim)
             else:
-                skill_token = self.skill_emb_proj(
-                    self.skill_emb_bank(skill_idx)
-                ).unsqueeze(1)  # (B, 1, input_emb_dim)
+                skill_emb = self.skill_emb_bank(skill_idx)               # (B, skill_emb_dim)
 
             # Inference-time skill-embedding ablations (default "normal" leaves
-            # the routed token untouched). Set via `action_head.skill_eval_mode`.
+            # the routed embedding untouched). Set via `action_head.skill_eval_mode`.
             skill_eval_mode = getattr(self, "skill_eval_mode", "normal")
             if skill_eval_mode == "zero":
-                skill_token = torch.zeros_like(skill_token)
+                skill_emb = torch.zeros_like(skill_emb)
                 self.last_skill_idx = [-1] * batch_size
                 self.last_skill_names = ["<zero>"] * batch_size
                 self.last_skill_probs = None
-                print(f"[SKILL] mode=zero (skill token zeroed)")
+                print(f"[SKILL] mode=zero (skill embedding zeroed)")
             elif skill_eval_mode == "shuffle":
                 rand_idx = torch.randint(
                     0, self.config.num_skills, skill_idx.shape, device=skill_idx.device
                 )
-                skill_token = self.skill_emb_proj(
-                    self.skill_emb_bank(rand_idx)
-                ).unsqueeze(1)
+                skill_emb = self.skill_emb_bank(rand_idx)
                 self.last_skill_idx = rand_idx.tolist()
                 self.last_skill_names = [
                     skill_vocab[i] if 0 <= i < len(skill_vocab) else f"<skill:{i}>"
@@ -838,6 +860,10 @@ class FlowmatchingActionHead(nn.Module):
                 ).squeeze(-1)
                 self.last_skill_probs = [round(p, 4) for p in rand_probs.tolist()]
                 print(f"[SKILL] mode=shuffle skill={self.last_skill_names} idx={self.last_skill_idx} prob={self.last_skill_probs}")
+
+            # Project to a DiT input token unless FiLM conditioning is used.
+            if not self.config.use_skill_film:
+                skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)  # (B, 1, input_emb_dim)
 
         # Set initial actions as the sampled noise.
         actions = torch.randn(size=(batch_size, self.config.action_horizon, self.config.action_dim), dtype=vl_embs.dtype, device=device, )
@@ -863,12 +889,21 @@ class FlowmatchingActionHead(nn.Module):
                 pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
                 action_features = action_features + pos_embs
 
-            # Join state, action, and optional skill token along sequence dimension.
-            # skill_emb: [state(1) | actions(T) | skill(1)]
-            # original:  [state(1) | future(32) | actions(T)]
+            # Join state, future, action, and optional skill conditioning. Action
+            # tokens are always last so the output can be sliced with pred[:, -T:].
+            #   use_skill_film: [state(1) | future(32) | actions(T)]  (skill FiLM-modulates actions)
+            #   skill token:    [state(1) | future(32) | skill(1) | actions(T)]
+            #   no skill:       [state(1) | future(32) | actions(T)]
             future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
-            if self.config.use_skill_emb and skill_token is not None:
-                sa_embs = torch.cat((state_features, future_tokens, action_features, skill_token), dim=1)
+            if self.config.use_skill_emb:
+                if self.config.use_skill_film:
+                    gamma, beta = self.skill_film(skill_emb).chunk(2, dim=-1)
+                    gamma = gamma.unsqueeze(1)
+                    beta = beta.unsqueeze(1)
+                    action_features = action_features * (1 + gamma) + beta
+                    sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+                else:
+                    sa_embs = torch.cat((state_features, future_tokens, skill_token, action_features), dim=1)
             else:
                 sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
 
@@ -882,13 +917,8 @@ class FlowmatchingActionHead(nn.Module):
             if task_emb is not None:
                 pred = self.decoder_adapter(pred, task_emb)
 
-            # Slice action tokens matching the layout used in forward().
-            if self.config.use_skill_emb:
-                concat_emb = torch.cat((state_features, future_tokens), dim=1)
-                start_index = concat_emb.shape[1]
-                pred_velocity = pred[:, start_index : start_index + self.action_horizon]
-            else:
-                pred_velocity = pred[:, -self.action_horizon:]
+            # Action tokens are always the last T tokens of the sequence in every mode.
+            pred_velocity = pred[:, -self.action_horizon:]
 
             # Update actions using euler integration.
             actions = actions + dt * pred_velocity

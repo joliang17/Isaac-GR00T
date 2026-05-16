@@ -61,6 +61,7 @@ class GR00T_N1_5_Config(PretrainedConfig):
     skill_div_coeff: float = field(default=0.01, metadata={"help": "Weight for orthogonality diversity loss on skill embedding bank."})
     skill_norm_coeff: float = field(default=0.01, metadata={"help": "Weight for non-zero norm loss on skill embedding bank (prevents collapse to zero)."})
     use_weighted_skill_router: bool = field(default=False, metadata={"help": "Use soft-weighted skill routing instead of top-1 argmax."})
+    use_skill_film: bool = field(default=False, metadata={"help": "Condition action features via FiLM from the skill embedding instead of concatenating a skill token."})
 
 
     def __init__(self, **kwargs):
@@ -103,6 +104,7 @@ class GR00T_N1_5(PreTrainedModel):
             "skill_div_coeff": config.skill_div_coeff,
             "skill_norm_coeff": config.skill_norm_coeff,
             "use_weighted_skill_router": config.use_weighted_skill_router,
+            "use_skill_film": config.use_skill_film,
         }
         action_head_cfg = FlowmatchingActionHeadConfig(**head_kwargs)
 

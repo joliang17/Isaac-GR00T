@@ -232,6 +232,9 @@ class ArgsConfig:
     use_weighted_skill_router: bool = False
     """Use soft-weighted skill router (softmax over all embeddings) instead of top-1 argmax at inference and training."""
 
+    use_skill_film: bool = False
+    """Condition action features via FiLM (action*(1+gamma)+beta) from the skill embedding instead of concatenating a separate skill token."""
+
     freeze_embeddings: bool = False
     """Whether to fine-tune the embedding model."""
 
@@ -582,6 +585,7 @@ def main(config: ArgsConfig):
         skill_div_coeff=config.skill_div_coeff,
         skill_norm_coeff=config.skill_norm_coeff,
         use_weighted_skill_router=config.use_weighted_skill_router,
+        use_skill_film=config.use_skill_film,
         pred_nextstep=pred_nextstep
     )
 
