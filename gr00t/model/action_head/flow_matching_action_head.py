@@ -344,6 +344,7 @@ class FlowmatchingActionHead(nn.Module):
             # video overlay during evaluation). Populated in get_action().
             self.last_skill_idx = None
             self.last_skill_names = None
+            self.last_skill_probs = None
 
         self.config = config
         self.set_trainable_parameters(
@@ -786,6 +787,10 @@ class FlowmatchingActionHead(nn.Module):
             # Computed for both routing modes; the weighted router still uses
             # soft weights below, this is display-only.
             skill_idx = skill_logits.argmax(dim=-1)                      # (B,)
+            skill_probs = torch.softmax(skill_logits.float(), dim=-1)    # (B, K)
+            selected_probs = skill_probs.gather(
+                -1, skill_idx.unsqueeze(-1)
+            ).squeeze(-1)                                                # (B,)
             skill_vocab = self.config.skill_vocab
             if skill_vocab is None:
                 skill_vocab = [str(i) for i in range(self.config.num_skills)]
@@ -795,7 +800,8 @@ class FlowmatchingActionHead(nn.Module):
             ]
             self.last_skill_idx = skill_idx.tolist()
             self.last_skill_names = skill_names
-            print(f"[SKILL] skill={skill_names} idx={skill_idx.tolist()}")
+            self.last_skill_probs = [round(p, 4) for p in selected_probs.tolist()]
+            print(f"[SKILL] skill={skill_names} idx={skill_idx.tolist()} prob={self.last_skill_probs}")
 
             if self.config.use_weighted_skill_router:
                 skill_weights = torch.softmax(skill_logits, dim=-1)
@@ -813,6 +819,7 @@ class FlowmatchingActionHead(nn.Module):
                 skill_token = torch.zeros_like(skill_token)
                 self.last_skill_idx = [-1] * batch_size
                 self.last_skill_names = ["<zero>"] * batch_size
+                self.last_skill_probs = None
                 print(f"[SKILL] mode=zero (skill token zeroed)")
             elif skill_eval_mode == "shuffle":
                 rand_idx = torch.randint(
@@ -826,7 +833,11 @@ class FlowmatchingActionHead(nn.Module):
                     skill_vocab[i] if 0 <= i < len(skill_vocab) else f"<skill:{i}>"
                     for i in rand_idx.tolist()
                 ]
-                print(f"[SKILL] mode=shuffle skill={self.last_skill_names} idx={self.last_skill_idx}")
+                rand_probs = skill_probs.gather(
+                    -1, rand_idx.unsqueeze(-1)
+                ).squeeze(-1)
+                self.last_skill_probs = [round(p, 4) for p in rand_probs.tolist()]
+                print(f"[SKILL] mode=shuffle skill={self.last_skill_names} idx={self.last_skill_idx} prob={self.last_skill_probs}")
 
         # Set initial actions as the sampled noise.
         actions = torch.randn(size=(batch_size, self.config.action_horizon, self.config.action_dim), dtype=vl_embs.dtype, device=device, )
