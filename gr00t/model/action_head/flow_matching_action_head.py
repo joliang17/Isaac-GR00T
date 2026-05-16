@@ -806,6 +806,28 @@ class FlowmatchingActionHead(nn.Module):
                     self.skill_emb_bank(skill_idx)
                 ).unsqueeze(1)  # (B, 1, input_emb_dim)
 
+            # Inference-time skill-embedding ablations (default "normal" leaves
+            # the routed token untouched). Set via `action_head.skill_eval_mode`.
+            skill_eval_mode = getattr(self, "skill_eval_mode", "normal")
+            if skill_eval_mode == "zero":
+                skill_token = torch.zeros_like(skill_token)
+                self.last_skill_idx = [-1] * batch_size
+                self.last_skill_names = ["<zero>"] * batch_size
+                print(f"[SKILL] mode=zero (skill token zeroed)")
+            elif skill_eval_mode == "shuffle":
+                rand_idx = torch.randint(
+                    0, self.config.num_skills, skill_idx.shape, device=skill_idx.device
+                )
+                skill_token = self.skill_emb_proj(
+                    self.skill_emb_bank(rand_idx)
+                ).unsqueeze(1)
+                self.last_skill_idx = rand_idx.tolist()
+                self.last_skill_names = [
+                    skill_vocab[i] if 0 <= i < len(skill_vocab) else f"<skill:{i}>"
+                    for i in rand_idx.tolist()
+                ]
+                print(f"[SKILL] mode=shuffle skill={self.last_skill_names} idx={self.last_skill_idx}")
+
         # Set initial actions as the sampled noise.
         actions = torch.randn(size=(batch_size, self.config.action_horizon, self.config.action_dim), dtype=vl_embs.dtype, device=device, )
 

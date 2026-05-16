@@ -103,6 +103,8 @@ def eval_libero(cfg) -> None:
         print(f"Model path: {cfg.model_path}, saved folder: {model_name}")
 
     log_suffix = f"model{model_name}_task{cfg.task_suite_name}_seed{cfg.random_seed}_h{cfg.action_horizon}"
+    if getattr(cfg, "skill_eval_mode", "normal") != "normal":
+        log_suffix += f"_skill{cfg.skill_eval_mode}"
 
     log_file = open(f"{log_dir}/libero_eval_{log_suffix}.log", "w")
     log_file.write(f"Task suite: {cfg.task_suite_name}\n")
@@ -127,6 +129,13 @@ def eval_libero(cfg) -> None:
     action_head = getattr(getattr(gr00t_policy, "model", None), "action_head", None)
     is_skill_model = bool(getattr(getattr(action_head, "config", None), "use_skill_emb", False))
     print(f"Skill model (overlay skill name on videos): {is_skill_model}")
+
+    # Inference-time skill-embedding ablation (normal / shuffle / zero).
+    if is_skill_model:
+        action_head.skill_eval_mode = cfg.skill_eval_mode
+        print(f"Skill eval mode: {cfg.skill_eval_mode}")
+    elif cfg.skill_eval_mode != "normal":
+        print("WARNING: --skill_eval_mode set but model has no skill embedding; ignoring.")
     # import pdb;pdb.set_trace()
     # # skill embedding: 
     # skill_emb = gr00t_policy.model.action_head.skill_emb_bank.weight.detach().cpu()
@@ -351,6 +360,13 @@ if __name__ == "__main__":
         help="Number of actions to execute from each predicted chunk before re-querying the model (default=1, i.e. query every step)"
     )
     parser.add_argument("--random_seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument(
+        "--skill_eval_mode",
+        type=str,
+        choices=["normal", "shuffle", "zero"],
+        default="normal",
+        help="Skill-embedding ablation mode for skill-router models.",
+    )
     args = parser.parse_args()
 
     set_seed(args.random_seed)

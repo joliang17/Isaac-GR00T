@@ -187,6 +187,8 @@ def eval_libero_pro(args) -> None:
         print(f"Model path: {args.model_path}, saved folder: {model_name}")
 
     log_suffix = f"model{model_name}_task{args.task_suite_name}_pert{args.perturbation_type}_seed{args.random_seed}_h{args.action_horizon}"
+    if getattr(args, "skill_eval_mode", "normal") != "normal":
+        log_suffix += f"_skill{args.skill_eval_mode}"
     log_file = open(f"{log_dir}/libero_pro_eval_{log_suffix}.log", "w")
     log_file.write(f"Task suite: {args.task_suite_name}\n")
     log_file.write(f"Perturbation type: {args.perturbation_type}\n")
@@ -211,6 +213,13 @@ def eval_libero_pro(args) -> None:
     action_head = getattr(getattr(gr00t_policy, "model", None), "action_head", None)
     is_skill_model = bool(getattr(getattr(action_head, "config", None), "use_skill_emb", False))
     print(f"Skill model (overlay skill name on videos): {is_skill_model}")
+
+    # Inference-time skill-embedding ablation (normal / shuffle / zero).
+    if is_skill_model:
+        action_head.skill_eval_mode = args.skill_eval_mode
+        print(f"Skill eval mode: {args.skill_eval_mode}")
+    elif args.skill_eval_mode != "normal":
+        print("WARNING: --skill_eval_mode set but model has no skill embedding; ignoring.")
 
     # ---- build task list depending on perturbation type ----
     perturb_type = args.perturbation_type
@@ -442,6 +451,13 @@ if __name__ == "__main__":
         help="Number of actions to execute per model query.",
     )
     parser.add_argument("--random_seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument(
+        "--skill_eval_mode",
+        type=str,
+        choices=["normal", "shuffle", "zero"],
+        default="normal",
+        help="Skill-embedding ablation mode for skill-router models.",
+    )
     args = parser.parse_args()
 
     set_seed(args.random_seed)
