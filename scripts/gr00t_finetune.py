@@ -382,6 +382,31 @@ def _base_checkpoint_has_skill_emb(base_model_path: str) -> bool:
     return bool(base_cfg.get("use_skill_emb", False))
 
 
+def _base_checkpoint_has_skill_film(base_model_path: str) -> bool:
+    """Return whether a local base checkpoint actually stores skill_film weights.
+
+    Stage-1 checkpoints do not train the FiLM head; depending on how the
+    checkpoint was produced it may omit skill_film entirely. When the weights
+    are absent the FiLM head must be (re)initialized in Stage 2 instead of
+    silently relying on whatever happens to be in the checkpoint."""
+    base_dir = Path(base_model_path)
+    try:
+        index_path = base_dir / "model.safetensors.index.json"
+        if index_path.exists():
+            with open(index_path) as f:
+                weight_map = json.load(f).get("weight_map", {})
+            return any("skill_film" in k for k in weight_map)
+        single = base_dir / "model.safetensors"
+        if single.exists():
+            from safetensors import safe_open
+
+            with safe_open(str(single), framework="pt") as t:
+                return any("skill_film" in k for k in t.keys())
+    except Exception:
+        return False
+    return False
+
+
 def _init_skill_emb_bank_from_llm(model, skill_vocab: list[str], scale: float) -> None:
     """Initialize skill_emb_bank from mean-pooled LLM token embeddings.
 
@@ -786,6 +811,28 @@ def main(config: ArgsConfig):
             torch.nn.init.xavier_uniform_(ah.skill_emb_proj.weight)
             torch.nn.init.zeros_(ah.skill_emb_proj.bias)
             print(f"[SkillEmb] Skill modules (skill_emb_bank / skill_emb_proj) freshly initialized (num_skills={num_skills})")
+
+        # skill_film is a Stage-2 module: re-initialize it whenever the base
+        # checkpoint does not contain valid FiLM weights. Stage-1 checkpoints
+        # either omit skill_film or leave it untrained/non-finite; loading
+        # garbage (e.g. NaN/inf) weights here makes the FiLM modulation emit NaN
+        # on the very first step and crashes the MSE-loss backward.
+        if config.use_skill_film and getattr(ah, "skill_film", None) is not None:
+            film_in_ckpt = _base_checkpoint_has_skill_film(config.base_model_path)
+            film_finite = all(
+                torch.isfinite(p).all().item() for p in ah.skill_film.parameters()
+            )
+            if not film_in_ckpt or not film_finite:
+                linears = [m for m in ah.skill_film.modules() if isinstance(m, torch.nn.Linear)]
+                for module in linears:
+                    module.reset_parameters()
+                # Zero-init the final layer -> gamma=0, beta=0 -> FiLM starts as
+                # an identity (action_features * (1 + gamma) + beta), matching
+                # the module's __init__ contract.
+                torch.nn.init.zeros_(linears[-1].weight)
+                torch.nn.init.zeros_(linears[-1].bias)
+                reason = "absent from base ckpt" if not film_in_ckpt else "non-finite in base ckpt"
+                print(f"[SkillEmb] skill_film freshly initialized ({reason}); FiLM starts as identity")
 
     train_action_head = False
     if 'both' in config.dataset_path[0] and 'skip_action' not in config.run_name:
