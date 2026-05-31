@@ -74,10 +74,37 @@ def preprocess_logits_for_metrics(logits, labels):
     if p_skill is None: p_skill = torch.empty(0, dtype=torch.long, device=device)
     if l_skill is None: l_skill = torch.empty(0, dtype=torch.long, device=device)
 
+    skill_mse_normal = logits.get("skill_mse_normal_eval") if (isinstance(logits, dict) or hasattr(logits, "data")) else None
+    skill_mse_zero = logits.get("skill_mse_zero_eval") if (isinstance(logits, dict) or hasattr(logits, "data")) else None
+    skill_mse_shuffle = logits.get("skill_mse_shuffle_eval") if (isinstance(logits, dict) or hasattr(logits, "data")) else None
+    skill_mse_zero_delta = logits.get("skill_mse_zero_delta_eval") if (isinstance(logits, dict) or hasattr(logits, "data")) else None
+    skill_mse_shuffle_delta = logits.get("skill_mse_shuffle_delta_eval") if (isinstance(logits, dict) or hasattr(logits, "data")) else None
+    empty_float = torch.empty(0, dtype=torch.float32, device=device)
+    if skill_mse_normal is None: skill_mse_normal = empty_float
+    if skill_mse_zero is None: skill_mse_zero = empty_float
+    if skill_mse_shuffle is None: skill_mse_shuffle = empty_float
+    if skill_mse_zero_delta is None: skill_mse_zero_delta = empty_float
+    if skill_mse_shuffle_delta is None: skill_mse_shuffle_delta = empty_float
+
     # 4. Return as a tuple
     # Note: We include both preds and targets for the toolhead/special tokens
     # because they are filtered/subsampled in the backbone.
-    return (lm_preds, p_te, t_te, p_sp, l_sp, p_tt, l_tt, p_skill, l_skill)
+    return (
+        lm_preds,
+        p_te,
+        t_te,
+        p_sp,
+        l_sp,
+        p_tt,
+        l_tt,
+        p_skill,
+        l_skill,
+        skill_mse_normal,
+        skill_mse_zero,
+        skill_mse_shuffle,
+        skill_mse_zero_delta,
+        skill_mse_shuffle_delta,
+    )
 
 
 def compute_tool_end_counts(
@@ -146,7 +173,31 @@ def compute_metrics(
     """
     metrics = {}
     try:
-        (lm_preds, predicted_tool_end, target_tool_end, cur_pred_id_eval, cur_label_id_eval, all_pred_id_eval, all_label_id_eval, skill_pred_eval, skill_label_eval), labels = eval_preds
+        (
+            lm_preds,
+            predicted_tool_end,
+            target_tool_end,
+            cur_pred_id_eval,
+            cur_label_id_eval,
+            all_pred_id_eval,
+            all_label_id_eval,
+            skill_pred_eval,
+            skill_label_eval,
+            skill_mse_normal,
+            skill_mse_zero,
+            skill_mse_shuffle,
+            skill_mse_zero_delta,
+            skill_mse_shuffle_delta,
+        ), labels = eval_preds
+
+        if len(skill_mse_normal) > 0:
+            metrics["skill_mse_normal"] = float(np.asarray(skill_mse_normal).mean())
+            metrics["skill_mse_zero"] = float(np.asarray(skill_mse_zero).mean())
+            metrics["skill_mse_shuffle"] = float(np.asarray(skill_mse_shuffle).mean())
+            metrics["skill_mse_zero_delta"] = float(np.asarray(skill_mse_zero_delta).mean())
+            metrics["skill_mse_shuffle_delta"] = float(
+                np.asarray(skill_mse_shuffle_delta).mean()
+            )
 
         # Stage 1: VLM backbone frozen — skip token decode and only report skill accuracy
         if use_skill_emb:
