@@ -88,6 +88,7 @@ class BasicTransformerBlock(nn.Module):
         ff_inner_dim: Optional[int] = None,
         ff_bias: bool = True,
         attention_out_bias: bool = True,
+        skill_conditioning_dim: Optional[int] = None,
     ):
         super().__init__()
         self.dim = dim
@@ -101,6 +102,7 @@ class BasicTransformerBlock(nn.Module):
         self.positional_embeddings = positional_embeddings
         self.num_positional_embeddings = num_positional_embeddings
         self.norm_type = norm_type
+        self.skill_conditioning_dim = skill_conditioning_dim
 
         if positional_embeddings and (num_positional_embeddings is None):
             raise ValueError(
@@ -147,6 +149,16 @@ class BasicTransformerBlock(nn.Module):
         else:
             self.final_dropout = None
 
+        if skill_conditioning_dim is not None:
+            self.skill_mod = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(skill_conditioning_dim, dim * 4),
+            )
+            nn.init.zeros_(self.skill_mod[-1].weight)
+            nn.init.zeros_(self.skill_mod[-1].bias)
+        else:
+            self.skill_mod = None
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -154,7 +166,14 @@ class BasicTransformerBlock(nn.Module):
         encoder_hidden_states: Optional[torch.Tensor] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
         temb: Optional[torch.LongTensor] = None,
+        skill_conditioning: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if self.skill_mod is not None and skill_conditioning is not None:
+            attn_scale, attn_shift, ff_scale, ff_shift = self.skill_mod(
+                skill_conditioning
+            ).chunk(4, dim=1)
+        else:
+            attn_scale = attn_shift = ff_scale = ff_shift = None
 
         # 0. Self-Attention
         if self.norm_type == "ada_norm":
@@ -175,6 +194,8 @@ class BasicTransformerBlock(nn.Module):
             attn_output = self.final_dropout(attn_output)
 
         hidden_states = attn_output + hidden_states
+        if attn_scale is not None:
+            hidden_states = hidden_states * (1 + attn_scale[:, None]) + attn_shift[:, None]
         if hidden_states.ndim == 4:
             hidden_states = hidden_states.squeeze(1)
 
@@ -183,6 +204,8 @@ class BasicTransformerBlock(nn.Module):
         ff_output = self.ff(norm_hidden_states)
 
         hidden_states = ff_output + hidden_states
+        if ff_scale is not None:
+            hidden_states = hidden_states * (1 + ff_scale[:, None]) + ff_shift[:, None]
         if hidden_states.ndim == 4:
             hidden_states = hidden_states.squeeze(1)
         return hidden_states
@@ -212,6 +235,7 @@ class DiT(ModelMixin, ConfigMixin):
         positional_embeddings: Optional[str] = "sinusoidal",
         interleave_self_attention=False,
         cross_attention_dim: Optional[int] = None,
+        skill_conditioning_dim: Optional[int] = None,
     ):
         super().__init__()
 
@@ -246,6 +270,7 @@ class DiT(ModelMixin, ConfigMixin):
                     num_positional_embeddings=self.config.max_num_positional_embeddings,
                     final_dropout=final_dropout,
                     cross_attention_dim=curr_cross_attention_dim,
+                    skill_conditioning_dim=skill_conditioning_dim,
                 )
             ]
         self.transformer_blocks = nn.ModuleList(all_blocks)
@@ -254,6 +279,15 @@ class DiT(ModelMixin, ConfigMixin):
         self.norm_out = nn.LayerNorm(self.inner_dim, elementwise_affine=False, eps=1e-6)
         self.proj_out_1 = nn.Linear(self.inner_dim, 2 * self.inner_dim)
         self.proj_out_2 = nn.Linear(self.inner_dim, self.config.output_dim)
+        if skill_conditioning_dim is not None:
+            self.skill_out = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(skill_conditioning_dim, 2 * self.inner_dim),
+            )
+            nn.init.zeros_(self.skill_out[-1].weight)
+            nn.init.zeros_(self.skill_out[-1].bias)
+        else:
+            self.skill_out = None
         print(
             "Total number of DiT parameters: ",
             sum(p.numel() for p in self.parameters() if p.requires_grad),
@@ -265,6 +299,7 @@ class DiT(ModelMixin, ConfigMixin):
         encoder_hidden_states: torch.Tensor,  # Shape: (B, S, D)
         timestep: Optional[torch.LongTensor] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
+        skill_conditioning: Optional[torch.Tensor] = None,
         return_all_hidden_states: bool = False,
     ):
         # Encode timesteps
@@ -285,6 +320,7 @@ class DiT(ModelMixin, ConfigMixin):
                     encoder_hidden_states=None,
                     encoder_attention_mask=None,
                     temb=temb,
+                    skill_conditioning=skill_conditioning,
                 )
             else:
                 hidden_states = block(
@@ -293,12 +329,17 @@ class DiT(ModelMixin, ConfigMixin):
                     encoder_hidden_states=encoder_hidden_states,
                     encoder_attention_mask=None,
                     temb=temb,
+                    skill_conditioning=skill_conditioning,
                 )
             all_hidden_states.append(hidden_states)
 
         # Output processing
         conditioning = temb
         shift, scale = self.proj_out_1(F.silu(conditioning)).chunk(2, dim=1)
+        if self.skill_out is not None and skill_conditioning is not None:
+            skill_shift, skill_scale = self.skill_out(skill_conditioning).chunk(2, dim=1)
+            shift = shift + skill_shift
+            scale = scale + skill_scale
         hidden_states = self.norm_out(hidden_states) * (1 + scale[:, None]) + shift[:, None]
         if return_all_hidden_states:
             return self.proj_out_2(hidden_states), all_hidden_states
