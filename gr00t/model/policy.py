@@ -216,8 +216,8 @@ class Gr00tPolicy(BasePolicy):
 
         # ADDED: Load transforms
         self._load_metadata(os.path.join(self.model_path, "experiment_cfg"))
-        # if self.call_baseline:
-        self._load_metadata(os.path.join(self.base_path, "experiment_cfg"), base=True)
+        if self.call_baseline:
+            self._load_metadata(os.path.join(self.base_path, "experiment_cfg"), base=True)
 
         # Load horizons
         self._load_horizons()
