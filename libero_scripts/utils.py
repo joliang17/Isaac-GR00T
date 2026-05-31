@@ -4,6 +4,8 @@ import math
 import os
 import time
 import subprocess
+import json
+from pathlib import Path
 import imageio
 import numpy as np
 from libero.libero import get_libero_path
@@ -14,6 +16,180 @@ import torch
 
 DATE = time.strftime("%Y_%m_%d")
 DATE_TIME = time.strftime("%Y_%m_%d-%H_%M_%S")
+
+
+class GateProbeLogger:
+    """Structured logger for skill-router and FiLM gate probabilities."""
+
+    def __init__(self, results_dir, log_suffix, enabled=False, used_threshold=0.1):
+        self.enabled = enabled
+        self.used_threshold = float(used_threshold)
+        self.count = 0
+        self.used_count = 0
+        self.gate_sum = 0.0
+        self.gate_min = None
+        self.gate_max = None
+        self.top1_sum = 0.0
+        self.skill_call_counts = {}
+        self.skill_prob_sums = {}
+        self.by_used = {
+            "used": self._new_bucket(),
+            "not_used": self._new_bucket(),
+        }
+        self.trace_file = None
+        self.trace_path = None
+
+        if self.enabled:
+            trace_dir = Path(results_dir) / "gate_traces"
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            self.trace_path = trace_dir / f"{log_suffix}.jsonl"
+            self.trace_file = self.trace_path.open("w", encoding="utf-8")
+
+    @staticmethod
+    def _new_bucket():
+        return {"count": 0, "gate_sum": 0.0, "top1_sum": 0.0, "skill_call_counts": {}}
+
+    @staticmethod
+    def _first(value, default=None):
+        if value is None:
+            return default
+        if isinstance(value, (list, tuple)):
+            if not value:
+                return default
+            return value[0]
+        return value
+
+    def record(self, action_head, **context):
+        if not self.enabled or action_head is None:
+            return
+
+        skill_names = getattr(action_head, "last_skill_names", None)
+        skill_name = self._first(skill_names)
+        if skill_name is None:
+            return
+
+        skill_idx = self._first(getattr(action_head, "last_skill_idx", None))
+        top1_prob = self._first(getattr(action_head, "last_skill_probs", None), 0.0)
+        gate_prob = self._first(getattr(action_head, "last_skill_gate_probs", None), 1.0)
+        weight_probs = self._first(getattr(action_head, "last_skill_weight_probs", None), [])
+        gate_prob = float(gate_prob)
+        top1_prob = None if top1_prob is None else float(top1_prob)
+        used = gate_prob >= self.used_threshold
+
+        skill_vocab = getattr(getattr(action_head, "config", None), "skill_vocab", None)
+        if skill_vocab is None:
+            skill_vocab = [str(i) for i in range(len(weight_probs or []))]
+        skill_probs = {
+            str(name): float(weight_probs[i])
+            for i, name in enumerate(skill_vocab)
+            if i < len(weight_probs or [])
+        }
+
+        self.count += 1
+        self.used_count += int(used)
+        self.gate_sum += gate_prob
+        self.gate_min = gate_prob if self.gate_min is None else min(self.gate_min, gate_prob)
+        self.gate_max = gate_prob if self.gate_max is None else max(self.gate_max, gate_prob)
+        if top1_prob is not None:
+            self.top1_sum += top1_prob
+        self.skill_call_counts[skill_name] = self.skill_call_counts.get(skill_name, 0) + 1
+        for name, prob in skill_probs.items():
+            self.skill_prob_sums[name] = self.skill_prob_sums.get(name, 0.0) + prob
+
+        bucket = self.by_used["used" if used else "not_used"]
+        bucket["count"] += 1
+        bucket["gate_sum"] += gate_prob
+        if top1_prob is not None:
+            bucket["top1_sum"] += top1_prob
+        bucket["skill_call_counts"][skill_name] = bucket["skill_call_counts"].get(skill_name, 0) + 1
+
+        record = {
+            **context,
+            "gate_used_threshold": self.used_threshold,
+            "skill_used": used,
+            "gate_prob": gate_prob,
+            "skill_name": skill_name,
+            "skill_idx": skill_idx,
+            "top1_skill_prob": top1_prob,
+            "skill_probs": skill_probs,
+        }
+        self.trace_file.write(json.dumps(record, sort_keys=True) + "\n")
+        self.trace_file.flush()
+
+    def summary(self):
+        if not self.enabled:
+            return None
+        if self.count == 0:
+            return {
+                "enabled": True,
+                "trace_path": str(self.trace_path) if self.trace_path else None,
+                "gate_used_threshold": self.used_threshold,
+                "num_queries": 0,
+            }
+
+        def bucket_summary(bucket):
+            count = bucket["count"]
+            if count == 0:
+                return {
+                    "num_queries": 0,
+                    "gate_prob_mean": None,
+                    "top1_skill_prob_mean": None,
+                    "skill_call_counts": {},
+                }
+            return {
+                "num_queries": count,
+                "gate_prob_mean": bucket["gate_sum"] / count,
+                "top1_skill_prob_mean": bucket["top1_sum"] / count,
+                "skill_call_counts": bucket["skill_call_counts"],
+            }
+
+        return {
+            "enabled": True,
+            "trace_path": str(self.trace_path) if self.trace_path else None,
+            "gate_used_threshold": self.used_threshold,
+            "num_queries": self.count,
+            "gate_used_rate": self.used_count / self.count,
+            "gate_prob_mean": self.gate_sum / self.count,
+            "gate_prob_min": self.gate_min,
+            "gate_prob_max": self.gate_max,
+            "top1_skill_prob_mean": self.top1_sum / self.count,
+            "skill_call_counts": self.skill_call_counts,
+            "skill_prob_means": {
+                name: value / self.count for name, value in self.skill_prob_sums.items()
+            },
+            "used": bucket_summary(self.by_used["used"]),
+            "not_used": bucket_summary(self.by_used["not_used"]),
+        }
+
+    def close(self):
+        if self.trace_file is not None:
+            self.trace_file.close()
+            self.trace_file = None
+
+
+def eval_results_dir(model_name, eval_tag=""):
+    suffix = f"_{eval_tag}" if eval_tag else ""
+    return Path("results") / f"{model_name}{suffix}"
+
+
+def gate_probe_overlay_label(action_head, used_threshold=0.1):
+    names = getattr(action_head, "last_skill_names", None)
+    if not names:
+        return None
+    name = names[0]
+    probs = getattr(action_head, "last_skill_probs", None)
+    top1_prob = probs[0] if probs else None
+    gates = getattr(action_head, "last_skill_gate_probs", None)
+    gate_prob = gates[0] if gates else None
+    if gate_prob is None:
+        return name
+    used = float(gate_prob) >= float(used_threshold)
+    if top1_prob is None:
+        return f"skill={name}\ngate={float(gate_prob):.3f} used@{used_threshold:g}={int(used)}"
+    return (
+        f"skill={name} p={float(top1_prob):.3f}\n"
+        f"gate={float(gate_prob):.3f} used@{used_threshold:g}={int(used)}"
+    )
 
 
 def set_seed(seed=42):
@@ -96,7 +272,11 @@ def summarize_obs(obs_dict):
 
 
 def convert_to_libero_action(
-    action_chunk: dict[str, np.array], action_keys, idx: int = 0, normalize: bool=False
+    action_chunk: dict[str, np.array],
+    action_keys,
+    idx: int = 0,
+    normalize: bool = False,
+    flip_gripper: bool = False,
 ) -> np.ndarray:
     """Convert GR00T action chunk to Libero format.
 
@@ -109,10 +289,27 @@ def convert_to_libero_action(
     """
     action_components = [np.atleast_1d(action_chunk[f"action.{key}"][idx])[0] for key in action_keys]
     action_array = np.array(action_components, dtype=np.float32)
+    raw_gripper = float(action_array[-1])
     if normalize:
         action_array = normalize_gripper_action(action_array, binarize=True)
     else:
         action_array[..., -1] = np.sign(action_array[..., -1])
+    if flip_gripper:
+        action_array[..., -1] *= -1
+    if os.environ.get("GR00T_DEBUG_COMPARE_FORWARD_GET_ACTION", "").lower() in {"1", "true", "yes", "on"}:
+        try:
+            max_logs = int(os.environ.get("GR00T_DEBUG_COMPARE_MAX_CALLS", "5"))
+        except ValueError:
+            max_logs = 5
+        count = getattr(convert_to_libero_action, "_debug_log_count", 0)
+        if count < max_logs:
+            setattr(convert_to_libero_action, "_debug_log_count", count + 1)
+            print(
+                "[GET_ACTION_DEBUG] "
+                f"libero_action idx={idx} raw_gripper={raw_gripper:.6g} "
+                f"sent_gripper={float(action_array[-1]):.6g} normalize={normalize} flip={flip_gripper} "
+                f"xyzrpy={[round(float(x), 5) for x in action_array[:6].tolist()]}"
+            )
 
     assert len(action_array) == 7, f"Expected 7-dim action, got {len(action_array)}"
     return action_array
@@ -213,16 +410,25 @@ def _draw_skill_label(frame, text):
     """
     img = np.ascontiguousarray(_to_uint8_rgb(frame))
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.6
+    font_scale = 0.45
     thickness = 1
-    (tw, th), baseline = cv2.getTextSize(str(text), font, font_scale, thickness)
+    lines = str(text).splitlines() or [str(text)]
+    sizes = [cv2.getTextSize(line, font, font_scale, thickness) for line in lines]
+    tw = max(size[0][0] for size in sizes)
+    th = max(size[0][1] for size in sizes)
+    baseline = max(size[1] for size in sizes)
     pad = 4
+    line_gap = 3
+    box_h = len(lines) * (th + baseline) + (len(lines) - 1) * line_gap + 2 * pad
     # Filled dark background box for readability.
-    cv2.rectangle(img, (0, 0), (tw + 2 * pad, th + 2 * pad + baseline), (0, 0, 0), -1)
-    cv2.putText(
-        img, str(text), (pad, th + pad),
-        font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA,
-    )
+    cv2.rectangle(img, (0, 0), (tw + 2 * pad, box_h), (0, 0, 0), -1)
+    y = th + pad
+    for line in lines:
+        cv2.putText(
+            img, line, (pad, y),
+            font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA,
+        )
+        y += th + baseline + line_gap
     return img
 
 
@@ -262,7 +468,10 @@ def save_rollout_video(top_view, wrist_view, idx, success, task_description, log
         combined = merge_frame(img1, img2)
         writer.write(combined)
     writer.release()
-    mp4_path = make_previewable(mp4_path)
+    try:
+        mp4_path = make_previewable(mp4_path)
+    except Exception as exc:
+        print(f"WARNING: failed to make rollout video previewable; keeping original MP4: {exc}")
 
     msg = f"Saved rollout MP4 at path {mp4_path}"
     print(msg)
@@ -365,4 +574,3 @@ def make_previewable(in_path: str) -> str:
         stderr=subprocess.DEVNULL)
     os.replace(out, in_path)
     return in_path
-

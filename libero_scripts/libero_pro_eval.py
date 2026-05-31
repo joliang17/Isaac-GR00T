@@ -38,6 +38,9 @@ from libero_scripts.utils import (
     process_observation,
     convert_to_libero_action,
     set_seed,
+    GateProbeLogger,
+    eval_results_dir,
+    gate_probe_overlay_label,
 )
 from gr00t.model.policy import Gr00tPolicy
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
@@ -152,8 +155,6 @@ def load_init_states(init_states_path: str):
 
 
 def extract_name(s: str) -> str:
-    if "/" in s and not s.startswith("/"):
-        return s.split("/")[0]
     parts = Path(s).parts
     # Path may point at a checkpoint-* subdir or directly at the run folder.
     if len(parts) >= 2 and parts[-1].startswith("checkpoint-"):
@@ -189,6 +190,8 @@ def eval_libero_pro(args) -> None:
     log_suffix = f"model{model_name}_task{args.task_suite_name}_pert{args.perturbation_type}_seed{args.random_seed}_h{args.action_horizon}"
     if getattr(args, "skill_eval_mode", "normal") != "normal":
         log_suffix += f"_skill{args.skill_eval_mode}"
+    results_dir = eval_results_dir(model_name, args.eval_tag)
+    results_dir.mkdir(parents=True, exist_ok=True)
     log_file = open(f"{log_dir}/libero_pro_eval_{log_suffix}.log", "w")
     log_file.write(f"Task suite: {args.task_suite_name}\n")
     log_file.write(f"Perturbation type: {args.perturbation_type}\n")
@@ -220,6 +223,12 @@ def eval_libero_pro(args) -> None:
         print(f"Skill eval mode: {args.skill_eval_mode}")
     elif args.skill_eval_mode != "normal":
         print("WARNING: --skill_eval_mode set but model has no skill embedding; ignoring.")
+    gate_probe = GateProbeLogger(
+        results_dir,
+        f"libero_pro_{log_suffix}",
+        enabled=args.gate_probe,
+        used_threshold=args.gate_used_threshold,
+    )
 
     # ---- build task list depending on perturbation type ----
     perturb_type = args.perturbation_type
@@ -315,6 +324,20 @@ def eval_libero_pro(args) -> None:
                         cached_action_chunk = action_out if action_out is not None else action_out_bs
                         if cached_action_chunk is None:
                             raise RuntimeError("Policy returned no action chunk.")
+                        gate_probe.record(
+                            action_head,
+                            suite="libero_pro",
+                            task_suite=args.task_suite_name,
+                            perturbation_type=args.perturbation_type,
+                            task_id=task_id,
+                            task_name=task_description,
+                            episode_idx=episode_idx,
+                            total_episode=total_episodes + 1,
+                            timestep=t,
+                            seed=args.random_seed,
+                            action_horizon=args.action_horizon,
+                            skill_eval_mode=args.skill_eval_mode,
+                        )
                         chunk_idx = 0
                         if args.action_horizon > action_chunk_len(cached_action_chunk, action_keys):
                             msg = (
@@ -326,13 +349,18 @@ def eval_libero_pro(args) -> None:
 
                     # Record the router-selected skill for this frame (skill models only).
                     if is_skill_model:
-                        names = getattr(action_head, "last_skill_names", None)
-                        if names:
-                            current_skill = names[0]
+                        current_skill = gate_probe_overlay_label(
+                            action_head,
+                            args.gate_used_threshold,
+                        )
                     skill_labels.append(current_skill)
 
                     action = convert_to_libero_action(
-                        cached_action_chunk, action_keys, idx=chunk_idx, normalize=args.normalize_action
+                        cached_action_chunk,
+                        action_keys,
+                        idx=chunk_idx,
+                        normalize=args.normalize_action,
+                        flip_gripper=args.flip_gripper,
                     )
                     chunk_idx += 1
 
@@ -373,8 +401,28 @@ def eval_libero_pro(args) -> None:
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
             )
             log_file.flush()
+            if (
+                args.early_stop_zero_success_episodes > 0
+                and total_episodes >= args.early_stop_zero_success_episodes
+                and total_successes == 0
+            ):
+                msg = (
+                    f"Early stopping: 0 successes after {total_episodes} episodes "
+                    f"(threshold={args.early_stop_zero_success_episodes})"
+                )
+                print(msg)
+                log_file.write(msg + "\n")
+                log_file.flush()
+                env.close()
+                break
 
         env.close()
+        if (
+            args.early_stop_zero_success_episodes > 0
+            and total_episodes >= args.early_stop_zero_success_episodes
+            and total_successes == 0
+        ):
+            break
 
         print(f"Current task success rate: {float(task_successes) / float(task_episodes):.3f}")
         print(f"Current total success rate: {float(total_successes) / float(total_episodes):.3f}")
@@ -393,21 +441,22 @@ def eval_libero_pro(args) -> None:
             "success_rate": float(task_successes) / float(task_episodes),
         })
 
+    gate_summary = gate_probe.summary()
+    gate_probe.close()
     log_file.close()
     print(f"\nFinal success rate: {total_successes}/{total_episodes} = {total_successes / total_episodes * 100:.1f}%")
 
     # Save structured result file
-    results_dir = "results/"
-    os.makedirs(results_dir, exist_ok=True)
     result = {
         "config": vars(args),
         "per_task_results": per_task_results,
         "total_successes": total_successes,
         "total_episodes": total_episodes,
         "overall_success_rate": total_successes / total_episodes if total_episodes > 0 else 0.0,
+        "gate_probe": gate_summary,
     }
-    result_path = f"{results_dir}/libero_pro_{log_suffix}.json"
-    with open(result_path, "w") as f:
+    result_path = results_dir / f"libero_pro_{log_suffix}.json"
+    with result_path.open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
     print(f"Results saved to {result_path}")
 
@@ -447,6 +496,16 @@ if __name__ == "__main__":
         help="Normalize gripper output from [0,1] to [-1,1].",
     )
     parser.add_argument(
+        "--flip_gripper", action="store_true",
+        help="Invert the final LIBERO gripper command after binarization.",
+    )
+    parser.add_argument(
+        "--early_stop_zero_success_episodes",
+        type=int,
+        default=0,
+        help="Stop eval once this many episodes have completed with zero successes. 0 disables.",
+    )
+    parser.add_argument(
         "--action_horizon", type=int, default=1,
         help="Number of actions to execute per model query.",
     )
@@ -457,6 +516,23 @@ if __name__ == "__main__":
         choices=["normal", "shuffle", "zero"],
         default="normal",
         help="Skill-embedding ablation mode for skill-router models.",
+    )
+    parser.add_argument(
+        "--gate_probe",
+        action="store_true",
+        help="Write per-query skill-router and gate probabilities.",
+    )
+    parser.add_argument(
+        "--gate_used_threshold",
+        type=float,
+        default=0.1,
+        help="Gate probability threshold for classifying a query as skill-used.",
+    )
+    parser.add_argument(
+        "--eval_tag",
+        type=str,
+        default="",
+        help="Optional suffix for the results directory, e.g. gateprobe.",
     )
     args = parser.parse_args()
 

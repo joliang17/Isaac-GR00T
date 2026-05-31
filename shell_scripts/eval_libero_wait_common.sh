@@ -41,7 +41,8 @@ RUN_STEPS=(
     60000
 )
 
-SEEDS=(42 78 98)
+SEEDS_LIST="${SEEDS_LIST:-42 78 98}"
+read -r -a SEEDS <<< "${SEEDS_LIST}"
 HORIZONS=(5 10 16)
 PERTURBATIONS=(object semantic task)
 NUM_TRIAL="${NUM_TRIAL:-10}"
@@ -100,17 +101,47 @@ wait_for_checkpoint() {
 model_name_from_ckpt() {
     local ckpt=$1
 
-    basename "$(dirname "${ckpt}")"
+    local base_name
+    base_name="$(basename "${ckpt}")"
+    if [[ "${base_name}" == checkpoint-* ]]; then
+        basename "$(dirname "${ckpt}")"
+    else
+        printf '%s\n' "${base_name}"
+    fi
+}
+
+results_dir_from_ckpt() {
+    local ckpt=$1
+    local skill_eval_mode="${2:-normal}"
+    local eval_tag="${EVAL_TAG:-}"
+    local model_name
+
+    model_name="$(model_name_from_ckpt "${ckpt}")"
+    if [[ -n "${eval_tag}" ]]; then
+        model_name="${model_name}_${eval_tag}"
+    fi
+    if [[ "${skill_eval_mode}" != "normal" ]]; then
+        printf 'results/%s_skill%s\n' "${model_name}" "${skill_eval_mode}"
+    else
+        printf 'results/%s\n' "${model_name}"
+    fi
 }
 
 standard_result_path() {
     local ckpt=$1
     local seed=$2
     local horizon=$3
+    local skill_eval_mode="${4:-normal}"
     local model_name
+    local results_dir
 
     model_name="$(model_name_from_ckpt "${ckpt}")"
-    printf 'results/libero_eval_model%s_tasklibero_10_seed%s_h%s.json\n' "${model_name}" "${seed}" "${horizon}"
+    results_dir="$(results_dir_from_ckpt "${ckpt}" "${skill_eval_mode}")"
+    if [[ "${skill_eval_mode}" != "normal" ]]; then
+        printf '%s/libero_eval_model%s_tasklibero_10_seed%s_h%s_skill%s.json\n' "${results_dir}" "${model_name}" "${seed}" "${horizon}" "${skill_eval_mode}"
+    else
+        printf '%s/libero_eval_model%s_tasklibero_10_seed%s_h%s.json\n' "${results_dir}" "${model_name}" "${seed}" "${horizon}"
+    fi
 }
 
 pro_result_path() {
@@ -118,10 +149,17 @@ pro_result_path() {
     local seed=$2
     local horizon=$3
     local perturb=$4
+    local skill_eval_mode="${5:-normal}"
     local model_name
+    local results_dir
 
     model_name="$(model_name_from_ckpt "${ckpt}")"
-    printf 'results/libero_pro_model%s_tasklibero_10_pert%s_seed%s_h%s.json\n' "${model_name}" "${perturb}" "${seed}" "${horizon}"
+    results_dir="$(results_dir_from_ckpt "${ckpt}" "${skill_eval_mode}")"
+    if [[ "${skill_eval_mode}" != "normal" ]]; then
+        printf '%s/libero_pro_model%s_tasklibero_10_pert%s_seed%s_h%s_skill%s.json\n' "${results_dir}" "${model_name}" "${perturb}" "${seed}" "${horizon}" "${skill_eval_mode}"
+    else
+        printf '%s/libero_pro_model%s_tasklibero_10_pert%s_seed%s_h%s.json\n' "${results_dir}" "${model_name}" "${perturb}" "${seed}" "${horizon}"
+    fi
 }
 
 result_complete() {
@@ -154,13 +192,16 @@ run_eval() {
     local ckpt=$1
     local seed=$2
     local horizon=$3
+    local skill_eval_mode="${SKILL_EVAL_MODE:-normal}"
 
-    echo "[$(timestamp)] Standard eval: ckpt=${ckpt} seed=${seed} horizon=${horizon}"
+    echo "[$(timestamp)] Standard eval: ckpt=${ckpt} seed=${seed} horizon=${horizon} skill_eval_mode=${skill_eval_mode}"
     python -m libero_scripts.libero_eval \
         --model_path "${ckpt}" --task_suite_name libero_10 \
         --num_trials_per_task "${NUM_TRIAL}" --num_steps_wait 10 \
         --embodiment_tag new_embodiment --data_config libero_original \
-        --denoising_steps 8 --action_horizon "${horizon}" --random_seed "${seed}"
+        --denoising_steps 8 --action_horizon "${horizon}" --random_seed "${seed}" \
+        --skill_eval_mode "${skill_eval_mode}" \
+        ${GATE_PROBE_ARGS:-}
 }
 
 run_pro_eval() {
@@ -168,14 +209,17 @@ run_pro_eval() {
     local seed=$2
     local horizon=$3
     local perturb=$4
+    local skill_eval_mode="${SKILL_EVAL_MODE:-normal}"
 
-    echo "[$(timestamp)] PRO eval: ckpt=${ckpt} seed=${seed} horizon=${horizon} perturb=${perturb}"
+    echo "[$(timestamp)] PRO eval: ckpt=${ckpt} seed=${seed} horizon=${horizon} perturb=${perturb} skill_eval_mode=${skill_eval_mode}"
     python -m libero_scripts.libero_pro_eval \
         --model_path "${ckpt}" --task_suite_name libero_10 \
         --perturbation_type "${perturb}" --num_trials_per_task "${NUM_TRIAL}" \
         --num_steps_wait 10 --embodiment_tag new_embodiment \
         --data_config libero_original --denoising_steps 8 \
-        --action_horizon "${horizon}" --random_seed "${seed}"
+        --action_horizon "${horizon}" --random_seed "${seed}" \
+        --skill_eval_mode "${skill_eval_mode}" \
+        ${GATE_PROBE_ARGS:-}
 }
 
 run_eval_matrix() {

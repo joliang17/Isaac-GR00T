@@ -50,9 +50,11 @@ from libero_scripts.utils import (
     show_obs_images_cv2,
     convert_to_libero_action,
     summarize_obs,
-    set_seed
+    set_seed,
+    GateProbeLogger,
+    eval_results_dir,
+    gate_probe_overlay_label,
 )
-from libero_scripts.gpt_call import generate_instruction_variants
 from gr00t.model.policy import Gr00tPolicy
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from libero.libero import benchmark
@@ -64,8 +66,6 @@ skill_prefix = """The robot executes atomic manipulation skills.\nYour job is to
 skill_prefix = "The robot executes atomic manipulation skills. Your job is to generate accurate actions for this env. " + ' '*len(skill_prefix)
 
 def extract_name(s):
-    if "/" in s and not s.startswith("/"):
-        return s.split("/")[0]        # repo format
     parts = Path(s).parts
     # Path may point at a checkpoint-* subdir or directly at the run folder.
     if len(parts) >= 2 and parts[-1].startswith("checkpoint-"):
@@ -105,6 +105,8 @@ def eval_libero(cfg) -> None:
     log_suffix = f"model{model_name}_task{cfg.task_suite_name}_seed{cfg.random_seed}_h{cfg.action_horizon}"
     if getattr(cfg, "skill_eval_mode", "normal") != "normal":
         log_suffix += f"_skill{cfg.skill_eval_mode}"
+    results_dir = eval_results_dir(model_name, cfg.eval_tag)
+    results_dir.mkdir(parents=True, exist_ok=True)
 
     log_file = open(f"{log_dir}/libero_eval_{log_suffix}.log", "w")
     log_file.write(f"Task suite: {cfg.task_suite_name}\n")
@@ -136,6 +138,12 @@ def eval_libero(cfg) -> None:
         print(f"Skill eval mode: {cfg.skill_eval_mode}")
     elif cfg.skill_eval_mode != "normal":
         print("WARNING: --skill_eval_mode set but model has no skill embedding; ignoring.")
+    gate_probe = GateProbeLogger(
+        results_dir,
+        f"libero_eval_{log_suffix}",
+        enabled=cfg.gate_probe,
+        used_threshold=cfg.gate_used_threshold,
+    )
     # import pdb;pdb.set_trace()
     # # skill embedding: 
     # skill_emb = gr00t_policy.model.action_head.skill_emb_bank.weight.detach().cpu()
@@ -233,6 +241,19 @@ def eval_libero(cfg) -> None:
                                 cached_action_chunk = action_out if action_out is not None else action_out_bs
                                 if cached_action_chunk is None:
                                     raise RuntimeError("Policy returned no action chunk.")
+                                gate_probe.record(
+                                    action_head,
+                                    suite="libero10",
+                                    task_suite=cfg.task_suite_name,
+                                    task_id=task_id,
+                                    task_name=ori_desc,
+                                    episode_idx=episode_idx,
+                                    total_episode=total_episodes + 1,
+                                    timestep=t,
+                                    seed=cfg.random_seed,
+                                    action_horizon=cfg.action_horizon,
+                                    skill_eval_mode=cfg.skill_eval_mode,
+                                )
                                 chunk_idx = 0
                                 if cfg.action_horizon > action_chunk_len(cached_action_chunk, action_keys):
                                     msg = (
@@ -245,12 +266,19 @@ def eval_libero(cfg) -> None:
                             # if original training data is not normalized (-1, 1), no need ro norm (normalize_action = False)
                             # Record the router-selected skill for this frame (skill models only).
                             if is_skill_model:
-                                names = getattr(action_head, "last_skill_names", None)
-                                if names:
-                                    current_skill = names[0]
+                                current_skill = gate_probe_overlay_label(
+                                    action_head,
+                                    cfg.gate_used_threshold,
+                                )
                             skill_labels.append(current_skill)
 
-                            action = convert_to_libero_action(cached_action_chunk, action_keys, idx=chunk_idx, normalize=cfg.normalize_action)
+                            action = convert_to_libero_action(
+                                cached_action_chunk,
+                                action_keys,
+                                idx=chunk_idx,
+                                normalize=cfg.normalize_action,
+                                flip_gripper=cfg.flip_gripper,
+                            )
                             chunk_idx += 1
 
                             try:
@@ -290,7 +318,22 @@ def eval_libero(cfg) -> None:
                         f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
                     )
                     log_file.flush()
+                    if (
+                        cfg.early_stop_zero_success_episodes > 0
+                        and total_episodes >= cfg.early_stop_zero_success_episodes
+                        and total_successes == 0
+                    ):
+                        msg = (
+                            f"Early stopping: 0 successes after {total_episodes} episodes "
+                            f"(threshold={cfg.early_stop_zero_success_episodes})"
+                        )
+                        print(msg)
+                        log_file.write(msg + "\n")
+                        log_file.flush()
+                        raise StopIteration(msg)
                     # sys.exit(0)
+        except StopIteration:
+            pass
         finally:
             env.close()
 
@@ -312,21 +355,21 @@ def eval_libero(cfg) -> None:
             "success_rate": float(task_successes) / float(task_episodes),
         })
 
-    # Save local log file
+    gate_summary = gate_probe.summary()
+    gate_probe.close()
     log_file.close()
 
     # Save structured result file
-    results_dir = "results/"
-    os.makedirs(results_dir, exist_ok=True)
     result = {
         "config": vars(cfg),
         "per_task_results": per_task_results,
         "total_successes": total_successes,
         "total_episodes": total_episodes,
         "overall_success_rate": total_successes / total_episodes if total_episodes > 0 else 0.0,
+        "gate_probe": gate_summary,
     }
-    result_path = f"{results_dir}/libero_eval_{log_suffix}.json"
-    with open(result_path, "w") as f:
+    result_path = results_dir / f"libero_eval_{log_suffix}.json"
+    with result_path.open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
     print(f"Results saved to {result_path}")
 
@@ -352,6 +395,13 @@ if __name__ == "__main__":
     parser.add_argument("--data_config", type=str, default="libero_original")
     parser.add_argument("--denoising_steps", type=int, default=8)
     parser.add_argument("--normalize_action", action="store_true", help="Enable action normalization")
+    parser.add_argument("--flip_gripper", action="store_true", help="Invert the final LIBERO gripper command after binarization")
+    parser.add_argument(
+        "--early_stop_zero_success_episodes",
+        type=int,
+        default=0,
+        help="Stop eval once this many episodes have completed with zero successes. 0 disables.",
+    )
     parser.add_argument("--add_prefix", action="store_true", help="Enable prefix")
     parser.add_argument(
         "--action_horizon",
@@ -366,6 +416,23 @@ if __name__ == "__main__":
         choices=["normal", "shuffle", "zero"],
         default="normal",
         help="Skill-embedding ablation mode for skill-router models.",
+    )
+    parser.add_argument(
+        "--gate_probe",
+        action="store_true",
+        help="Write per-query skill-router and gate probabilities.",
+    )
+    parser.add_argument(
+        "--gate_used_threshold",
+        type=float,
+        default=0.1,
+        help="Gate probability threshold for classifying a query as skill-used.",
+    )
+    parser.add_argument(
+        "--eval_tag",
+        type=str,
+        default="",
+        help="Optional suffix for the results directory, e.g. gateprobe.",
     )
     args = parser.parse_args()
 
