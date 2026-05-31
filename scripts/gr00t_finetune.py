@@ -235,6 +235,24 @@ class ArgsConfig:
     use_skill_film: bool = False
     """Condition action features via FiLM (action*(1+gamma)+beta) from the skill embedding instead of concatenating a separate skill token."""
 
+    use_skill_gate: bool = False
+    """Learn a scalar gate in [0, 1] for skill FiLM; gate=0 is the no-skill identity path."""
+
+    skill_gate_dropout: float = 0.0
+    """During training, randomly zero the skill FiLM gate with this probability."""
+
+    skill_gate_init_bias: float = -2.0
+    """Initial bias for the skill FiLM gate; negative values start closer to no-skill behavior."""
+
+    skill_gate_l1_coeff: float = 0.0
+    """Coefficient for light L1 sparsity on the skill gate."""
+
+    use_skill_encoder_hidden_states: bool = False
+    """Append the projected skill embedding to VLM encoder_hidden_states instead of DiT hidden_states."""
+
+    use_skill_dit_modulation: bool = False
+    """Inject the skill embedding into every DiT block and output AdaLN."""
+
     freeze_embeddings: bool = False
     """Whether to fine-tune the embedding model."""
 
@@ -405,6 +423,48 @@ def _base_checkpoint_has_skill_film(base_model_path: str) -> bool:
     except Exception:
         return False
     return False
+
+
+def _base_checkpoint_has_weight_prefix(base_model_path: str, prefix: str) -> bool:
+    """Return whether a local base checkpoint stores any tensor under prefix."""
+    base_dir = Path(base_model_path)
+    try:
+        index_path = base_dir / "model.safetensors.index.json"
+        if index_path.exists():
+            with open(index_path) as f:
+                weight_map = json.load(f).get("weight_map", {})
+            return any(k.startswith(prefix) for k in weight_map)
+        single = base_dir / "model.safetensors"
+        if single.exists():
+            from safetensors import safe_open
+
+            with safe_open(str(single), framework="pt") as t:
+                return any(k.startswith(prefix) for k in t.keys())
+    except Exception:
+        return False
+    return False
+
+
+def _module_parameters_are_finite(module: torch.nn.Module) -> bool:
+    return all(torch.isfinite(p).all().item() for p in module.parameters())
+
+
+def _reset_skill_dit_modulation(dit_model: torch.nn.Module) -> None:
+    for block in getattr(dit_model, "transformer_blocks", []):
+        skill_mod = getattr(block, "skill_mod", None)
+        if skill_mod is None:
+            continue
+        linears = [m for m in skill_mod.modules() if isinstance(m, torch.nn.Linear)]
+        for linear in linears:
+            torch.nn.init.zeros_(linear.weight)
+            torch.nn.init.zeros_(linear.bias)
+
+    skill_out = getattr(dit_model, "skill_out", None)
+    if skill_out is not None:
+        linears = [m for m in skill_out.modules() if isinstance(m, torch.nn.Linear)]
+        for linear in linears:
+            torch.nn.init.zeros_(linear.weight)
+            torch.nn.init.zeros_(linear.bias)
 
 
 def _init_skill_emb_bank_from_llm(model, skill_vocab: list[str], scale: float) -> None:
@@ -611,6 +671,12 @@ def main(config: ArgsConfig):
         skill_norm_coeff=config.skill_norm_coeff,
         use_weighted_skill_router=config.use_weighted_skill_router,
         use_skill_film=config.use_skill_film,
+        use_skill_gate=config.use_skill_gate,
+        skill_gate_dropout=config.skill_gate_dropout,
+        skill_gate_init_bias=config.skill_gate_init_bias,
+        skill_gate_l1_coeff=config.skill_gate_l1_coeff,
+        use_skill_encoder_hidden_states=config.use_skill_encoder_hidden_states,
+        use_skill_dit_modulation=config.use_skill_dit_modulation,
         pred_nextstep=pred_nextstep
     )
 
@@ -810,7 +876,15 @@ def main(config: ArgsConfig):
                 torch.nn.init.normal_(ah.skill_emb_bank.weight, mean=0.0, std=0.02)
             torch.nn.init.xavier_uniform_(ah.skill_emb_proj.weight)
             torch.nn.init.zeros_(ah.skill_emb_proj.bias)
-            print(f"[SkillEmb] Skill modules (skill_emb_bank / skill_emb_proj) freshly initialized (num_skills={num_skills})")
+            initialized_modules = ["skill_emb_bank", "skill_emb_proj"]
+            if config.use_skill_encoder_hidden_states and getattr(ah, "skill_encoder_proj", None) is not None:
+                torch.nn.init.xavier_uniform_(ah.skill_encoder_proj.weight)
+                torch.nn.init.zeros_(ah.skill_encoder_proj.bias)
+                initialized_modules.append("skill_encoder_proj")
+            print(
+                f"[SkillEmb] Skill modules ({' / '.join(initialized_modules)}) "
+                f"freshly initialized (num_skills={num_skills})"
+            )
 
         # skill_film is a Stage-2 module: re-initialize it whenever the base
         # checkpoint does not contain valid FiLM weights. Stage-1 checkpoints
@@ -819,9 +893,7 @@ def main(config: ArgsConfig):
         # on the very first step and crashes the MSE-loss backward.
         if config.use_skill_film and getattr(ah, "skill_film", None) is not None:
             film_in_ckpt = _base_checkpoint_has_skill_film(config.base_model_path)
-            film_finite = all(
-                torch.isfinite(p).all().item() for p in ah.skill_film.parameters()
-            )
+            film_finite = _module_parameters_are_finite(ah.skill_film)
             if not film_in_ckpt or not film_finite:
                 linears = [m for m in ah.skill_film.modules() if isinstance(m, torch.nn.Linear)]
                 for module in linears:
@@ -833,6 +905,54 @@ def main(config: ArgsConfig):
                 torch.nn.init.zeros_(linears[-1].bias)
                 reason = "absent from base ckpt" if not film_in_ckpt else "non-finite in base ckpt"
                 print(f"[SkillEmb] skill_film freshly initialized ({reason}); FiLM starts as identity")
+
+        if config.use_skill_gate and getattr(ah, "skill_gate", None) is not None:
+            gate_in_ckpt = _base_checkpoint_has_weight_prefix(
+                config.base_model_path, "action_head.skill_gate."
+            )
+            gate_finite = _module_parameters_are_finite(ah.skill_gate)
+            if not gate_in_ckpt or not gate_finite:
+                linears = [m for m in ah.skill_gate.modules() if isinstance(m, torch.nn.Linear)]
+                for module in linears:
+                    module.reset_parameters()
+                torch.nn.init.zeros_(linears[-1].weight)
+                torch.nn.init.constant_(linears[-1].bias, config.skill_gate_init_bias)
+                reason = "absent from base ckpt" if not gate_in_ckpt else "non-finite in base ckpt"
+                print(
+                    f"[SkillEmb] skill_gate freshly initialized ({reason}); "
+                    f"init_bias={config.skill_gate_init_bias}"
+                )
+
+        if config.use_skill_dit_modulation:
+            dit_mod_prefix = "action_head.model.transformer_blocks.0.skill_mod."
+            dit_out_prefix = "action_head.model.skill_out."
+            dit_mod_in_ckpt = _base_checkpoint_has_weight_prefix(config.base_model_path, dit_mod_prefix)
+            dit_out_in_ckpt = _base_checkpoint_has_weight_prefix(config.base_model_path, dit_out_prefix)
+            dit_mod_finite = True
+            for block in getattr(ah.model, "transformer_blocks", []):
+                skill_mod = getattr(block, "skill_mod", None)
+                if skill_mod is not None:
+                    dit_mod_finite = dit_mod_finite and _module_parameters_are_finite(skill_mod)
+            skill_out = getattr(ah.model, "skill_out", None)
+            if skill_out is not None:
+                dit_mod_finite = dit_mod_finite and _module_parameters_are_finite(skill_out)
+
+            if not dit_mod_in_ckpt or not dit_out_in_ckpt or not dit_mod_finite:
+                _reset_skill_dit_modulation(ah.model)
+                missing = []
+                if not dit_mod_in_ckpt:
+                    missing.append("skill_mod")
+                if not dit_out_in_ckpt:
+                    missing.append("skill_out")
+                reason = (
+                    f"absent from base ckpt: {', '.join(missing)}"
+                    if missing
+                    else "non-finite in base ckpt"
+                )
+                print(
+                    f"[SkillEmb] skill DiT modulation freshly initialized ({reason}); "
+                    "DiT modulation starts as identity"
+                )
 
     train_action_head = False
     if 'both' in config.dataset_path[0] and 'skip_action' not in config.run_name:

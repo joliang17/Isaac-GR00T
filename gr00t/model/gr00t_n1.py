@@ -62,6 +62,12 @@ class GR00T_N1_5_Config(PretrainedConfig):
     skill_norm_coeff: float = field(default=0.01, metadata={"help": "Weight for non-zero norm loss on skill embedding bank (prevents collapse to zero)."})
     use_weighted_skill_router: bool = field(default=False, metadata={"help": "Use soft-weighted skill routing instead of top-1 argmax."})
     use_skill_film: bool = field(default=False, metadata={"help": "Condition action features via FiLM from the skill embedding instead of concatenating a skill token."})
+    use_skill_gate: bool = field(default=False, metadata={"help": "Learn a scalar gate that can suppress skill FiLM to an identity/no-skill path."})
+    skill_gate_dropout: float = field(default=0.0, metadata={"help": "Training probability of zeroing the skill FiLM gate."})
+    skill_gate_init_bias: float = field(default=-2.0, metadata={"help": "Initial bias for the skill FiLM gate."})
+    skill_gate_l1_coeff: float = field(default=0.0, metadata={"help": "Coefficient for light L1 sparsity on the skill gate."})
+    use_skill_encoder_hidden_states: bool = field(default=False, metadata={"help": "Append the skill embedding to VLM encoder_hidden_states instead of DiT hidden_states."})
+    use_skill_dit_modulation: bool = field(default=False, metadata={"help": "Inject the skill embedding into every DiT block and output AdaLN."})
 
 
     def __init__(self, **kwargs):
@@ -105,6 +111,12 @@ class GR00T_N1_5(PreTrainedModel):
             "skill_norm_coeff": config.skill_norm_coeff,
             "use_weighted_skill_router": config.use_weighted_skill_router,
             "use_skill_film": config.use_skill_film,
+            "use_skill_gate": config.use_skill_gate,
+            "skill_gate_dropout": config.skill_gate_dropout,
+            "skill_gate_init_bias": config.skill_gate_init_bias,
+            "skill_gate_l1_coeff": config.skill_gate_l1_coeff,
+            "use_skill_encoder_hidden_states": config.use_skill_encoder_hidden_states,
+            "use_skill_dit_modulation": config.use_skill_dit_modulation,
         }
         action_head_cfg = FlowmatchingActionHeadConfig(**head_kwargs)
 

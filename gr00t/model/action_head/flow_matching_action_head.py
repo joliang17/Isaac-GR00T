@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from dataclasses import dataclass, field
 
 import torch
@@ -249,7 +250,30 @@ class FlowmatchingActionHeadConfig(PretrainedConfig):
         default=False,
         metadata={"help": "Condition action features via FiLM (action*(1+gamma)+beta) from the skill embedding instead of concatenating a separate skill token."},
     )
-
+    use_skill_gate: bool = field(
+        default=False,
+        metadata={"help": "Learn a scalar gate in [0, 1] that scales skill FiLM; gate=0 makes skill FiLM an identity/no-skill path."},
+    )
+    skill_gate_dropout: float = field(
+        default=0.0,
+        metadata={"help": "During training, randomly zero the skill FiLM gate with this probability to preserve a no-skill fallback."},
+    )
+    skill_gate_init_bias: float = field(
+        default=-2.0,
+        metadata={"help": "Initial bias for the skill FiLM gate. Negative values start closer to no-skill behavior."},
+    )
+    skill_gate_l1_coeff: float = field(
+        default=0.0,
+        metadata={"help": "Coefficient for light L1 sparsity on the skill gate. Encourages the no-skill identity path when skill conditioning is not useful."},
+    )
+    use_skill_encoder_hidden_states: bool = field(
+        default=False,
+        metadata={"help": "Append the projected skill embedding to VLM encoder_hidden_states instead of DiT hidden_states."},
+    )
+    use_skill_dit_modulation: bool = field(
+        default=False,
+        metadata={"help": "Inject skill-conditioned FiLM into every DiT block and the DiT output AdaLN."},
+    )
     vl_self_attention_cfg: dict = field(default=None)
     num_target_vision_tokens: int = field(
         default=32, metadata={"help": "Number of target vision tokens."}
@@ -273,7 +297,13 @@ class FlowmatchingActionHead(nn.Module):
         self.hidden_size = config.hidden_size
         self.input_embedding_dim = config.input_embedding_dim
 
-        self.model = DiT(**config.diffusion_model_cfg)
+        diffusion_model_cfg = dict(config.diffusion_model_cfg)
+        if config.use_skill_emb and config.use_skill_dit_modulation:
+            diffusion_model_cfg["skill_conditioning_dim"] = config.skill_emb_dim
+        else:
+            diffusion_model_cfg.pop("skill_conditioning_dim", None)
+        config.diffusion_model_cfg = diffusion_model_cfg
+        self.model = DiT(**diffusion_model_cfg)
         self.action_dim = config.action_dim
         self.action_horizon = config.action_horizon
         self.num_inference_timesteps = config.num_inference_timesteps
@@ -334,6 +364,10 @@ class FlowmatchingActionHead(nn.Module):
 
         if config.use_skill_emb:
             assert config.num_skills > 0, "num_skills must be > 0 when use_skill_emb=True"
+            assert not (
+                config.use_skill_film and config.use_skill_encoder_hidden_states
+            ), "use_skill_encoder_hidden_states is mutually exclusive with use_skill_film"
+            assert not config.use_skill_gate or config.use_skill_film, "use_skill_gate requires use_skill_film=True"
             backbone_emb_dim = config.backbone_embedding_dim
             # Stage 1: MLP projector + linear classifier on pooled VLM features
             self.skill_proj = nn.Sequential(
@@ -344,6 +378,8 @@ class FlowmatchingActionHead(nn.Module):
             # Stage 2: learnable per-skill embedding bank + projection to DiT input dim
             self.skill_emb_bank = nn.Embedding(config.num_skills, config.skill_emb_dim)
             self.skill_emb_proj = nn.Linear(config.skill_emb_dim, config.input_embedding_dim)
+            if config.use_skill_encoder_hidden_states:
+                self.skill_encoder_proj = nn.Linear(config.skill_emb_dim, backbone_emb_dim)
             # Optional FiLM head: modulates action features with the skill embedding
             # (action_features * (1 + gamma) + beta) instead of concatenating a token.
             if config.use_skill_film:
@@ -356,11 +392,22 @@ class FlowmatchingActionHead(nn.Module):
                 # since the modulation is action_features * (1 + gamma) + beta.
                 nn.init.zeros_(self.skill_film[-1].weight)
                 nn.init.zeros_(self.skill_film[-1].bias)
+                if config.use_skill_gate:
+                    self.skill_gate = nn.Sequential(
+                        nn.Linear(config.skill_emb_dim, config.skill_proj_hidden_dim),
+                        nn.SiLU(),
+                        nn.Linear(config.skill_proj_hidden_dim, 1),
+                    )
+                    nn.init.zeros_(self.skill_gate[-1].weight)
+                    nn.init.constant_(self.skill_gate[-1].bias, config.skill_gate_init_bias)
             # Routed skill from the most recent get_action() call (for logging /
             # video overlay during evaluation). Populated in get_action().
             self.last_skill_idx = None
             self.last_skill_names = None
             self.last_skill_probs = None
+            self.last_skill_weight_probs = None
+            self.last_skill_gate_probs = None
+            self.last_skill_used = None
 
         self.config = config
         self.set_trainable_parameters(
@@ -393,11 +440,18 @@ class FlowmatchingActionHead(nn.Module):
             if not tune_skill_clf:
                 self.skill_proj.requires_grad_(False)
                 self.skill_clf.requires_grad_(False)
+            if self.config.use_skill_encoder_hidden_states:
+                self.skill_emb_proj.requires_grad_(False)
             if not tune_skill_emb:
                 self.skill_emb_bank.requires_grad_(False)
-                self.skill_emb_proj.requires_grad_(False)
+                if not self.config.use_skill_encoder_hidden_states:
+                    self.skill_emb_proj.requires_grad_(False)
+                if getattr(self, "skill_encoder_proj", None) is not None:
+                    self.skill_encoder_proj.requires_grad_(False)
                 if getattr(self, "skill_film", None) is not None:
                     self.skill_film.requires_grad_(False)
+                if getattr(self, "skill_gate", None) is not None:
+                    self.skill_gate.requires_grad_(False)
         # Task-conditioned adapters are always trainable when present —
         # they are the task-transfer-specific modules and must update during fine-tuning.
         for adapter_name in ("state_adapter", "action_adapter", "decoder_adapter"):
@@ -438,11 +492,46 @@ class FlowmatchingActionHead(nn.Module):
                 if not self.tune_skill_clf:
                     self.skill_proj.eval()
                     self.skill_clf.eval()
+                if self.config.use_skill_encoder_hidden_states:
+                    self.skill_emb_proj.eval()
                 if not self.tune_skill_emb:
                     self.skill_emb_bank.eval()
-                    self.skill_emb_proj.eval()
+                    if not self.config.use_skill_encoder_hidden_states:
+                        self.skill_emb_proj.eval()
+                    if getattr(self, "skill_encoder_proj", None) is not None:
+                        self.skill_encoder_proj.eval()
                     if getattr(self, "skill_film", None) is not None:
                         self.skill_film.eval()
+                    if getattr(self, "skill_gate", None) is not None:
+                        self.skill_gate.eval()
+
+    def _apply_skill_film(
+        self,
+        action_features: torch.Tensor,
+        skill_emb: torch.Tensor,
+    ) -> torch.Tensor:
+        gamma, beta = self.skill_film(skill_emb).chunk(2, dim=-1)
+        if getattr(self.config, "use_skill_gate", False):
+            gate = torch.sigmoid(self.skill_gate(skill_emb))
+            gate = gate.to(device=action_features.device, dtype=action_features.dtype)
+            if self.training and self.config.skill_gate_dropout > 0:
+                keep = torch.rand_like(gate) >= self.config.skill_gate_dropout
+                gate = gate * keep.to(dtype=gate.dtype)
+        else:
+            gate = torch.ones(
+                gamma.shape[0],
+                1,
+                device=gamma.device,
+                dtype=gamma.dtype,
+            )
+
+        gate = gate.unsqueeze(1)
+        return action_features * (1 + gate * gamma.unsqueeze(1)) + gate * beta.unsqueeze(1)
+
+    def _skill_gate_values(self, skill_emb: torch.Tensor) -> torch.Tensor | None:
+        if not getattr(self.config, "use_skill_gate", False):
+            return None
+        return torch.sigmoid(self.skill_gate(skill_emb)).squeeze(-1)
 
     def _masked_mean_pool(
         self,
@@ -466,6 +555,265 @@ class FlowmatchingActionHead(nn.Module):
         div_loss = ((G - eye) ** 2).sum()                      # off-diag entries penalized
         norm_loss = (1.0 / (E.norm(dim=-1) ** 2 + 1e-6)).mean()
         return div_loss, norm_loss
+
+    def _masked_action_mse(
+        self,
+        pred_actions: torch.Tensor,
+        velocity: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        denom = action_mask.sum().clamp(min=1.0)
+        return (F.mse_loss(pred_actions, velocity, reduction="none") * action_mask).sum() / denom
+
+    def _predict_training_velocity_with_skill_emb(
+        self,
+        vl_embs: torch.Tensor,
+        vl_attn_mask: torch.Tensor | None,
+        state_features: torch.Tensor,
+        noisy_trajectory: torch.Tensor,
+        t_discretized: torch.Tensor,
+        embodiment_id: torch.Tensor,
+        task_emb: torch.Tensor | None,
+        skill_emb: torch.Tensor | None,
+    ) -> torch.Tensor:
+        action_features = self.action_encoder(noisy_trajectory, t_discretized, embodiment_id)
+        if task_emb is not None:
+            action_features = self.action_adapter(action_features, task_emb)
+
+        if self.config.add_pos_embed:
+            pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=action_features.device)
+            pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
+            action_features = action_features + pos_embs
+
+        future_tokens = self.future_tokens.weight.unsqueeze(0).expand(
+            action_features.shape[0], -1, -1
+        )
+        model_vl_embs = vl_embs
+        model_vl_attn_mask = vl_attn_mask
+
+        if self.config.use_skill_emb:
+            if self.config.use_skill_encoder_hidden_states:
+                model_vl_embs, model_vl_attn_mask = self._append_skill_to_encoder_hidden_states(
+                    model_vl_embs, model_vl_attn_mask, skill_emb
+                )
+                sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+            elif self.config.use_skill_film:
+                action_features = self._apply_skill_film(action_features, skill_emb)
+                sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+            else:
+                skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)
+                sa_embs = torch.cat((state_features, future_tokens, skill_token, action_features), dim=1)
+        else:
+            sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+
+        model_output = self.model(
+            hidden_states=sa_embs,
+            encoder_hidden_states=model_vl_embs,
+            encoder_attention_mask=model_vl_attn_mask,
+            timestep=t_discretized,
+            skill_conditioning=skill_emb if self.config.use_skill_dit_modulation else None,
+            return_all_hidden_states=False,
+        )
+        pred = self.action_decoder(model_output, embodiment_id)
+        if task_emb is not None:
+            pred = self.decoder_adapter(pred, task_emb)
+
+        return pred[:, -noisy_trajectory.shape[1]:]
+
+    @torch.no_grad()
+    def _predict_actions_with_skill_emb(
+        self,
+        vl_embs: torch.Tensor,
+        vl_attn_mask: torch.Tensor | None,
+        state_features: torch.Tensor,
+        embodiment_id: torch.Tensor,
+        task_emb: torch.Tensor | None,
+        skill_emb: torch.Tensor | None,
+        initial_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Run the denoising loop with a specific skill embedding."""
+        if self.config.use_skill_emb and skill_emb is None:
+            raise ValueError("skill_emb must be provided when use_skill_emb=True")
+
+        device = vl_embs.device
+        batch_size = vl_embs.shape[0]
+        actions = (
+            initial_actions.clone()
+            if initial_actions is not None
+            else torch.randn(
+                size=(batch_size, self.config.action_horizon, self.config.action_dim),
+                dtype=vl_embs.dtype,
+                device=device,
+            )
+        )
+
+        num_steps = self.num_inference_timesteps
+        dt = 1.0 / num_steps
+
+        for t in range(num_steps):
+            t_cont = t / float(num_steps)
+            t_discretized = int(t_cont * self.num_timestep_buckets)
+
+            timesteps_tensor = torch.full(
+                size=(batch_size,), fill_value=t_discretized, device=device
+            )
+            action_features = self.action_encoder(actions, timesteps_tensor, embodiment_id)
+            if task_emb is not None:
+                action_features = self.action_adapter(action_features, task_emb)
+
+            if self.config.add_pos_embed:
+                pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+                pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
+                action_features = action_features + pos_embs
+
+            future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
+            if self.config.use_skill_emb:
+                if self.config.use_skill_encoder_hidden_states:
+                    sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+                elif self.config.use_skill_film:
+                    action_features = self._apply_skill_film(action_features, skill_emb)
+                    sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+                else:
+                    skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)
+                    sa_embs = torch.cat((state_features, future_tokens, skill_token, action_features), dim=1)
+            else:
+                sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+
+            model_output = self.model(
+                hidden_states=sa_embs,
+                encoder_hidden_states=vl_embs,
+                encoder_attention_mask=vl_attn_mask,
+                timestep=timesteps_tensor,
+                skill_conditioning=skill_emb if self.config.use_skill_dit_modulation else None,
+            )
+            pred = self.action_decoder(model_output, embodiment_id)
+            if task_emb is not None:
+                pred = self.decoder_adapter(pred, task_emb)
+
+            pred_velocity = pred[:, -self.action_horizon:]
+            actions = actions + dt * pred_velocity
+
+        return actions
+
+    def _append_skill_to_encoder_hidden_states(
+        self,
+        vl_embs: torch.Tensor,
+        vl_attn_mask: torch.Tensor | None,
+        skill_emb: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Append one projected skill token to the VLM encoder sequence."""
+        skill_token = self.skill_encoder_proj(
+            skill_emb.to(dtype=next(self.skill_encoder_proj.parameters()).dtype)
+        ).unsqueeze(1)
+        skill_token = skill_token.to(device=vl_embs.device, dtype=vl_embs.dtype)
+        vl_embs = torch.cat((vl_embs, skill_token), dim=1)
+
+        if vl_attn_mask is not None:
+            skill_mask = torch.ones(
+                vl_attn_mask.shape[0],
+                1,
+                device=vl_attn_mask.device,
+                dtype=vl_attn_mask.dtype,
+            )
+            vl_attn_mask = torch.cat((vl_attn_mask, skill_mask), dim=1)
+
+        return vl_embs, vl_attn_mask
+
+    @staticmethod
+    def _debug_env_enabled(name: str) -> bool:
+        return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _debug_clone_batch_feature(batch: BatchFeature) -> BatchFeature:
+        return BatchFeature(
+            data={
+                key: value.clone() if torch.is_tensor(value) else value
+                for key, value in batch.items()
+            }
+        )
+
+    @staticmethod
+    def _debug_float_list(tensor: torch.Tensor, digits: int = 4) -> list[float]:
+        return [round(float(x), digits) for x in tensor.detach().float().cpu().flatten().tolist()]
+
+    @staticmethod
+    def _summarize_action_prediction(actions: torch.Tensor, digits: int = 4) -> str:
+        first_step = [
+            round(float(x), digits)
+            for x in actions.detach().float().cpu()[0, 0, :7].tolist()
+        ]
+        mean = round(float(actions.detach().float().mean().item()), digits)
+        std = round(float(actions.detach().float().std(unbiased=False).item()), digits)
+        return f"first7={first_step} mean={mean} std={std}"
+
+    @staticmethod
+    def _debug_action_rows(action: torch.Tensor, horizon: int, digits: int = 4) -> list[list[float]]:
+        return [
+            round(float(row), digits)
+            for row in action.detach().float().cpu()[0, 0, :7].tolist()
+        ]
+
+    def _maybe_debug_train_get_action(
+        self,
+        backbone_output_for_get_action: BatchFeature,
+        action_input_for_get_action: BatchFeature,
+        gt_action: torch.Tensor,
+        forward_pred_action: torch.Tensor,
+    ) -> None:
+        if not self._debug_env_enabled("GR00T_DEBUG_TRAIN_GET_ACTION"):
+            return
+
+        try:
+            max_calls = int(os.environ.get("GR00T_DEBUG_TRAIN_GET_ACTION_MAX_CALLS", "5"))
+        except ValueError:
+            max_calls = 5
+
+        call_idx = getattr(self, "_debug_train_get_action_calls", 0)
+        if call_idx >= max_calls:
+            return
+        self._debug_train_get_action_calls = call_idx + 1
+
+        was_training = self.training
+        try:
+            self.eval()
+            with torch.no_grad():
+                pred = self.get_action(
+                    self._debug_clone_batch_feature(backbone_output_for_get_action),
+                    self._debug_clone_batch_feature(action_input_for_get_action),
+                )["action_pred"].detach()
+        finally:
+            self.train(was_training)
+
+        gt_action = gt_action.detach()
+        forward_pred_action = forward_pred_action.detach()
+        get_action_pred_action = pred.detach()
+        horizon_preview = min(
+            5,
+            gt_action.shape[1],
+            forward_pred_action.shape[1],
+            get_action_pred_action.shape[1],
+        )
+
+        # print(
+        #     "[TRAIN_GET_ACTION_DEBUG] "
+        #     f"call={call_idx} gt_shape={tuple(gt_action.shape)} "
+        #     f"forward_pred_shape={tuple(forward_pred_action.shape)} "
+        #     f"get_action_pred_shape={tuple(get_action_pred_action.shape)} "
+        #     f"state_shape={tuple(action_input_for_get_action.state.shape)} "
+        #     f"horizon_logged={horizon_preview}"
+        # )
+        print(
+            "[TRAIN_GET_ACTION_DEBUG] "
+            f"gt_action[:7]={self._debug_action_rows(gt_action, horizon_preview)}"
+        )
+        # print(
+        #     "[TRAIN_GET_ACTION_DEBUG] "
+        #     f"forward_pred_action[:7]={self._debug_action_rows(forward_pred_action, horizon_preview)}"
+        # )
+        print(
+            "[TRAIN_GET_ACTION_DEBUG] "
+            f"get_action_pred_action[:7]={self._debug_action_rows(get_action_pred_action, horizon_preview)}"
+        )
 
     def sample_time(self, batch_size, device, dtype):
         sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype)
@@ -552,6 +900,11 @@ class FlowmatchingActionHead(nn.Module):
     def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
         # Set frozen modules to eval
         self.set_frozen_modules_to_eval_mode()
+        debug_backbone_output_for_get_action = None
+        debug_action_input_for_get_action = None
+        if self._debug_env_enabled("GR00T_DEBUG_TRAIN_GET_ACTION"):
+            debug_backbone_output_for_get_action = self._debug_clone_batch_feature(backbone_output)
+            debug_action_input_for_get_action = self._debug_clone_batch_feature(action_input)
 
         # Save raw backbone features before task tokens are appended, so
         # compute_task_embedding pools only the original VLM sequence.
@@ -601,7 +954,7 @@ class FlowmatchingActionHead(nn.Module):
         # Skill classification loss + skill embedding (computed before padding filter).
         skill_clf_loss = None
         skill_emb = None    # (B, skill_emb_dim), set when use_skill_emb
-        skill_token = None  # (B, 1, input_emb_dim), set when use_skill_emb and not use_skill_film
+        skill_token = None  # (B, 1, input_emb_dim), set for action-side skill-token mode only
         if self.config.use_skill_emb:
             pooled = self._masked_mean_pool(vl_embs, vl_attn_mask)  # (B, D)
             pooled = pooled.to(dtype=next(self.skill_proj.parameters()).dtype)
@@ -622,8 +975,8 @@ class FlowmatchingActionHead(nn.Module):
                 skill_idx = skill_logits.argmax(dim=-1)
                 skill_emb = self.skill_emb_bank(skill_idx)                    # (B, skill_emb_dim)
 
-            # Project to a DiT input token unless FiLM conditioning is used.
-            if not self.config.use_skill_film:
+            # Project to a DiT input token only for the action-side skill-token path.
+            if not self.config.use_skill_film and not self.config.use_skill_encoder_hidden_states:
                 skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)     # (B, 1, input_emb_dim)
 
             if self.tune_skill_clf:
@@ -670,6 +1023,11 @@ class FlowmatchingActionHead(nn.Module):
             embodiment_id = embodiment_id[padding_mask] if embodiment_id is not None else None
             if task_emb is not None:
                 task_emb = task_emb[padding_mask]
+            vl_embs = vl_embs[padding_mask]
+            if vl_attn_mask is not None:
+                vl_attn_mask = vl_attn_mask[padding_mask]
+            if self.config.use_skill_emb:
+                skill_emb = skill_emb[padding_mask]
 
         state_features = self.state_encoder(state_input, embodiment_id)
         if task_emb is not None:
@@ -684,63 +1042,80 @@ class FlowmatchingActionHead(nn.Module):
 
         # Convert (continuous) t -> discrete if needed
         t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
-        action_features = self.action_encoder(noisy_trajectory, t_discretized, embodiment_id)
-        if task_emb is not None:
-            action_features = self.action_adapter(action_features, task_emb)
-
-        # Maybe add position embedding.
-        if self.config.add_pos_embed:
-            pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
-            pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
-            action_features = action_features + pos_embs
-
-        # Join vision, language, state, action, and optional skill conditioning along the
-        # sequence dimension. Action tokens are always placed LAST so the model output
-        # can be sliced with a simple pred[:, -T:] in every mode.
-        #   use_skill_film: [state(1) | future(32) | actions(T)]  (skill FiLM-modulates actions)
-        #   skill token:    [state(1) | future(32) | skill(1) | actions(T)]
-        #   no skill:       [state(1) | future(32) | actions(T)]
-        future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
-        if self.config.use_skill_emb:
-            # Align skill tensors with the filtered batch (after padding_mask).
-            if not padding_mask.all():
-                skill_emb = skill_emb[padding_mask]
-                if skill_token is not None:
-                    skill_token = skill_token[padding_mask]
-            if self.config.use_skill_film:
-                # FiLM: modulate every action token with the skill embedding.
-                gamma, beta = self.skill_film(skill_emb).chunk(2, dim=-1)
-                gamma = gamma.unsqueeze(1)
-                beta = beta.unsqueeze(1)
-                action_features = action_features * (1 + gamma) + beta
-                sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
-            else:
-                sa_embs = torch.cat((state_features, future_tokens, skill_token, action_features), dim=1)
-        else:
-            sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
-
-        model_output = self.model(
-            hidden_states=sa_embs,
-            encoder_hidden_states=vl_embs,
-            encoder_attention_mask=vl_attn_mask,
-            timestep=t_discretized,
-            return_all_hidden_states=False,  # NOTE (YL): not using flare now
+        pred_actions = self._predict_training_velocity_with_skill_emb(
+            vl_embs,
+            vl_attn_mask,
+            state_features,
+            noisy_trajectory,
+            t_discretized,
+            embodiment_id,
+            task_emb,
+            skill_emb,
         )
-        pred = self.action_decoder(model_output, embodiment_id)
-        if task_emb is not None:
-            pred = self.decoder_adapter(pred, task_emb)
-
-        # Action tokens are always the last T tokens of the sequence in every mode.
-        pred_actions = pred[:, -actions.shape[1]:]
+        forward_pred_action = noise + pred_actions
 
         # Stage-gated loss computation.
-        
         # Stage 2 or normal: action denoising loss
-        loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
-        loss = loss.sum() / action_mask.sum()
+        denoise_mse = self._masked_action_mse(pred_actions, velocity, action_mask)
+        loss = denoise_mse
         output_dict = {"loss": loss}
 
         if self.config.use_skill_emb:
+            gate_values = self._skill_gate_values(skill_emb)
+            if gate_values is not None:
+                gate_mean = gate_values.mean()
+                output_dict["skill_gate_mean"] = gate_mean.detach()
+                gate_l1_loss = gate_mean
+                if getattr(self.config, "skill_gate_l1_coeff", 0.0) > 0:
+                    loss = loss + self.config.skill_gate_l1_coeff * gate_l1_loss
+                    output_dict["skill_gate_l1_loss"] = gate_l1_loss.detach()
+
+            if not self.training:
+                zero_skill_emb = torch.zeros_like(skill_emb)
+                shuffle_idx = torch.randperm(skill_emb.shape[0], device=skill_emb.device)
+                if skill_emb.shape[0] == 1:
+                    shuffled_skill_emb = self.skill_emb_bank.weight[
+                        torch.randint(
+                            0,
+                            self.config.num_skills,
+                            (1,),
+                            device=skill_emb.device,
+                        )
+                    ].to(dtype=skill_emb.dtype)
+                else:
+                    shuffled_skill_emb = skill_emb[shuffle_idx]
+                zero_pred_actions = self._predict_training_velocity_with_skill_emb(
+                    vl_embs,
+                    vl_attn_mask,
+                    state_features,
+                    noisy_trajectory,
+                    t_discretized,
+                    embodiment_id,
+                    task_emb,
+                    zero_skill_emb,
+                )
+                shuffle_pred_actions = self._predict_training_velocity_with_skill_emb(
+                    vl_embs,
+                    vl_attn_mask,
+                    state_features,
+                    noisy_trajectory,
+                    t_discretized,
+                    embodiment_id,
+                    task_emb,
+                    shuffled_skill_emb,
+                )
+                zero_mse = self._masked_action_mse(zero_pred_actions, velocity, action_mask)
+                shuffle_mse = self._masked_action_mse(
+                    shuffle_pred_actions, velocity, action_mask
+                )
+                output_dict["skill_mse_normal_eval"] = denoise_mse.detach()
+                output_dict["skill_mse_zero_eval"] = zero_mse.detach()
+                output_dict["skill_mse_shuffle_eval"] = shuffle_mse.detach()
+                output_dict["skill_mse_zero_delta_eval"] = (zero_mse - denoise_mse).detach()
+                output_dict["skill_mse_shuffle_delta_eval"] = (
+                    shuffle_mse - denoise_mse
+                ).detach()
+
             # CE loss: skip in Stage 2 (tune_skill_emb), include otherwise
             if not self.tune_skill_emb and skill_clf_loss is not None:
                 loss = loss + self.config.skill_clf_coeff * skill_clf_loss
@@ -769,6 +1144,13 @@ class FlowmatchingActionHead(nn.Module):
             loss = loss + self.config.router_diversity_coeff * neg_entropy
             output_dict["loss"] = loss
 
+        if debug_backbone_output_for_get_action is not None:
+            self._maybe_debug_train_get_action(
+                debug_backbone_output_for_get_action,
+                debug_action_input_for_get_action,
+                actions,
+                forward_pred_action,
+            )
         return BatchFeature(data=output_dict)
 
     @torch.no_grad()
@@ -784,9 +1166,11 @@ class FlowmatchingActionHead(nn.Module):
         # Get vision and language embeddings.
         if backbone_output.get('backbone_features_multi', None) is not None:
             vl_embs = backbone_output.backbone_features_multi
+            vl_attn_mask = backbone_output.backbone_attention_mask_multi
             num_action = action_input.state.shape[0]
         else:
             vl_embs = backbone_output.backbone_features
+            vl_attn_mask = backbone_output.backbone_attention_mask
             num_action = 0
 
         device = vl_embs.device
@@ -803,9 +1187,8 @@ class FlowmatchingActionHead(nn.Module):
 
         # Compute skill conditioning once for all denoising steps.
         skill_emb = None
-        skill_token = None
+        routed_skill_emb = None
         if self.config.use_skill_emb:
-            vl_attn_mask = backbone_output.get("backbone_attention_mask")
             pooled = self._masked_mean_pool(vl_embs, vl_attn_mask)  # (B, D)
             pooled = pooled.to(dtype=next(self.skill_proj.parameters()).dtype)
             skill_logits = self.skill_clf(self.skill_proj(pooled))
@@ -828,13 +1211,36 @@ class FlowmatchingActionHead(nn.Module):
             self.last_skill_idx = skill_idx.tolist()
             self.last_skill_names = skill_names
             self.last_skill_probs = [round(p, 4) for p in selected_probs.tolist()]
-            print(f"[SKILL] skill={skill_names} idx={skill_idx.tolist()} prob={self.last_skill_probs}")
+            self.last_skill_weight_probs = [
+                [round(v, 6) for v in row]
+                for row in skill_probs.detach().cpu().tolist()
+            ]
 
             if self.config.use_weighted_skill_router:
                 skill_weights = torch.softmax(skill_logits, dim=-1)
                 skill_emb = skill_weights @ self.skill_emb_bank.weight    # (B, skill_emb_dim)
             else:
                 skill_emb = self.skill_emb_bank(skill_idx)               # (B, skill_emb_dim)
+
+            routed_skill_emb = skill_emb
+            if getattr(self.config, "use_skill_gate", False):
+                gate_probs = torch.sigmoid(self.skill_gate(skill_emb)).squeeze(-1)
+            else:
+                gate_probs = torch.ones(
+                    batch_size,
+                    device=skill_emb.device,
+                    dtype=skill_emb.dtype,
+                )
+            self.last_skill_gate_probs = [
+                round(float(v), 6) for v in gate_probs.detach().float().cpu().tolist()
+            ]
+            self.last_skill_used = [v >= 0.1 for v in self.last_skill_gate_probs]
+            print(
+                "[SKILL] "
+                f"skill={skill_names} idx={skill_idx.tolist()} "
+                f"prob={self.last_skill_probs} gate={self.last_skill_gate_probs} "
+                f"used@0.1={self.last_skill_used}"
+            )
 
             # Inference-time skill-embedding ablations (default "normal" leaves
             # the routed embedding untouched). Set via `action_head.skill_eval_mode`.
@@ -844,6 +1250,8 @@ class FlowmatchingActionHead(nn.Module):
                 self.last_skill_idx = [-1] * batch_size
                 self.last_skill_names = ["<zero>"] * batch_size
                 self.last_skill_probs = None
+                self.last_skill_gate_probs = [0.0] * batch_size
+                self.last_skill_used = [False] * batch_size
                 print(f"[SKILL] mode=zero (skill embedding zeroed)")
             elif skill_eval_mode == "shuffle":
                 rand_idx = torch.randint(
@@ -859,70 +1267,92 @@ class FlowmatchingActionHead(nn.Module):
                     -1, rand_idx.unsqueeze(-1)
                 ).squeeze(-1)
                 self.last_skill_probs = [round(p, 4) for p in rand_probs.tolist()]
-                print(f"[SKILL] mode=shuffle skill={self.last_skill_names} idx={self.last_skill_idx} prob={self.last_skill_probs}")
-
-            # Project to a DiT input token unless FiLM conditioning is used.
-            if not self.config.use_skill_film:
-                skill_token = self.skill_emb_proj(skill_emb).unsqueeze(1)  # (B, 1, input_emb_dim)
-
-        # Set initial actions as the sampled noise.
-        actions = torch.randn(size=(batch_size, self.config.action_horizon, self.config.action_dim), dtype=vl_embs.dtype, device=device, )
-
-        num_steps = self.num_inference_timesteps
-        dt = 1.0 / num_steps
-
-        # Run denoising steps.
-        for t in range(num_steps):
-            t_cont = t / float(num_steps)  # e.g. goes 0, 1/N, 2/N, ...
-            t_discretized = int(t_cont * self.num_timestep_buckets)
-
-            # Embed noised action trajectory.
-            timesteps_tensor = torch.full(
-                size=(batch_size,), fill_value=t_discretized, device=device
-            )
-            action_features = self.action_encoder(actions, timesteps_tensor, embodiment_id)
-            if task_emb is not None:
-                action_features = self.action_adapter(action_features, task_emb)
-            # Maybe add position embedding.
-            if self.config.add_pos_embed:
-                pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
-                pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
-                action_features = action_features + pos_embs
-
-            # Join state, future, action, and optional skill conditioning. Action
-            # tokens are always last so the output can be sliced with pred[:, -T:].
-            #   use_skill_film: [state(1) | future(32) | actions(T)]  (skill FiLM-modulates actions)
-            #   skill token:    [state(1) | future(32) | skill(1) | actions(T)]
-            #   no skill:       [state(1) | future(32) | actions(T)]
-            future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
-            if self.config.use_skill_emb:
-                if self.config.use_skill_film:
-                    gamma, beta = self.skill_film(skill_emb).chunk(2, dim=-1)
-                    gamma = gamma.unsqueeze(1)
-                    beta = beta.unsqueeze(1)
-                    action_features = action_features * (1 + gamma) + beta
-                    sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+                if getattr(self.config, "use_skill_gate", False):
+                    gate_probs = torch.sigmoid(self.skill_gate(skill_emb)).squeeze(-1)
                 else:
-                    sa_embs = torch.cat((state_features, future_tokens, skill_token, action_features), dim=1)
-            else:
-                sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+                    gate_probs = torch.ones(
+                        batch_size,
+                        device=skill_emb.device,
+                        dtype=skill_emb.dtype,
+                    )
+                self.last_skill_gate_probs = [
+                    round(float(v), 6) for v in gate_probs.detach().float().cpu().tolist()
+                ]
+                self.last_skill_used = [v >= 0.1 for v in self.last_skill_gate_probs]
+                print(
+                    "[SKILL] mode=shuffle "
+                    f"skill={self.last_skill_names} idx={self.last_skill_idx} "
+                    f"prob={self.last_skill_probs} gate={self.last_skill_gate_probs} "
+                    f"used@0.1={self.last_skill_used}"
+                )
 
-            # Run model forward.
-            model_output = self.model(
-                hidden_states=sa_embs,
-                encoder_hidden_states=vl_embs,
-                timestep=timesteps_tensor,
+        debug_skill_actions = self._debug_env_enabled("GR00T_DEBUG_SKILL_ACTIONS")
+        initial_actions = torch.randn(
+            size=(batch_size, self.config.action_horizon, self.config.action_dim),
+            dtype=vl_embs.dtype,
+            device=device,
+        )
+        action_pred = self._predict_actions_with_skill_emb(
+            vl_embs,
+            vl_attn_mask,
+            state_features,
+            embodiment_id,
+            task_emb,
+            skill_emb,
+            initial_actions=initial_actions,
+        )
+
+        if debug_skill_actions and self.config.use_skill_emb:
+            skill_vocab = self.config.skill_vocab
+            if skill_vocab is None:
+                skill_vocab = [str(i) for i in range(self.config.num_skills)]
+
+            routed_preview = self._summarize_action_prediction(
+                self._predict_actions_with_skill_emb(
+                    vl_embs,
+                    vl_attn_mask,
+                    state_features,
+                    embodiment_id,
+                    task_emb,
+                    routed_skill_emb,
+                    initial_actions=initial_actions,
+                )
             )
-            pred = self.action_decoder(model_output, embodiment_id)
-            if task_emb is not None:
-                pred = self.decoder_adapter(pred, task_emb)
+            active_preview = self._summarize_action_prediction(action_pred)
+            print(
+                "[SKILL-DBG] "
+                f"mode={getattr(self, 'skill_eval_mode', 'normal')} "
+                f"routed={self.last_skill_names} "
+                f"active={active_preview} routed_preview={routed_preview}"
+            )
 
-            # Action tokens are always the last T tokens of the sequence in every mode.
-            pred_velocity = pred[:, -self.action_horizon:]
+            for skill_idx in range(self.config.num_skills):
+                skill_ids = torch.full(
+                    (batch_size,),
+                    skill_idx,
+                    device=device,
+                    dtype=torch.long,
+                )
+                alt_skill_emb = self.skill_emb_bank(skill_ids)
+                alt_pred = self._predict_actions_with_skill_emb(
+                    vl_embs,
+                    vl_attn_mask,
+                    state_features,
+                    embodiment_id,
+                    task_emb,
+                    alt_skill_emb,
+                    initial_actions=initial_actions,
+                )
+                delta = (alt_pred - action_pred).abs().mean().item()
+                print(
+                    "[SKILL-DBG] "
+                    f"skill={skill_vocab[skill_idx] if skill_idx < len(skill_vocab) else skill_idx} "
+                    f"idx={skill_idx} "
+                    f"action={self._summarize_action_prediction(alt_pred)} "
+                    f"delta_to_active={delta:.4f}"
+                )
 
-            # Update actions using euler integration.
-            actions = actions + dt * pred_velocity
-        return BatchFeature(data={"action_pred": actions})
+        return BatchFeature(data={"action_pred": action_pred})
 
     @property
     def device(self):
