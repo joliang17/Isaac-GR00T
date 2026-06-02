@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import os
-import sys
 import traceback
 from pathlib import Path
 
@@ -15,11 +14,13 @@ import tqdm
 from robocerebra_scripts.utils import (
     BENCH_ROOT,
     CaseSpec,
+    action_chunk_summary,
     convert_to_libero_action,
     discover_cases,
     get_libero_dummy_action,
     get_libero_image,
     get_robocerebra_env,
+    instruction_for_timestep,
     load_init_state,
     parse_case_ids,
     process_observation,
@@ -30,18 +31,16 @@ from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from gr00t.model.policy import Gr00tPolicy
 
 LOG_DIR = "logs/"
-RESULTS_DIR = "results/"
 os.makedirs(LOG_DIR, exist_ok=True)
-os.makedirs(RESULTS_DIR, exist_ok=True)
 
 ACTION_KEYS = ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
 
 
 def _model_tag(model_path: str) -> str:
-    try:
-        return Path(model_path).parts[-2]
-    except Exception:
-        return hashlib.md5(model_path.encode()).hexdigest()[:8]
+    path = Path(model_path)
+    if path.name.startswith("checkpoint-"):
+        return path.parent.name
+    return path.name or hashlib.md5(model_path.encode()).hexdigest()[:8]
 
 
 def _action_chunk_len(chunk: dict) -> int:
@@ -52,7 +51,8 @@ def _select_cases(cfg) -> list[CaseSpec]:
     all_specs = discover_cases(cfg.bench_root)
     all_ids = [s.case_id for s in all_specs]
     keep = set(parse_case_ids(cfg.case_ids, all_ids))
-    return [s for s in all_specs if s.case_id in keep]
+    exclude = set(parse_case_ids(cfg.exclude_case_ids, all_ids)) if cfg.exclude_case_ids else set()
+    return [s for s in all_specs if s.case_id in keep and s.case_id not in exclude]
 
 
 def _build_policy(cfg) -> Gr00tPolicy:
@@ -81,6 +81,8 @@ def eval_robocerebra(cfg) -> None:
     log_suffix = f"model{model_tag}_seed{cfg.random_seed}_h{cfg.action_horizon}"
     log_file = open(f"{LOG_DIR}/robocerebra_eval_{log_suffix}.log", "w")
     log_file.write(f"Eval cases: {[c.case_id for c in cases]}\n")
+    results_dir = Path("results") / model_tag
+    results_dir.mkdir(parents=True, exist_ok=True)
 
     policy = _build_policy(cfg)
 
@@ -90,15 +92,32 @@ def eval_robocerebra(cfg) -> None:
     for spec in tqdm.tqdm(cases, desc="cases"):
         env = get_robocerebra_env(spec.bddl_path, resolution=256, seed=cfg.random_seed)
         init_state = load_init_state(spec.hdf5_path)
+        episode_max_steps = cfg.max_steps if cfg.max_steps is not None else spec.episode_max_steps
 
         case_episodes, case_successes = 0, 0
+        _trivial_skip = False
         try:
             for episode_idx in range(cfg.num_trials_per_task):
                 print(f"\n[case{spec.case_id}] Task: {spec.language}")
                 log_file.write(f"\n[case{spec.case_id}] Task: {spec.language}\n")
+                log_file.write(
+                    f"[case{spec.case_id}] prompt_mode={cfg.prompt_mode} "
+                    f"max_steps={episode_max_steps} steps={len(spec.steps)}\n"
+                )
 
                 env.reset()
                 obs = env.set_init_state(init_state)
+
+                # Guard: detect BDDL goals that are pre-satisfied at init (e.g. cases 1, 4, 7).
+                # These have goal conditions checking _init_region, which are always true at start.
+                _, _, _init_done, _ = env.step(get_libero_dummy_action())
+                if _init_done:
+                    msg = f"[case{spec.case_id}] SKIP — goal trivially satisfied at init (BDDL bug)"
+                    print(msg)
+                    log_file.write(msg + "\n")
+                    log_file.flush()
+                    _trivial_skip = True
+                    break
 
                 t = 0
                 top_view, wrist_view = [], []
@@ -106,13 +125,14 @@ def eval_robocerebra(cfg) -> None:
                 chunk_idx = 0
                 done = False
 
-                while t < cfg.max_steps + cfg.num_steps_wait:
+                while t < episode_max_steps + cfg.num_steps_wait:
                     try:
                         if t < cfg.num_steps_wait:
                             obs, _, done, _ = env.step(get_libero_dummy_action())
                             t += 1
                             continue
 
+                        eval_t = t - cfg.num_steps_wait
                         img, wrist_img = get_libero_image(obs)
                         top_view.append(img)
                         wrist_view.append(wrist_img)
@@ -121,15 +141,24 @@ def eval_robocerebra(cfg) -> None:
                             cached_chunk is None
                             or chunk_idx >= min(cfg.action_horizon, _action_chunk_len(cached_chunk))
                         ):
-                            obs_dict = process_observation(obs, spec.language, headless=True)
+                            instruction = instruction_for_timestep(spec, eval_t, cfg.prompt_mode)
+                            obs_dict = process_observation(obs, instruction, headless=True)
                             action_out, _, _, action_out_bs = policy.get_action(obs_dict, mode="baseline")
                             cached_chunk = action_out if action_out is not None else action_out_bs
                             if cached_chunk is None:
                                 raise RuntimeError("Policy returned no action chunk.")
                             chunk_idx = 0
+                            summary = action_chunk_summary(cached_chunk, ACTION_KEYS)
+                            log_file.write(
+                                f"t={t} eval_t={eval_t} instruction={instruction!r} | {summary}\n"
+                            )
+                            log_file.flush()
 
                         action = convert_to_libero_action(
-                            cached_chunk, ACTION_KEYS, idx=chunk_idx, normalize=cfg.normalize_action
+                            cached_chunk,
+                            ACTION_KEYS,
+                            idx=chunk_idx,
+                            gripper_mode=cfg.gripper_mode,
                         )
                         chunk_idx += 1
 
@@ -168,10 +197,25 @@ def eval_robocerebra(cfg) -> None:
         finally:
             env.close()
 
+        if _trivial_skip:
+            per_case_results.append({
+                "case_id": spec.case_id,
+                "language": spec.language,
+                "episode_max_steps": episode_max_steps,
+                "successes": 0,
+                "episodes": 0,
+                "success_rate": None,
+                "trivial_success": True,
+            })
+            log_file.write(f"[case{spec.case_id}] trivial_success=True (BDDL bug)\n")
+            log_file.flush()
+            continue
+
         case_sr = case_successes / max(case_episodes, 1)
         per_case_results.append({
             "case_id": spec.case_id,
             "language": spec.language,
+            "episode_max_steps": episode_max_steps,
             "successes": case_successes,
             "episodes": case_episodes,
             "success_rate": case_sr,
@@ -188,8 +232,8 @@ def eval_robocerebra(cfg) -> None:
         "total_episodes": total_episodes,
         "overall_success_rate": total_successes / total_episodes if total_episodes else 0.0,
     }
-    out_path = f"{RESULTS_DIR}/robocerebra_eval_{log_suffix}.json"
-    with open(out_path, "w") as f:
+    out_path = results_dir / f"robocerebra_eval_{log_suffix}.json"
+    with out_path.open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
     print(f"Saved results to {out_path}")
 
@@ -200,18 +244,26 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bench_root", type=str, default=BENCH_ROOT)
     p.add_argument("--case_ids", type=str, default="1-12",
                    help="Case selector: '1-12', '1,5,7', or 'all'.")
+    p.add_argument("--exclude_case_ids", type=str, default="",
+                   help="Comma-separated case IDs to exclude (e.g. '1,4,7' for BDDL-buggy cases).")
     p.add_argument("--num_trials_per_task", type=int, default=1)
     p.add_argument("--num_steps_wait", type=int, default=10)
-    p.add_argument("--max_steps", type=int, default=3000)
+    p.add_argument("--max_steps", type=int, default=None,
+                   help="Override rollout steps. Default uses each case's task metadata/demo length.")
     p.add_argument("--embodiment_tag", type=str, default="new_embodiment")
     p.add_argument("--data_config", type=str, default="libero_original")
     p.add_argument("--denoising_steps", type=int, default=8)
     p.add_argument("--action_horizon", type=int, default=10)
-    p.add_argument("--normalize_action", action="store_true")
+    p.add_argument("--prompt_mode", choices=("step", "high_level"), default="step")
+    p.add_argument("--gripper_mode", choices=("signed", "zero_one"), default="signed")
+    p.add_argument("--normalize_action", action="store_true",
+                   help="Deprecated alias for --gripper_mode zero_one.")
     p.add_argument("--random_seed", type=int, default=42)
     return p
 
 
 if __name__ == "__main__":
     args = _build_parser().parse_args()
+    if args.normalize_action:
+        args.gripper_mode = "zero_one"
     eval_robocerebra(args)

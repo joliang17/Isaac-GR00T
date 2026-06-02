@@ -432,22 +432,21 @@ def _draw_skill_label(frame, text):
     return img
 
 
-def save_rollout_video(top_view, wrist_view, idx, success, task_description, log_file=None, model_name='', skill_labels=None):
+def save_rollout_video(top_view, wrist_view, idx, success, task_description, log_file=None, model_settings='', task='default', seed=0, horizon=1, skill_labels=None):
     """Saves an MP4 replay of an episode.
+
+    Directory structure: rollouts/{model_settings}/{task}/h{horizon}/
+    Filename: seed{seed}--episode={idx}--success={success}--task={task_description}.mp4
 
     If `skill_labels` is provided (one entry per top-view frame), the
     corresponding skill name is drawn on the top-left of each agent-view frame.
     """
-    rollout_dir = f"./rollouts/{DATE}"
+    rollout_dir = f"./rollouts/{model_settings}/{task}/h{horizon}"
     os.makedirs(rollout_dir, exist_ok=True)
     processed_task_description = (
         task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
     )
-    if model_name != '':
-        os.makedirs(f"{rollout_dir}/{model_name}", exist_ok=True)
-        mp4_path = f"{rollout_dir}/{model_name}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
-    else:
-        mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
+    mp4_path = f"{rollout_dir}/seed{seed}--episode={idx}--success={success}--task={processed_task_description}.mp4"
 
     if len(top_view) == 0:
         return 

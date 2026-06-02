@@ -4,6 +4,14 @@
 Output format mirrors openpi's results_csv/eval_summary.csv: one row per
 (model, action_horizon), aggregating success rates (as percentages) across
 seeds, with a column per LIBERO suite / perturbation type.
+
+Zero-success runs are ignored when computing the averages.
+
+Supports both the legacy flat layout (`results/*.json`) and the new
+per-model layout (`results/<model>/*.json`).
+
+Skill ablations are treated as separate synthetic models. For example,
+`..._skillshuffle.json` is summarized under `<model>_skillshuffle`.
 """
 
 from __future__ import annotations
@@ -73,26 +81,29 @@ def model_from_path(model_path: str | None) -> str:
     return path.name or str(path)
 
 
-def fallback_from_filename(path: Path) -> tuple[str, int | None, int | None]:
-    """Best-effort (model, horizon, seed) recovery when config fields are missing."""
+def fallback_from_filename(path: Path) -> tuple[str, int | None, int | None, str]:
+    """Best-effort (model, horizon, seed, skill_eval_mode) recovery."""
     name = path.stem
     model = ""
     horizon = None
     seed = None
+    skill_eval_mode = "normal"
 
     model_match = re.search(r"model(.+?)_task", name)
     if model_match:
         model = model_match.group(1)
 
-    horizon_match = re.search(r"_h(\d+)$", name)
+    horizon_match = re.search(r"_h(\d+)(?:_skill([A-Za-z0-9_-]+))?$", name)
     if horizon_match:
         horizon = int(horizon_match.group(1))
+        if horizon_match.group(2):
+            skill_eval_mode = horizon_match.group(2).lower()
 
     seed_match = re.search(r"_seed(\d+)_", name)
     if seed_match:
         seed = int(seed_match.group(1))
 
-    return model, horizon, seed
+    return model, horizon, seed, skill_eval_mode
 
 
 def read_result(path: Path) -> dict | None:
@@ -123,6 +134,13 @@ def result_column(config: dict) -> str | None:
     return PERTURBATION_COLUMNS.get(perturbation)
 
 
+def is_nonzero_success(score: object) -> bool:
+    try:
+        return float(score) > 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def format_average(value: float | None) -> str:
     if value is None:
         return ""
@@ -137,8 +155,8 @@ def gather(results_dir: Path) -> list[dict[str, str]]:
         lambda: {"seeds": set(), "values": defaultdict(list)}
     )
 
-    paths = sorted(results_dir.glob("libero_eval_*.json"))
-    paths += sorted(results_dir.glob("libero_pro_*.json"))
+    paths = sorted(results_dir.rglob("libero_eval_*.json"))
+    paths += sorted(results_dir.rglob("libero_pro_*.json"))
 
     for path in paths:
         result = read_result(path)
@@ -149,8 +167,14 @@ def gather(results_dir: Path) -> list[dict[str, str]]:
         if not isinstance(config, dict):
             config = {}
 
-        fb_model, fb_horizon, fb_seed = fallback_from_filename(path)
-        model = model_from_path(config.get("model_path")) or fb_model or "unknown"
+        fb_model, fb_horizon, fb_seed, fb_skill_eval_mode = fallback_from_filename(path)
+        folder_model = "" if path.parent == results_dir else path.parent.name
+        model = model_from_path(config.get("model_path")) or folder_model or fb_model or "unknown"
+        skill_eval_mode = str(
+            config.get("skill_eval_mode") or fb_skill_eval_mode or "normal"
+        ).lower()
+        if skill_eval_mode != "normal":
+            model = f"{model}_skill{skill_eval_mode}"
         horizon = config.get("action_horizon", fb_horizon)
         seed = config.get("random_seed", fb_seed)
         score = result.get("overall_success_rate")
@@ -160,6 +184,8 @@ def gather(results_dir: Path) -> list[dict[str, str]]:
             continue
         if horizon is None or seed is None or score is None:
             print(f"Skipping incomplete result: {path}")
+            continue
+        if not is_nonzero_success(score):
             continue
 
         try:
@@ -173,6 +199,8 @@ def gather(results_dir: Path) -> list[dict[str, str]]:
     rows = []
     for model, horizon in sorted(grouped, key=lambda x: (x[0], x[1])):
         group = grouped[(model, horizon)]
+        if not group["seeds"]:
+            continue
         row = {field: "" for field in SUMMARY_FIELDS}
         row["model"] = model
         row["action_horizon"] = str(horizon)

@@ -188,8 +188,11 @@ def eval_libero_pro(args) -> None:
         print(f"Model path: {args.model_path}, saved folder: {model_name}")
 
     log_suffix = f"model{model_name}_task{args.task_suite_name}_pert{args.perturbation_type}_seed{args.random_seed}_h{args.action_horizon}"
+    model_settings = model_name
+    task_dir = f"{args.task_suite_name}_pert{args.perturbation_type}"
     if getattr(args, "skill_eval_mode", "normal") != "normal":
         log_suffix += f"_skill{args.skill_eval_mode}"
+        model_settings += f"_skill{args.skill_eval_mode}"
     results_dir = eval_results_dir(model_name, args.eval_tag)
     results_dir.mkdir(parents=True, exist_ok=True)
     log_file = open(f"{log_dir}/libero_pro_eval_{log_suffix}.log", "w")
@@ -217,10 +220,12 @@ def eval_libero_pro(args) -> None:
     is_skill_model = bool(getattr(getattr(action_head, "config", None), "use_skill_emb", False))
     print(f"Skill model (overlay skill name on videos): {is_skill_model}")
 
-    # Inference-time skill-embedding ablation (normal / shuffle / zero).
+    # Inference-time skill-embedding ablation.
     if is_skill_model:
         action_head.skill_eval_mode = args.skill_eval_mode
+        action_head.skill_prob_threshold = args.skill_prob_threshold
         print(f"Skill eval mode: {args.skill_eval_mode}")
+        print(f"Skill prob threshold: {args.skill_prob_threshold}")
     elif args.skill_eval_mode != "normal":
         print("WARNING: --skill_eval_mode set but model has no skill embedding; ignoring.")
     gate_probe = GateProbeLogger(
@@ -388,7 +393,8 @@ def eval_libero_pro(args) -> None:
             save_rollout_video(
                 top_view, wrist_view, total_episodes,
                 success=done, task_description=task_description,
-                log_file=log_file, model_name=log_suffix,
+                log_file=log_file, model_settings=model_settings,
+                task=task_dir, seed=args.random_seed, horizon=args.action_horizon,
                 skill_labels=skill_labels if is_skill_model else None,
             )
 
@@ -513,9 +519,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--skill_eval_mode",
         type=str,
-        choices=["normal", "shuffle", "zero"],
+        choices=["normal", "shuffle", "zero", "prob_threshold_zero"],
         default="normal",
         help="Skill-embedding ablation mode for skill-router models.",
+    )
+    parser.add_argument(
+        "--skill_prob_threshold",
+        type=float,
+        default=0.5,
+        help="Top-1 skill probability threshold used by prob_threshold_zero mode.",
     )
     parser.add_argument(
         "--gate_probe",

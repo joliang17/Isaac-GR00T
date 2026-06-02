@@ -3,6 +3,7 @@
 import os
 import re
 import sys
+import json
 import pathlib
 import importlib.util
 from dataclasses import dataclass
@@ -33,15 +34,23 @@ from libero_scripts.utils import (  # noqa: E402,F401
     get_libero_dummy_action,
     get_libero_image,
     process_observation,
-    convert_to_libero_action,
     save_rollout_video,
     set_seed,
     quat2axisangle,
+    normalize_gripper_action,
 )
 
 BENCH_ROOT = "/fs/nexus-projects/wilddiffusion/vla/robocerebra/RoboCerebra_trainset/study_table"
 
 _CASE_RE = re.compile(r"^case(\d+)$")
+_STEP_RANGE_RE = re.compile(r"\[\s*(\d+)\s*,\s*(\d+)\s*\]")
+
+
+@dataclass
+class StepSpec:
+    description: str
+    start: int
+    end: int
 
 
 @dataclass
@@ -51,22 +60,111 @@ class CaseSpec:
     bddl_path: str
     hdf5_path: str
     language: str
+    steps: list[StepSpec]
+    episode_max_steps: int
 
 
-def _read_language(case_dir: str) -> str:
-    txt_path = os.path.join(case_dir, "task_description.txt")
-    if os.path.isfile(txt_path):
-        with open(txt_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line.lower().startswith("task:"):
-                    return line.split(":", 1)[1].strip()
+def _hdf5_demo_len(hdf5_path: str, demo_key: str = "demo_1") -> int:
+    with h5py.File(hdf5_path, "r") as f:
+        demo = f[f"data/{demo_key}"]
+        if "actions" in demo:
+            return int(demo["actions"].shape[0])
+        return int(demo["states"].shape[0])
+
+
+def _read_task_json(json_path: str) -> tuple[str, list[StepSpec]]:
+    with open(json_path, "r") as f:
+        data = json.load(f)
+    language = data.get("high_level_instruction", "").strip()
+    steps: list[StepSpec] = []
+    for item in data.get("steps", []):
+        desc = item.get("subtask_description", "").strip()
+        timestep = item.get("timestep", {})
+        if desc and "start" in timestep and "end" in timestep:
+            steps.append(StepSpec(desc, int(timestep["start"]), int(timestep["end"])))
+    return language, steps
+
+
+def _read_task_txt(txt_path: str) -> tuple[str, list[StepSpec]]:
+    language = ""
+    steps: list[StepSpec] = []
+    pending_desc: str | None = None
+    with open(txt_path, "r") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.lower().startswith("task:"):
+                language = line.split(":", 1)[1].strip()
+            elif line.lower().startswith("step:"):
+                pending_desc = line.split(":", 1)[1].strip()
+            elif pending_desc:
+                match = _STEP_RANGE_RE.fullmatch(line)
+                if match:
+                    steps.append(StepSpec(pending_desc, int(match.group(1)), int(match.group(2))))
+                    pending_desc = None
+    return language, steps
+
+
+def _read_task_metadata(case_dir: str) -> tuple[str, list[StepSpec]]:
     json_path = os.path.join(case_dir, "task_description.json")
     if os.path.isfile(json_path):
-        import json
-        with open(json_path, "r") as f:
-            return json.load(f).get("high_level_instruction", "").strip()
-    return ""
+        language, steps = _read_task_json(json_path)
+        if language or steps:
+            return language, steps
+
+    txt_path = os.path.join(case_dir, "task_description.txt")
+    if os.path.isfile(txt_path):
+        return _read_task_txt(txt_path)
+    return "", []
+
+
+def instruction_for_timestep(spec: CaseSpec, eval_t: int, prompt_mode: str = "step") -> str:
+    """Return the high-level or current step instruction for an evaluation timestep."""
+    if prompt_mode == "high_level" or not spec.steps:
+        return spec.language
+    for step in spec.steps:
+        if step.start <= eval_t < step.end:
+            return step.description
+    if eval_t < spec.steps[0].start:
+        return spec.steps[0].description
+    return spec.steps[-1].description
+
+
+def convert_to_libero_action(
+    action_chunk: dict[str, np.ndarray],
+    action_keys,
+    idx: int = 0,
+    gripper_mode: str = "signed",
+    normalize: bool | None = None,
+) -> np.ndarray:
+    """Convert a GR00T action chunk to the 7-dim RoboCerebra/LIBERO env action."""
+    if normalize is not None:
+        gripper_mode = "zero_one" if normalize else "signed"
+    action_components = [
+        np.atleast_1d(action_chunk[f"action.{key}"][idx])[0] for key in action_keys
+    ]
+    action_array = np.array(action_components, dtype=np.float32)
+    if gripper_mode == "zero_one":
+        action_array = normalize_gripper_action(action_array, binarize=True)
+    elif gripper_mode == "signed":
+        action_array[..., -1] = np.sign(action_array[..., -1])
+    else:
+        raise ValueError(f"Unsupported gripper_mode={gripper_mode!r}")
+
+    assert len(action_array) == 7, f"Expected 7-dim action, got {len(action_array)}"
+    return action_array
+
+
+def action_chunk_summary(action_chunk: dict[str, np.ndarray], action_keys) -> str:
+    rows = []
+    for key in action_keys:
+        values = np.asarray(action_chunk[f"action.{key}"], dtype=np.float32).reshape(-1)
+        rows.append(
+            f"{key}:min={np.nanmin(values):.3f},max={np.nanmax(values):.3f},mean={np.nanmean(values):.3f}"
+        )
+    finite = all(np.isfinite(np.asarray(action_chunk[f"action.{key}"])).all() for key in action_keys)
+    return f"finite={finite} | " + " | ".join(rows)
 
 
 def discover_cases(bench_root: str = BENCH_ROOT) -> list[CaseSpec]:
@@ -87,13 +185,17 @@ def discover_cases(bench_root: str = BENCH_ROOT) -> list[CaseSpec]:
         if not os.path.isfile(hdf5_path):
             print(f"[discover_cases] skip {entry}: no demo.hdf5")
             continue
+        language, steps = _read_task_metadata(case_dir)
+        episode_max_steps = max([step.end for step in steps], default=_hdf5_demo_len(hdf5_path))
         specs.append(
             CaseSpec(
                 case_id=int(m.group(1)),
                 case_dir=case_dir,
                 bddl_path=os.path.join(case_dir, bddls[0]),
                 hdf5_path=hdf5_path,
-                language=_read_language(case_dir),
+                language=language,
+                steps=steps,
+                episode_max_steps=episode_max_steps,
             )
         )
     specs.sort(key=lambda s: s.case_id)
